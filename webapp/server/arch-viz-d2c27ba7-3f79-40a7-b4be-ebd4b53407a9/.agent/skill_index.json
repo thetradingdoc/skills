@@ -1,0 +1,21 @@
+{
+  "skills": [
+    {
+      "id": "list-interfaces",
+      "description": "Scans all JavaScript/TypeScript files in the project and lists every exported interface, class, function, and object, printing the file path and export name.",
+      "path": ".agent/skills/list-interfaces.sh",
+      "language": "bash",
+      "tags": [
+        "interfaces",
+        "exports",
+        "typescript",
+        "javascript",
+        "grep",
+        "static-analysis"
+      ],
+      "usage_count": 0,
+      "success_rate": 0,
+      "status": "active"
+    }
+  ]
+}

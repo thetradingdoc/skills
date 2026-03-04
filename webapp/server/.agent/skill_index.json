@@ -1,0 +1,26 @@
+{
+  "skills": [
+    {
+      "id": "list-interfaces",
+      "description": "Scans all JavaScript/TypeScript files in the project and lists every exported interface, class, function, and object — supporting both ES-style exports and CommonJS module.exports — printing the export name, kind, and source file path.",
+      "path": ".agent/skills/arch-viz-36c83ef7-09c3-4479-b126-2d9e205bb3e5/list-interfaces.sh",
+      "language": "bash",
+      "tags": [
+        "exports",
+        "interfaces",
+        "typescript",
+        "javascript",
+        "static-analysis",
+        "grep",
+        "commonjs",
+        "esm"
+      ],
+      "usage_count": 0,
+      "success_rate": 0,
+      "status": "active",
+      "originRepo": "arch-viz-36c83ef7-09c3-4479-b126-2d9e205bb3e5",
+      "originProjectRoot": "/var/folders/f0/l701qskx6fqcwdn0bvc8cc780000gn/T/arch-viz-36c83ef7-09c3-4479-b126-2d9e205bb3e5",
+      "createdAt": "2026-02-25T18:13:34.110Z"
+    }
+  ]
+}

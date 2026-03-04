@@ -1,0 +1,25 @@
+{
+  "rules": [
+    {
+      "id": "auth-no-api",
+      "description": "Auth must not depend on API layer",
+      "sourcePattern": "auth",
+      "mustNotImportPattern": "api",
+      "severity": "error"
+    },
+    {
+      "id": "ui-no-direct-db",
+      "description": "UI must not import directly from db",
+      "sourcePattern": "ui",
+      "mustNotImportPattern": "db",
+      "severity": "error"
+    },
+    {
+      "id": "api-no-ui",
+      "description": "API must not import from UI",
+      "sourcePattern": "api",
+      "mustNotImportPattern": "ui",
+      "severity": "warning"
+    }
+  ]
+}

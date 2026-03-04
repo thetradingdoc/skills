@@ -1,0 +1,18 @@
+node_modules
+out
+webview-ui/dist
+webview-ui/node_modules
+.env
+.encryption-key
+*.vsix
+*.log
+.DS_Store
+
+# Agent session and staging (AGENT_ROADMAP v4)
+.arch-agent-session.json
+.arch-agent-staging/
+
+# Rails (STELLA)
+.agent/rail_registry.json
+.agent/rails/
+.agent/sandboxes/

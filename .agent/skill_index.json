@@ -1,0 +1,20 @@
+{
+  "skills": [
+    {
+      "id": "list-interfaces",
+      "description": "Finds and lists all exported TypeScript interfaces in the project by scanning source files for `export interface` declarations, printing the file path, interface name, and line number.",
+      "path": ".agent/skills/list-interfaces.ts",
+      "language": "typescript",
+      "tags": [
+        "typescript",
+        "interfaces",
+        "grep",
+        "static-analysis",
+        "list"
+      ],
+      "usage_count": 0,
+      "success_rate": 0,
+      "status": "active"
+    }
+  ]
+}

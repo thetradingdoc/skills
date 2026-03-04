@@ -1,0 +1,85 @@
+"use strict";
+/**
+ * Shared GraphCommand validation — used by greenfield enricher and webapp server middleware.
+ * No heavy dependencies (only types).
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.VALID_LAYERS = void 0;
+exports.validateGraphCommand = validateGraphCommand;
+exports.VALID_LAYERS = [
+    "Presentation",
+    "Business Logic",
+    "Data Access",
+    "Infrastructure",
+    "External Services",
+    "Utilities",
+    "Configuration",
+    "Uncategorized",
+];
+function isValidLayer(v) {
+    return exports.VALID_LAYERS.includes(v);
+}
+const ID_PATTERN = /^[a-zA-Z0-9_\-\/\.]+$/;
+const PATH_TRAVERSAL = /\.\.|\\\\|\/\//;
+function validateNodeId(id) {
+    if (id.length > 200)
+        return "Node ID too long";
+    if (PATH_TRAVERSAL.test(id))
+        return "Node ID must not contain path traversal (.. or //)";
+    if (!ID_PATTERN.test(id))
+        return "Node ID must use only alphanumeric, underscore, hyphen, slash, or dot";
+    return null;
+}
+function validateGraphCommand(raw) {
+    if (!raw || typeof raw !== "object")
+        return { valid: false, error: "graphCommand must be an object" };
+    const o = raw;
+    if (o.action === "create_node") {
+        if (typeof o.id !== "string")
+            return { valid: false, error: "create_node requires string id" };
+        if (typeof o.label !== "string")
+            return { valid: false, error: "create_node requires string label" };
+        if (typeof o.layer !== "string")
+            return { valid: false, error: "create_node requires string layer" };
+        if (!isValidLayer(o.layer))
+            return { valid: false, error: `create_node requires valid layer: ${exports.VALID_LAYERS.join(", ")}` };
+        const idErr = validateNodeId(o.id);
+        if (idErr)
+            return { valid: false, error: `create_node id: ${idErr}` };
+        return {
+            valid: true,
+            command: {
+                action: "create_node",
+                id: o.id,
+                label: o.label,
+                layer: o.layer,
+                description: typeof o.description === "string" ? o.description : undefined,
+                archNodeId: typeof o.archNodeId === "string" ? o.archNodeId : undefined,
+            },
+        };
+    }
+    if (o.action === "connect") {
+        if (typeof o.fromId !== "string")
+            return { valid: false, error: "connect requires string fromId" };
+        if (typeof o.toId !== "string")
+            return { valid: false, error: "connect requires string toId" };
+        const fromErr = validateNodeId(o.fromId);
+        if (fromErr)
+            return { valid: false, error: `connect fromId: ${fromErr}` };
+        const toErr = validateNodeId(o.toId);
+        if (toErr)
+            return { valid: false, error: `connect toId: ${toErr}` };
+        return {
+            valid: true,
+            command: {
+                action: "connect",
+                fromId: o.fromId,
+                toId: o.toId,
+                edgeType: typeof o.edgeType === "string" ? o.edgeType : undefined,
+            },
+        };
+    }
+    if (o.action === "reset")
+        return { valid: true, command: { action: "reset" } };
+    return { valid: false, error: "graphCommand must have action: create_node, connect, or reset" };
+}

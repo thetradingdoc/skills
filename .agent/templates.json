@@ -1,0 +1,40 @@
+{
+  "templates": [
+    {
+      "id": "tpl_1772037956362_6mo4hm",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 10,
+      "createdAt": "2026-02-25T16:45:56.362Z",
+      "questionSample": "Write a script that finds all exported interfaces in this project and save it as a skill called list-interfaces"
+    },
+    {
+      "id": "tpl_1772038153824_r1231a",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 6,
+      "createdAt": "2026-02-25T16:49:13.824Z",
+      "questionSample": "Write a script that finds all exported interfaces in this project and save it as a skill called list-interfaces"
+    },
+    {
+      "id": "tpl_1772038336251_1ocyjh",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 8,
+      "createdAt": "2026-02-25T16:52:16.251Z",
+      "questionSample": "Use the list-interfaces skill to list interfaces only under src/agent and summarize what responsibilities they cover."
+    },
+    {
+      "id": "tpl_1772047797080_24f484",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 4,
+      "createdAt": "2026-02-25T19:29:57.080Z",
+      "questionSample": "Use the 'map-routes' skill to summarize all routes and which modules own them."
+    }
+  ]
+}

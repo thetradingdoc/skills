@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/07/schema#",
+  "$id": "https://arch-visualizer/schemas/managerResult.json",
+  "title": "ManagerResult",
+  "description": "Result from the architecture task manager (analysis or greenfield)",
+  "type": "object",
+  "required": ["answer"],
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The assistant's text response to the user"
+    },
+    "graphCommand": {
+      "$ref": "./graphCommand.json",
+      "description": "Optional graph action (create_node, connect, filter, etc.)"
+    },
+    "criticReport": {
+      "type": "string",
+      "description": "Critic evaluation report or null if not run"
+    },
+    "criticScore": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Critic score (0–100)"
+    },
+    "proposal": {
+      "description": "Optional structured proposal (e.g. plan)"
+    },
+    "violations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/CriticViolation" },
+      "description": "Architecture violations detected by the critic"
+    },
+    "traceId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Trace ID for observability"
+    }
+  },
+  "$defs": {
+    "CriticViolation": {
+      "type": "object",
+      "required": ["type", "severity", "sourceNodeId", "description", "suggestedFix"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "layer_violation",
+            "drift",
+            "missing_context",
+            "circular_dep",
+            "god_module"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium"]
+        },
+        "sourceNodeId": { "type": "string" },
+        "targetNodeId": { "type": "string" },
+        "description": { "type": "string" },
+        "suggestedFix": { "type": "string" },
+        "jiraKey": { "type": "string" },
+        "jiraStatus": { "type": "string" },
+        "trackedAt": { "type": "number" },
+        "resolvedAt": { "type": "number" },
+        "recurrences": { "type": "number" }
+      }
+    }
+  }
+}

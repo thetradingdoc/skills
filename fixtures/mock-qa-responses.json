@@ -1,0 +1,3 @@
+{
+  "default": "Based on the architecture graph, the modules are organized as follows. Auth handles authentication, API provides HTTP client, and UI contains React components. One drift violation exists: auth imports from api, which violates the must-not-depend-on rule in auth's .context.md."
+}

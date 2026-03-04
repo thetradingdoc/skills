@@ -1,0 +1,22 @@
+{
+  "templates": [
+    {
+      "id": "tpl_1772043281013_uqs6n3",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 1,
+      "createdAt": "2026-02-25T18:14:41.013Z",
+      "questionSample": "“Write a script that finds all exported interfaces in this project and save it as a skill called list-interfaces.”"
+    },
+    {
+      "id": "tpl_1772044472716_vr9qwl",
+      "intent": "general",
+      "model": "claude",
+      "usedCritic": true,
+      "score": 1,
+      "createdAt": "2026-02-25T18:34:32.716Z",
+      "questionSample": "“Write a script that finds all exported interfaces in this project and save it as a skill called list-interfaces.”"
+    }
+  ]
+}

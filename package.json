@@ -1,0 +1,158 @@
+{
+  "name": "arch-visualizer",
+  "displayName": "Architecture Visualizer",
+  "description": "Live architecture map for your codebase — static analysis, AI enrichment, drift detection",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "arch-visualizer.open",
+        "title": "Open Architecture Map",
+        "category": "Arch"
+      },
+      {
+        "command": "arch-visualizer.checkGates",
+        "title": "Check Gates",
+        "category": "Arch"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "arch-visualizer.open",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      }
+    ],
+    "configuration": {
+      "title": "Architecture Visualizer",
+      "properties": {
+        "archVisualizer.agentActive": {
+          "type": "boolean",
+          "default": true,
+          "description": "When false, AI enrichment and agent (askAI, requestPlan) are disabled. Static scanners (drift, violations) still run. Active rails are SUSPENDED when toggled off."
+        },
+        "archVisualizer.openaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI API key for AI enrichment and agent (semantic roles, Q&A, Code Writer). Leave empty to use MockEnricher."
+        },
+        "archVisualizer.anthropicApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key for Claude-powered reasoning and design proposals."
+        },
+        "archVisualizer.projectRoot": {
+          "type": "string",
+          "default": "src",
+          "description": "Override project root for scanning (relative to workspace). Default: src"
+        },
+        "archVisualizer.retryLimitCode": {
+          "type": "number",
+          "default": 3,
+          "description": "Max retries for Code Writer per task"
+        },
+        "archVisualizer.retryLimitArch": {
+          "type": "number",
+          "default": 2,
+          "description": "Max retries for Arch Planner per violation"
+        },
+        "archVisualizer.retryLimitSession": {
+          "type": "number",
+          "default": 50,
+          "description": "Max LLM calls per session"
+        },
+        "archVisualizer.tokenBudgetSession": {
+          "type": "number",
+          "default": 100000,
+          "description": "Token budget per session"
+        },
+        "archVisualizer.tokenWarningThreshold": {
+          "type": "number",
+          "default": 0.8,
+          "description": "Emit warning when usage reaches this fraction of budget"
+        },
+        "archVisualizer.costCapSession": {
+          "type": "number",
+          "default": 0,
+          "description": "Optional cost cap in USD (0 = disabled). Hard stop when estimated cost reached."
+        },
+        "archVisualizer.playwrightSpecs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "scripts/landing-visual.spec.ts"
+          ],
+          "description": "Playwright spec paths for agent verification (include [VISUAL] tests for UI constraints)"
+        },
+        "archVisualizer.jiraFilterByRepo": {
+          "type": "boolean",
+          "default": true,
+          "description": "Filter Jira issues by repo: add 'labels = <repo-name>' to JQL using repo name from git remote. Label your Jira issues with the repo name (e.g. doclittle-platform)."
+        },
+        "archVisualizer.jiraLabels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Override: Jira labels to filter by (e.g. ['doclittle-platform']). If set, used instead of auto-detected repo name."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --format=cjs --platform=node",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --format=cjs --platform=node --watch",
+    "dev:ext": "npm run watch",
+    "dev:webview": "cd webview-ui && npm run dev",
+    "dev": "concurrently \"npm run dev:ext\" \"npm run dev:webview\"",
+    "build": "npm run compile && cd webview-ui && npm run build",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "webapp:server": "cd webapp/server && npm run dev",
+    "webapp:client": "cd webapp/client && npm run dev",
+    "webapp": "concurrently \"npm run webapp:server\" \"npm run webapp:client\"",
+    "test:jira-auth": "tsx scripts/test-jira-auth.ts",
+    "test:jira-create-issue": "tsx scripts/test-jira-create-issue.ts",
+    "test:e2e": "tsx scripts/test-jira-create-issue.ts --dry-run",
+    "generate-tests": "tsx scripts/generate-tests.ts",
+    "run-arch-tests": "tsx scripts/run-arch-tests.ts",
+    "test:verify-pipeline": "tsx scripts/test-verify-pipeline.ts",
+    "test:playwright": "playwright test",
+    "run-tests-and-report": "tsx scripts/run-tests-and-report.ts",
+    "ask-arch": "tsx scripts/ask-arch.ts",
+    "id-decorator": "tsx scripts/id-decorator.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.78.0",
+    "chokidar": "^4.0.1",
+    "playwright": "^1.58.2",
+    "dotenv": "^17.3.1",
+    "openai": "^6.22.0",
+    "simple-git": "^3.31.1",
+    "ts-morph": "^24.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.0",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.0",
+    "playwright": "^1.58.2",
+    "tsx": "^4.21.0",
+    "vitest": "^2.1.0"
+  }
+}

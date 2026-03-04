@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/07/schema#",
+  "$id": "https://arch-visualizer/schemas/graphCommand.json",
+  "title": "GraphCommand",
+  "description": "Command for graph actions: navigation, filtering, and visual construction (create_node, connect)",
+  "type": "object",
+  "required": ["action"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "highlight_nodes",
+        "filter_layer",
+        "filter_edge_type",
+        "focus_node",
+        "reset",
+        "create_node",
+        "connect",
+        "trace_path"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "highlight_nodes" } }, "required": ["action"] },
+      "then": {
+        "required": ["nodeIds"],
+        "properties": {
+          "nodeIds": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "filter_layer" } }, "required": ["action"] },
+      "then": {
+        "required": ["layer"],
+        "properties": {
+          "layer": {
+            "type": "string",
+            "enum": [
+              "Presentation",
+              "Business Logic",
+              "Data Access",
+              "Infrastructure",
+              "External Services",
+              "Utilities",
+              "Configuration",
+              "Uncategorized"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "filter_edge_type" } }, "required": ["action"] },
+      "then": {
+        "required": ["edgeType"],
+        "properties": {
+          "edgeType": {
+            "type": "string",
+            "enum": ["arch", "drift", "violations", "all"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "focus_node" } }, "required": ["action"] },
+      "then": {
+        "required": ["nodeId"],
+        "properties": { "nodeId": { "type": "string" } }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "create_node" } }, "required": ["action"] },
+      "then": {
+        "required": ["id", "label", "layer"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[a-zA-Z0-9_\\-/.]+$" },
+          "label": { "type": "string", "minLength": 1 },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "Presentation",
+              "Business Logic",
+              "Data Access",
+              "Infrastructure",
+              "External Services",
+              "Utilities",
+              "Configuration",
+              "Uncategorized"
+            ]
+          },
+          "description": { "type": "string" },
+          "archNodeId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-/.]+$" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "connect" } }, "required": ["action"] },
+      "then": {
+        "required": ["fromId", "toId"],
+        "properties": {
+          "fromId": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[a-zA-Z0-9_\\-/.]+$" },
+          "toId": { "type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[a-zA-Z0-9_\\-/.]+$" },
+          "edgeType": {
+            "type": "string",
+            "enum": ["import", "reexport", "dynamic"]
+          }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "action": { "const": "trace_path" } }, "required": ["action"] },
+      "then": {
+        "required": ["nodeIds"],
+        "properties": {
+          "nodeIds": { "type": "array", "items": { "type": "string" } },
+          "intensity": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  ]
+}

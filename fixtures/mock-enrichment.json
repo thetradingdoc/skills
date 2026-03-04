@@ -1,0 +1,47 @@
+{
+  "roles": {
+    "src/auth": "authentication",
+    "src/api": "http-client",
+    "src/shared": "shared-utils",
+    "src/ui": "ui-components",
+    "src/scripts": "legacy-scripts",
+    "lib": "lib-http",
+    "utils": "utils-format"
+  },
+  "suggestedLabels": {
+    "src/auth": "Authentication",
+    "src/api": "HTTP Client",
+    "src/shared": "Shared Utils",
+    "src/ui": "UI Components",
+    "src/scripts": "Legacy Scripts",
+    "lib": "HTTP Library",
+    "utils": "Format Utilities"
+  },
+  "layers": {
+    "src/auth": "Infrastructure",
+    "src/api": "API",
+    "src/shared": "Shared/Utilities",
+    "src/ui": "Presentation",
+    "src/scripts": "Services",
+    "lib": "Infrastructure",
+    "utils": "Shared/Utilities"
+  },
+  "descriptions": {
+    "src/auth": "Handles authentication and session management",
+    "src/api": "HTTP client and API communication",
+    "src/shared": "Shared utilities and helpers",
+    "src/ui": "UI components and views",
+    "src/scripts": "Legacy migration and script utilities",
+    "lib": "Core HTTP library",
+    "utils": "Formatting and data utilities"
+  },
+  "status": {
+    "src/auth": "stable",
+    "src/api": "stable",
+    "src/shared": "stable",
+    "src/ui": "stable",
+    "src/scripts": "deprecated",
+    "lib": "stable",
+    "utils": "stable"
+  }
+}

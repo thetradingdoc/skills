@@ -1,0 +1,138 @@
+<!--
+  BB-8 email header snippet for Supabase Auth templates.
+  Paste this at the top of each template body (Confirm signup, Magic link, Reset password, etc.).
+
+  IMPORTANT: Email clients don't run JavaScript. The original animation won't work — this is static.
+  Some clients (e.g. Outlook) may not render inline SVG. For best compatibility, export this SVG
+  as PNG (e.g. 300×300px), host it (Supabase Storage, Cloudflare, etc.), and replace with:
+  <img src="https://your-cdn.com/bb8.png" alt="BB-8" style="width: 200px; max-width: 100%; height: auto; display: block; margin: 0 auto 16px;" />
+-->
+<section style="text-align: center; margin-bottom: 16px;">
+  <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 2935 2935" style="width: 200px; max-width: 100%; height: auto; display: block; margin: 0 auto;">
+    <defs>
+      <circle id="bb8-path-1" cx="1467.5" cy="1467.5" r="1467.5"></circle>
+      <path id="bb8-path-3" d="M0 10h3378v1068H0z"></path>
+      <mask id="bb8-mask-4" width="3378" height="1068" x="0" y="0" fill="white"><use xlink:href="#bb8-path-3"></use></mask>
+      <linearGradient id="bb8-linearGradient-5" x1="50%" x2="50%" y1="0%" y2="65.101%"><stop stop-color="#9B775B" stop-opacity="0" offset="0%"></stop><stop stop-color="#BE9371" stop-opacity=".742" offset="52.792%"></stop><stop stop-color="#CA9D79" offset="99.968%"></stop></linearGradient>
+      <circle id="bb8-path-6" cx="412" cy="412" r="412"></circle>
+      <path id="bb8-path-8" d="M-488.933-686.737h1860.777V1174.04H-488.933z"></path>
+      <mask id="bb8-mask-9" width="1860.777" height="1860.777" x="0" y="0" fill="white"><use xlink:href="#bb8-path-8"></use></mask>
+      <linearGradient id="bb8-linearGradient-10" x1="48.662%" x2="48.662%" y1="36.666%" y2="87.375%"><stop stop-color="#000000" stop-opacity="0" offset="0%"></stop><stop stop-color="#000000" offset="100%"></stop></linearGradient>
+      <circle id="bb8-path-11" cx="412.747" cy="412.128" r="412"></circle>
+      <path id="bb8-path-13" d="M264 370.683c244.5 0 241.808-41.645 241.808-41.645s13.634-2.917 14.683-7.156c4.91-19.82 7.51-40.528 7.51-61.835C528 116.427 409.803 0 264 0S0 116.427 0 260.047c0 21.157 2.565 41.724 7.405 61.415 1.764 7.177 19.336.646 21.69 7.576 2.355 6.93-9.596 41.645 234.905 41.645z"></path>
+      <path id="bb8-path-15" d="M0 7h1174v66H0z"></path>
+      <mask id="bb8-mask-16" width="1174" height="66" x="0" y="0" fill="white"><use xlink:href="#bb8-path-15"></use></mask>
+      <rect id="bb8-path-17" width="42" height="12" x="312" y="18" rx="6"></rect>
+      <mask id="bb8-mask-18" width="42" height="12" x="0" y="0" fill="white"><use xlink:href="#bb8-path-17"></use></mask>
+      <rect id="bb8-path-19" width="42" height="12" x="312" y="36" rx="6"></rect>
+      <mask id="bb8-mask-20" width="42" height="12" x="0" y="0" fill="white"><use xlink:href="#bb8-path-19"></use></mask>
+      <path id="bb8-path-21" d="M61 0h884v36H61z"></path>
+      <mask id="bb8-mask-22" width="884" height="36" x="0" y="0" fill="white"><use xlink:href="#bb8-path-21"></use></mask>
+      <path id="bb8-path-23" d="M0 51h1060v16H0z"></path>
+      <mask id="bb8-mask-24" width="1060" height="16" x="0" y="0" fill="white"><use xlink:href="#bb8-path-23"></use></mask>
+      <linearGradient id="bb8-linearGradient-25" x1="50%" x2="50%" y1="0%" y2="61.269%"><stop stop-color="#7F7268" offset="0%"></stop><stop stop-color="#35240B" offset="100%"></stop></linearGradient>
+      <path id="bb8-path-26" d="M458.955 92h-87.96c-5.51 0-9.995 4.475-9.995 9.994v47.012c0 5.52 4.475 9.994 9.995 9.994h144.96c-30.5-8.378-53.546-34.758-57-67z"></path>
+      <mask id="bb8-mask-27" width="154.954" height="67" x="0" y="0" fill="white"><use xlink:href="#bb8-path-26"></use></mask>
+      <path id="bb8-path-28" d="M287.955 92H9.995C4.485 92 0 96.475 0 101.994v47.012C0 154.526 4.475 159 9.995 159h334.96l-57-67z"></path>
+      <mask id="bb8-mask-29" width="344.954" height="67" x="0" y="0" fill="white"><use xlink:href="#bb8-path-28"></use></mask>
+      <path id="bb8-path-30" d="M632.244 93H813.99c5.528 0 10.01 4.482 10.01 10.003v92.994c0 5.524-4.478 10.003-10.01 10.003H619.01c-5.528 0-10.01-4.482-10.01-10.003v-57.112c12.396-11.952 20.856-27.96 23.244-45.885z"></path>
+      <mask id="bb8-mask-31" width="215" height="113" x="0" y="0" fill="white"><use xlink:href="#bb8-path-30"></use></mask>
+      <path id="bb8-path-32" d="M872.244 93h181.746c5.528 0 10.01 4.482 10.01 10.003v92.994c0 5.524-4.478 10.003-10.01 10.003H859.01c-5.528 0-10.01-4.482-10.01-10.003v-57.112c12.396-11.952 20.856-27.96 23.244-45.885z"></path>
+      <mask id="bb8-mask-33" width="215" height="113" x="0" y="0" fill="white"><use xlink:href="#bb8-path-32"></use></mask>
+      <linearGradient id="bb8-linearGradient-34" x1="50%" x2="50%" y1="13.3%" y2="100%"><stop stop-color="#000000" stop-opacity="0" offset="0%"></stop><stop stop-color="#000000" offset="100%"></stop></linearGradient>
+      <path id="bb8-path-35" d="M264 370.683c244.5 0 241.808-41.645 241.808-41.645s13.634-2.917 14.683-7.156c4.91-19.82 7.51-40.528 7.51-61.835C528 116.427 409.803 0 264 0S0 116.427 0 260.047c0 21.157 2.565 41.724 7.405 61.415 1.764 7.177 19.336.646 21.69 7.576 2.355 6.93-9.596 41.645 234.905 41.645z"></path>
+      <ellipse id="bb8-path-37" cx="54.36" cy="54.36" rx="54.36" ry="54.36"></ellipse>
+    </defs>
+    <g fill="none" fill-rule="evenodd">
+      <mask id="bb8-mask-2" fill="white"><use xlink:href="#bb8-path-1"></use></mask>
+      <g mask="url(#bb8-mask-2)">
+        <g id="background">
+          <g transform="translate(-199 -115)">
+            <use fill="#DDBE9A" stroke="#979797" stroke-width="2" mask="url(#bb8-mask-4)" xlink:href="#bb8-path-3"></use>
+            <path fill="#E0C39F" d="M385.2 669.795c5.423-1.59 458.03-283.254 462.624-266.534 148.17-11.437 137.33-19.674 130.025-21.598 5.576 18.858 9.566 22.728 12.03 27.448 6.002 11.49 13.082 22.663 16.767 35.092 2.817 9.503 6.612 20.652 2.423 29.634-5.173 11.092-17.774 16.908-27.56 24.26-239.206 9.69-224.056 117.825-169.642 105.166 73.37-17.068 3.16 2.7 31.584-19.468 33.838-7.37 58.542-16.864 83.86-24.37 69.814-20.81 86.705-26.175 103.79-30.762 74.546 17.09 111.054 22.43 147.583 27.53 74.677-26.923 255.056-47.828 242.336-107.17-5.07-23.66-49.42-23.68-60.8-26.446-43.71-10.62-45.668-13.813-89.89-40.05-12.76-7.572-26.825-13.77-37.32-24.26-23.77-23.753 27.303-56.29 15.93-82.063-48.27-18.264-75.43-25.28-103.078-26.863-238.808-3.932-188.848-32.874-187.133-34.146 25.984-19.28 51.22-39.562 77.19-58.864 9.166-6.814 18.36-13.667 28.198-19.468 32.696-14.094 42.206-16.716 51.874-17.38 83.15 3.685 99.122 16.005 116.906 22.978 18.26 7.158 36.607 14.307 55.55 19.384 131.615-11.135 154.39-30.327 181.772-38.017 156.148-20.927 195.8-29.343 235.763-35.9 58.6 65.25-89.165 8.933-196.214 82.412 10.203-2.526 21.016-12.205 32.976-20.193 14.42-9.632 29.162-18.784 44.06-27.657 19.355 27.086 5.134 18.424 44.507 38.658 45.013 14.337 57.405 14.02 69.225 16.725-16.518 14.462-37.012 23.356-57.57 31.89-31.884 13.236-64.667 24.213-96.713 37.056 65.59 26.036 13.968 43.697 33.1 49.798 81.206-18.105 83.215-28.426 89.71-28.73 44.628 22.067 28.273 30.38 13.258 40.748-16.444 11.353-57.68 18.85-47.78 36.206 211.92-14.706 266.232-13.785 320.46-15.304 44.348-16.094 79.62-34.117 116.725-47.5 55.047-53.54 63.492-93.4 55.174-131.445-9.858-45.088-55.304-41.417-75.784-73.737-1.907-3.01-8.3-30.32-3.565-36.68 6.638-8.916 16.462-15.073 25.72-21.223 10.665-7.085 22.838-11.636 33.77-18.3 18.48 16.127 53.922 18.8 89.39 20.444 88.62 18.556 74.432 25.835 61.816 34.647-19.67 13.74-40.3 26.084-59.84 40.01-12.678 9.035-25.187 18.4-36.75 28.825-5.622 5.07-16.154 10.036-14.552 17.434 197.987 30.374 149.25 81.416 111.837 110.863-29.42 23.157-60.27 44.463-89.612 67.72-9.6 7.61-15.987 19.68-27.113 24.802-27.27 12.55-56.93 19.16-85.852 27.196-33.03 9.177-66.223 18.024-99.903 24.412-44.055 8.356-88.642 13.637-133.06 19.775-229.997 6.058-230.254 12.158-233.075 14.482-20.76 13.714-26.653 19.352-32.252 25.22-11.97 16.96-16.11 23.41-19.176 30.372-5.298 19.74-7.84 25.282-4.707 26.57 185.335 3.804 185.18 15.932 192.398 20.304 45.44 27.52 89.423 13.572 140.97 16.043 610.213 77.047 90.993 24.993 218.453 23.813 7.55-.07 9.77 19.476 9.943 19.914 25.295 63.827 3.482 34.482 32 50.035 517.566 6.252-1850.48 57.868-1742.76 26.26z"></path>
+          </g>
+          <g fill="url(#bb8-linearGradient-5)" transform="translate(-650 1467)"><path d="M0 0h4033v1623H0z"></path></g>
+          <g transform="translate(532 992)">
+            <ellipse cx="1030.5" cy="1338" fill="#000000" opacity=".2" rx="408.5" ry="96"></ellipse>
+            <ellipse cx="994" cy="1338" fill="#000000" opacity=".074" rx="268.5" ry="63.176"></ellipse>
+            <ellipse cx="970.5" cy="1349" fill="#000000" opacity=".124" rx="157.5" ry="37"></ellipse>
+            <g transform="translate(543 543)">
+              <mask id="bb8-mask-7" fill="white"><use xlink:href="#bb8-path-6"></use></mask>
+              <use fill="#D8D8D8" opacity=".01" xlink:href="#bb8-path-6"></use>
+              <g fill="#EEEEEE" stroke="#979797" stroke-width="2" mask="url(#bb8-mask-7)"><use mask="url(#bb8-mask-9)" xlink:href="#bb8-path-8"></use></g>
+              <g mask="url(#bb8-mask-7)">
+                <circle cx="979.778" cy="961.71" r="961.145" stroke="#9E0707"></circle>
+                <path stroke="#563402" stroke-width="3" d="M757.37 950.773l53.952 114.127 249.967 102.512 126.652-161.283-103.638-178.39-211.363-38.997z" opacity=".189"></path>
+                <path stroke="#563402" stroke-width="3" d="M469.37 860.382l-294.048 373.864 499.377 67.14 58.713-143.27 37.357-27.652-95.918-196.152-94.11-1.142z" opacity=".189"></path>
+                <path stroke="#563402" stroke-width="3" d="M1266.78 646.348l-137.593-455.31-341.43 370.556 83.685 130.273 1.223 46.46 215.695 33.938 54.914-76.435z" opacity=".189"></path>
+                <path stroke="#563402" stroke-width="3" d="M1452.486 1045.965l209.892 406.83-595.744 19.422 45.677-139.923-10.79-104.814 134.603-191.923 92.29 18.45z" opacity=".189"></path>
+                <path fill="#A96B29" d="M412 824c227.54 0 412-184.46 412-412 0 0-60.768 181.768-369.107 218.852C146.555 667.936 13.386 516.567 13.386 516.567 59.666 693.47 220.59 824 412 824z" opacity=".1"></path>
+                <path fill="#FFFFFF" d="M85.81 6.772C-12.305 39.65-83 132.32-83 241.5-83 378.19 27.81 489 164.5 489S412 378.19 412 241.5c0-30.633-5.565-59.966-15.74-87.043C216.487 149.372 75.254 98.222 75.254 35.872c0-10.04 3.662-19.787 10.556-29.1z" opacity=".178"></path>
+                <path fill="#FFFFFF" d="M538.37 148.597C531.023 167.824 527 188.692 527 210.5c0 95.82 77.68 173.5 173.5 173.5S874 306.32 874 210.5c0-70.03-41.49-130.37-101.233-157.78-18.73 44.872-111.18 81.692-234.398 95.877z" opacity=".178"></path>
+                <rect fill="url(#bb8-linearGradient-10)" width="1008" height="945" x="-83" y="-40" opacity=".399"></rect>
+              </g>
+            </g>
+            <g transform="translate(542.253 542.872)">
+              <mask id="bb8-mask-12" fill="white"><use xlink:href="#bb8-path-11"></use></mask>
+              <g fill="#000000" mask="url(#bb8-mask-12)">
+                <ellipse cx="426.5" cy="36" opacity=".108" rx="350.5" ry="119"></ellipse>
+                <ellipse cx="396.505" cy="-24.524" opacity=".426" rx="350.5" ry="119"></ellipse>
+              </g>
+            </g>
+            <g transform="translate(682 243)">
+              <mask id="bb8-mask-14" fill="white"><use xlink:href="#bb8-path-13"></use></mask>
+              <use fill="#FFFFFF" xlink:href="#bb8-path-13"></use>
+              <g mask="url(#bb8-mask-14)">
+                <g transform="translate(-245 237)">
+                  <use fill="#D38328" stroke="#000" stroke-opacity=".255" stroke-width="2" mask="url(#bb8-mask-16)" xlink:href="#bb8-path-15"></use>
+                  <use fill="#3291B1" stroke="#000" stroke-opacity=".204" stroke-width="2" mask="url(#bb8-mask-18)" xlink:href="#bb8-path-17"></use>
+                  <use fill="#3291B1" stroke="#000" stroke-opacity=".204" stroke-width="2" mask="url(#bb8-mask-20)" xlink:href="#bb8-path-19"></use>
+                  <use fill="#70DDFF" stroke="#000" stroke-opacity=".204" stroke-width="2" mask="url(#bb8-mask-18)" xlink:href="#bb8-path-17"></use>
+                  <use fill="#70DDFF" stroke="#000" stroke-opacity=".204" stroke-width="2" mask="url(#bb8-mask-20)" xlink:href="#bb8-path-19"></use>
+                  <path fill="#FFFFFF" d="M366 0h26v83h-26z"></path>
+                  <path fill="#FFFFFF" d="M229 0h43v83h-43z"></path>
+                  <path fill="#FFFFFF" d="M412 0h300v83H412z"></path>
+                  <path fill="#FFFFFF" d="M758 0h-16v83h16z"></path>
+                  <path fill="#FFFFFF" d="M788 0h-16v83h16z"></path>
+                  <path fill="#FFFFFF" d="M818 0h-16v83h16z"></path>
+                  <path fill="#FFFFFF" d="M914 0h-52v83h52z"></path>
+                </g>
+                <g stroke="#000" stroke-opacity=".255" stroke-width="2" transform="translate(-206 21)">
+                  <use fill="#7F8D93" mask="url(#bb8-mask-22)" xlink:href="#bb8-path-21"></use>
+                  <use fill="#D38328" mask="url(#bb8-mask-24)" xlink:href="#bb8-path-23"></use>
+                </g>
+                <path stroke="#BDBDBD" stroke-width="5" d="M877.5 319.5h-915" stroke-linecap="square"></path>
+                <path stroke="#979797" stroke-width="5" d="M444.5 301.5h-247" stroke-linecap="square"></path>
+                <path fill="#979797" d="M425 292h22v11h-22z"></path>
+                <path fill="url(#bb8-linearGradient-25)" d="M26 306h1216v103H26z" transform="translate(-274 21)"></path>
+                <g transform="translate(248 251)">
+                  <circle cx="11" cy="18" r="11" fill="#878787"></circle>
+                  <path stroke="#8F8F8F" stroke-width="3" d="M18 36C8.06 36 0 27.94 0 18S8.06 0 18 0s18 8.06 18 18-8.06 18-18 18z"></path>
+                </g>
+                <ellipse cx="544.72" cy="78.573" fill="#EEEEEE" stroke="#000" stroke-opacity=".046" stroke-width="1.76" rx="78.213" ry="78.213" transform="translate(-274 69)"></ellipse>
+                <ellipse cx="60.72" cy="74.573" fill="#2F2F2F" opacity=".162" rx="60" ry="60" transform="translate(210 87)"></ellipse>
+                <ellipse cx="60.72" cy="60.573" fill="#2F2F2F" rx="60" ry="60" transform="translate(216 88)"></ellipse>
+                <ellipse cx="198.4" cy="129.853" stroke="#2F2F2F" stroke-width="8.8" rx="42.18" ry="40.628" transform="translate(210 87)"></ellipse>
+                <ellipse cx="198.4" cy="139.853" fill="#2E2E2E" opacity=".147" rx="28.16" ry="28.209" transform="translate(210 87)"></ellipse>
+                <ellipse cx="198.4" cy="129.853" fill="#2E2E2E" rx="28.16" ry="28.209" transform="translate(210 87)"></ellipse>
+                <ellipse cx="25.4" cy="25.853" fill="#484848" rx="25.38" ry="25.424" transform="translate(383 191)"></ellipse>
+                <ellipse cx="25.4" cy="25.853" fill="#333333" rx="22.49" ry="22.529" transform="translate(383 191)"></ellipse>
+                <ellipse cx="27.4" cy="24.853" fill="#232323" rx="20.545" ry="20.58" transform="translate(383 191)"></ellipse>
+                <circle cx="19.5" cy="15.5" r="2.5" fill="#FFFFFF" opacity=".684" transform="translate(383 191)"></circle>
+                <circle cx="29.5" cy="12.5" r="2.5" fill="#FFFFFF" opacity=".684" transform="translate(383 191)"></circle>
+                <circle cx="40.5" cy="20.5" r="3.5" fill="#FFFFFF" opacity=".684" transform="translate(383 191)"></circle>
+                <ellipse cx="54.36" cy="54.36" fill="#1C1C1C" rx="54.36" ry="54.36" transform="translate(216 88)"></ellipse>
+                <ellipse cx="28.147" cy="28.147" fill="#411414" rx="28.147" ry="28.147" transform="translate(242 114)"></ellipse>
+                <ellipse cx="28.517" cy="28.517" fill="#FF0006" opacity=".319" rx="16.517" ry="16.517" transform="translate(242 114)"></ellipse>
+                <ellipse cx="27.938" cy="27.938" fill="#FF0006" opacity=".319" rx="8.938" ry="8.938" transform="translate(242 114)"></ellipse>
+                <ellipse cx="28.697" cy="28.697" fill="#EEEEEE" opacity=".78" rx="2.697" ry="2.697" transform="translate(242 114)"></ellipse>
+              </g>
+              <path fill="#000" d="M264 370.683c244.5 0 241.808-41.645 241.808-41.645s13.634-2.917 14.683-7.156c4.91-19.82 7.51-40.528 7.51-61.835 0-27.7-4.397-54.39-12.542-79.43 0 0-154.306 36.086-271.986 36.086-111.143 0-224.65-53.27-224.65-53.27C6.678 193.3 0 225.905 0 260.046c0 21.157 2.565 41.724 7.405 61.415 1.764 7.177 19.336.646 21.69 7.576 2.355 6.93-9.596 41.645 234.905 41.645z" opacity=".05" mask="url(#bb8-mask-14)"></path>
+              <path fill="#FFFFFF" d="M229.805-46.964 582-92v419H403.965s19.035-115.037 0-189.275-174.16-184.69-174.16-184.69z" opacity=".229" mask="url(#bb8-mask-14)"></path>
+            </g>
+          </g>
+        </g>
+      </g>
+    </g>
+  </svg>
+</section>

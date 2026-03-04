@@ -1,0 +1,7 @@
+{
+  "nodeIds": ["src/auth", "src/api", "src/shared", "src/ui", "src/scripts", "lib", "utils"],
+  "edgeCount": 6,
+  "driftEdgeCount": 1,
+  "driftEdgeSource": "src/auth",
+  "driftEdgeTarget": "src/api"
+}
