@@ -38,9 +38,11 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runPlaywrightTrace = runPlaywrightTrace;
+exports.runPlaywrightForRail = runPlaywrightForRail;
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const child_process_1 = require("child_process");
+const traceLogger_1 = require("./traceLogger");
 const STAGING_TRACES = ".arch-agent-staging/traces";
 function collectFailures(suites, tracesDir, traceId) {
     const failures = [];
@@ -66,8 +68,9 @@ function collectFailures(suites, tracesDir, traceId) {
     }
     return failures;
 }
-function runPlaywrightTrace(projectRoot, specPath, url) {
-    const tracesDir = path.join(projectRoot, STAGING_TRACES);
+function runPlaywrightTrace(projectRoot, specPath, url, workingDir) {
+    const cwd = workingDir ?? projectRoot;
+    const tracesDir = path.join(cwd, STAGING_TRACES);
     if (!fs.existsSync(path.dirname(tracesDir))) {
         fs.mkdirSync(path.dirname(tracesDir), { recursive: true });
     }
@@ -79,7 +82,7 @@ function runPlaywrightTrace(projectRoot, specPath, url) {
     const jsonOut = path.join(tracesDir, `${traceId}-results.json`);
     const args = ["playwright", "test", specPath, "--reporter=json"];
     const proc = (0, child_process_1.spawnSync)("npx", args, {
-        cwd: projectRoot,
+        cwd,
         encoding: "utf-8",
         env: {
             ...process.env,
@@ -124,5 +127,35 @@ function runPlaywrightTrace(projectRoot, specPath, url) {
         spec: specPath,
         failures,
         tracePath,
+    };
+}
+async function runPlaywrightForRail(railId, projectRoot, sandboxPath, specs, baseUrl) {
+    let allPassed = true;
+    const allFailures = [];
+    let lastTracePath = "";
+    for (const spec of specs) {
+        const result = runPlaywrightTrace(projectRoot, spec, baseUrl, sandboxPath);
+        allFailures.push(...result.failures);
+        if (!result.passed) {
+            allPassed = false;
+        }
+        lastTracePath = result.tracePath;
+        (0, traceLogger_1.emitTrace)({
+            role: "reviewer",
+            type: result.passed ? "info" : "error",
+            message: result.passed
+                ? `Playwright spec ${spec} passed for rail ${railId}`
+                : `Playwright spec ${spec} failed for rail ${railId}`,
+            railId,
+            metadata: {
+                filePath: spec,
+            },
+        });
+    }
+    return {
+        passed: allPassed,
+        spec: specs.join(", "),
+        failures: allFailures,
+        tracePath: lastTracePath,
     };
 }

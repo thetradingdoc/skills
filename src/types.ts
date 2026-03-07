@@ -76,12 +76,21 @@ export interface CriticViolation {
   recurrences?: number;
 }
 
+/** Acceptance criteria extracted from greenfield critic for rails and verification. */
+export interface GreenfieldAcceptanceCriteria {
+  functional: string[];
+  visual: string[];
+  architectural: string[];
+}
+
 /** Full critic output, including structured violations. */
 export interface CriticResult {
   approved: boolean;
   score: number;
   report: string;
   violations: CriticViolation[];
+  /** Greenfield: criteria to persist on rail and use for Playwright spec generation. */
+  acceptanceCriteria?: GreenfieldAcceptanceCriteria;
 }
 
 /** Aggregated violation state for a node, for display on the canvas. */

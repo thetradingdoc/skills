@@ -54,6 +54,7 @@ const retriever_1 = require("./retriever");
 const tools_1 = require("./tools");
 const toolExec = __importStar(require("./tools"));
 const graphCommandMatcher_1 = require("./graphCommandMatcher");
+const context_1 = require("../agent/rail/context");
 const VALID_LAYERS = [
     "Presentation",
     "Business Logic",
@@ -756,7 +757,7 @@ IMPORTANT: You have fulfilled the skill creation for this request.
             return { result: `Unknown tool: ${toolName}` };
     }
 }
-async function askAboutArchitecture(question, graph, nodeId, history, apiKey, findings, rootPath, jiraConfig, jiraProjectKey) {
+async function askAboutArchitecture(question, graph, nodeId, history, apiKey, findings, rootPath, jiraConfig, jiraProjectKey, rail) {
     const key = apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
     if (!key) {
         return {
@@ -766,6 +767,10 @@ async function askAboutArchitecture(question, graph, nodeId, history, apiKey, fi
     const client = new sdk_1.default({ apiKey: key });
     const allFindings = findings ?? [];
     const basePath = rootPath ?? graph.projectRoot;
+    const hist = history ?? [];
+    const railContext = rail && rail.logicPath?.length
+        ? (0, context_1.buildRailContext)(rail, hist, 500)
+        : [];
     const route = (0, questionRouter_1.routeQuestion)(question, graph, allFindings, nodeId, history);
     // Pre-resolve possible navigation targets from the query
     const matchResult = (0, graphCommandMatcher_1.matchQueryToGraph)(question, graph);
@@ -827,17 +832,26 @@ async function askAboutArchitecture(question, graph, nodeId, history, apiKey, fi
             `\n\n[Navigation intent detected but no nodes matched "${question}". ` +
                 "If you cannot confidently identify modules, use graphCommand.action=\"reset\".]";
     }
-    const messages = [
-        { role: "user", content: contextText },
-    ];
+    // Inject rail context (outcome, state, logic path, session digest) into the system prompt.
+    const railSystemContent = railContext
+        .filter((h) => h.role === "system")
+        .map((h) => h.content)
+        .join("\n\n");
     // Inject any system messages from history (e.g. Librarian skill code) into the system prompt.
     const systemFromHistory = (history ?? [])
         .filter((h) => h.role === "system")
         .map((h) => h.content)
         .join("\n\n");
-    const systemPrompt = systemFromHistory.length > 0
-        ? systemFromHistory + "\n\n" + buildSystemPrompt(graph)
+    const systemParts = [railSystemContent, systemFromHistory].filter(Boolean).join("\n\n");
+    const systemPrompt = systemParts.length > 0
+        ? systemParts + "\n\n" + buildSystemPrompt(graph)
         : buildSystemPrompt(graph);
+    // Prepend rail session turns as prior messages (user/assistant) so Claude sees the rail context.
+    const railPriorTurns = railContext.filter((h) => h.role === "user" || h.role === "assistant");
+    const messages = [
+        ...railPriorTurns,
+        { role: "user", content: contextText },
+    ];
     const MAX_STEPS = 6;
     let finalAnswer = "";
     let finalGraphCommand;

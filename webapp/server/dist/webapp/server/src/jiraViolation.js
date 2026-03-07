@@ -43,7 +43,7 @@ router.post("/jira-violation", requireUser, async (req, res) => {
     const config = await getUserJiraConfig(req.user.id);
     if (!config) {
         res.status(400).json({
-            error: "Jira not connected. Click Connect Jira above to connect your account.",
+            error: "Jira is not connected. Use the Governance panel to connect your Jira account in the web app.",
         });
         return;
     }
@@ -136,7 +136,7 @@ router.post("/jira-violation", requireUser, async (req, res) => {
     const summary = `[ARCH] ${summaryBase}: ${pathPart}`;
     const modulePath = archModulePath ?? vSourceNodeId;
     const moduleFiles = Array.isArray(archModuleFiles) ? archModuleFiles : [];
-    const fingerprint = modulePath && moduleFiles.length >= 0
+    const fingerprint = modulePath && moduleFiles.length > 0
         ? computeModuleFingerprint(modulePath, moduleFiles)
         : null;
     const descriptionLines = [

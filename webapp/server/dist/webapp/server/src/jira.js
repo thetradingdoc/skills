@@ -43,7 +43,7 @@ router.get("/jira-projects", requireUser, async (req, res) => {
         const config = await getUserJiraConfig(req.user.id);
         if (!config) {
             res.status(400).json({
-                error: "Jira not connected. Click Connect Jira above to connect your account.",
+                error: "Jira is not connected. Use the Governance panel to connect your Jira account in the web app.",
             });
             return;
         }
@@ -71,7 +71,7 @@ router.get("/jira-issues", requireUser, async (req, res) => {
         const config = await getUserJiraConfig(req.user.id);
         if (!config) {
             res.status(400).json({
-                error: "Jira not connected. Click Connect Jira above to connect your account.",
+                error: "Jira is not connected. Use the Governance panel to connect your Jira account in the web app.",
             });
             return;
         }
@@ -125,7 +125,7 @@ router.post("/jira-add-label", requireUser, async (req, res) => {
     try {
         const config = await getUserJiraConfig(req.user.id);
         if (!config) {
-            res.status(400).json({ error: "Jira not connected. Click Connect Jira above to connect your account." });
+            res.status(400).json({ error: "Jira is not connected. Use the Governance panel to connect your Jira account in the web app." });
             return;
         }
         const { issueKey, label } = req.body;

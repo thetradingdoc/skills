@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
-import { getActiveViolations } from "./violationStore.js";
+import { getActiveViolations, runViolationScan } from "./violationStore.js";
+import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
 const router = Router();
+/** 60s cooldown per workspace to prevent abuse of POST /violations/scan */
+const scanCooldowns = new Map();
 router.get("/violations", requireUser, async (req, res) => {
     if (!supabaseAdmin) {
         res.status(503).json({ error: "Auth service not configured." });
@@ -45,6 +48,57 @@ router.get("/violations", requireUser, async (req, res) => {
     }
     catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+});
+/** Trigger a violation re-scan for a workspace (loads latest graph, extracts layer + drift, upserts with markAbsent). */
+router.post("/violations/scan", requireUser, async (req, res) => {
+    if (!supabaseAdmin) {
+        res.status(503).json({ error: "Auth service not configured." });
+        return;
+    }
+    const workspaceId = req.body?.workspaceId?.trim();
+    if (!workspaceId) {
+        res.status(400).json({ error: "workspaceId is required" });
+        return;
+    }
+    const { data: ws } = await supabaseAdmin
+        .from("workspaces")
+        .select("id")
+        .eq("id", workspaceId)
+        .eq("owner_id", req.user.id)
+        .single();
+    if (!ws) {
+        res.status(403).json({ error: "Access denied." });
+        return;
+    }
+    const last = scanCooldowns.get(workspaceId) ?? 0;
+    if (Date.now() - last < 60_000) {
+        res.status(429).json({ error: "Scan cooldown: wait 60s between scans." });
+        return;
+    }
+    scanCooldowns.set(workspaceId, Date.now());
+    const { data: graphRow, error: gErr } = await supabaseAdmin
+        .from("graphs")
+        .select("graph_json")
+        .eq("workspace_id", workspaceId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    if (gErr || !graphRow?.graph_json) {
+        res.status(404).json({
+            error: gErr?.message ?? "No graph saved for this workspace.",
+        });
+        return;
+    }
+    try {
+        const graph = graphRow.graph_json;
+        await runViolationScan(supabaseAdmin, workspaceId, graph, ARCH_RULESET_VERSION);
+        res.json({ success: true });
+    }
+    catch (err) {
+        res.status(500).json({
+            error: err instanceof Error ? err.message : "Violation scan failed",
+        });
     }
 });
 router.post("/violations/:id/dismiss", requireUser, async (req, res) => {

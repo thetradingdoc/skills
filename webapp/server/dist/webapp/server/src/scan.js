@@ -4,9 +4,12 @@ import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { optionalUser } from "./middleware/optionalUser.js";
+import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { embedAndPersistNodes } from "../../../src/ai/nodeEmbeddings.js";
 import { deriveProjectKey } from "./utils/deriveProjectKey.js";
+import { runViolationScan } from "./violationStore.js";
+import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = process.env.PROJECT_ROOT?.trim() ||
     path.resolve(__dirname, "../../..");
@@ -173,6 +176,10 @@ router.post("/scan", optionalUser, async (req, res) => {
                         console.warn("[scan] node_embeddings failed:", e instanceof Error ? e.message : e);
                     }
                 });
+                // Fire-and-forget: violation re-scan from graph (layer + drift)
+                runViolationScan(supabaseAdmin, workspaceId, graph, ARCH_RULESET_VERSION).catch((e) => {
+                    console.warn("[scan] violation scan failed:", e instanceof Error ? e.message : e);
+                });
             }
             catch (e) {
                 persistError = e?.message ? String(e.message) : String(e);
@@ -211,6 +218,70 @@ router.post("/scan", optionalUser, async (req, res) => {
             message = err.message;
         }
         res.status(500).json({ error: message || "Scan failed" });
+    }
+});
+/** Re-scan workspace — fetches repo_url from latest graph, re-runs scan, updates graph. */
+router.post("/scan/refresh", requireUser, async (req, res) => {
+    if (!supabaseAdmin) {
+        res.status(503).json({ error: "Auth service not configured." });
+        return;
+    }
+    const ownerId = req.user.id;
+    const { workspaceId } = req.body;
+    if (!workspaceId || typeof workspaceId !== "string") {
+        res.status(400).json({ error: "workspaceId is required." });
+        return;
+    }
+    const { data: ws, error: wsErr } = await supabaseAdmin
+        .from("workspaces")
+        .select("id")
+        .eq("id", workspaceId)
+        .eq("owner_id", ownerId)
+        .single();
+    if (wsErr || !ws) {
+        res.status(404).json({ error: "Workspace not found or access denied." });
+        return;
+    }
+    const { data: graphRow, error: gErr } = await supabaseAdmin
+        .from("graphs")
+        .select("repo_url")
+        .eq("workspace_id", workspaceId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    if (gErr || !graphRow?.repo_url) {
+        res.status(404).json({ error: "No graph or repo_url for this workspace." });
+        return;
+    }
+    const repoUrl = graphRow.repo_url.trim();
+    if (!repoUrl.match(/github\.com[/:]/i)) {
+        res.status(400).json({ error: "Workspace repo_url is not a GitHub URL." });
+        return;
+    }
+    try {
+        const result = execFileSync("npx", ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep"], { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } });
+        const graph = JSON.parse(result);
+        const { error: insErr } = await supabaseAdmin.from("graphs").insert({
+            workspace_id: workspaceId,
+            graph_json: graph,
+            repo_url: repoUrl,
+        });
+        if (insErr)
+            throw insErr;
+        embedAndPersistNodes(graph, workspaceId, supabaseAdmin, process.env.OPENAI_API_KEY?.trim()).catch(() => { });
+        runViolationScan(supabaseAdmin, workspaceId, graph, ARCH_RULESET_VERSION).catch(() => { });
+        res.json({ ...graph, workspaceId });
+    }
+    catch (err) {
+        const spawnErr = err;
+        let message = "Re-scan failed";
+        if (spawnErr.code === "ENOENT")
+            message = "Cannot find npx.";
+        else if (spawnErr.stderr)
+            message = Buffer.isBuffer(spawnErr.stderr) ? spawnErr.stderr.toString("utf-8").trim() : String(spawnErr.stderr);
+        else if (err instanceof Error)
+            message = err.message;
+        res.status(500).json({ error: message });
     }
 });
 export { router as scanRoutes };

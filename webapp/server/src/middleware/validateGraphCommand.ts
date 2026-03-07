@@ -30,8 +30,8 @@ function validateNodeId(id: string): string | null {
 }
 
 type ValidationResult =
-  | { valid: true; command: Record<string, unknown> }
-  | { valid: false; error: string };
+  | { valid: true; command: Record<string, unknown>; error?: undefined }
+  | { valid: false; command?: undefined; error: string };
 
 function validateGraphCommand(raw: unknown): ValidationResult {
   if (!raw || typeof raw !== "object") return { valid: false, error: "graphCommand must be an object" };

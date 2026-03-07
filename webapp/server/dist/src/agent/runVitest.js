@@ -41,8 +41,9 @@ exports.runVitest = runVitest;
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const child_process_1 = require("child_process");
-function runVitest(projectRoot, pattern) {
-    const jsonFile = path.join(projectRoot, ".arch-agent-staging", "vitest-results.json");
+function runVitest(projectRoot, pattern, workingDir) {
+    const cwd = workingDir ?? projectRoot;
+    const jsonFile = path.join(cwd, ".arch-agent-staging", "vitest-results.json");
     const stagingDir = path.dirname(jsonFile);
     if (!fs.existsSync(stagingDir)) {
         fs.mkdirSync(stagingDir, { recursive: true });
@@ -51,7 +52,7 @@ function runVitest(projectRoot, pattern) {
     if (pattern)
         args.push("--testNamePattern", pattern);
     const proc = (0, child_process_1.spawnSync)("npx", args, {
-        cwd: projectRoot,
+        cwd,
         encoding: "utf-8",
         maxBuffer: 10 * 1024 * 1024,
     });
@@ -66,7 +67,7 @@ function runVitest(projectRoot, pattern) {
         const results = parsed?.testResults ?? parsed?.results;
         if (Array.isArray(results)) {
             for (const file of results) {
-                const filePath = path.relative(projectRoot, file.name);
+                const filePath = path.relative(cwd, file.name);
                 for (const t of file.assertionResults ?? []) {
                     total++;
                     if (t.status === "passed")

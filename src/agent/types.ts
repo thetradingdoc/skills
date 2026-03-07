@@ -9,6 +9,13 @@ import type { NodeLayer } from "../types";
 export type RailId = string;
 export type TaskId = string;
 
+export type GreenfieldArchetype =
+  | "saas-web-app"
+  | "api-service"
+  | "data-pipeline"
+  | "monolith-split"
+  | "unknown";
+
 export type RailTrigger =
   | { source: "governance"; violationId: string }
   | { source: "chat"; userMessage: string; sessionId: string }
@@ -107,6 +114,10 @@ export interface Rail {
   updatedAt: number;
   createdBy: "agent" | "human";
   sessionId: string;
+  /** Human-readable "why this rail exists" for Board; derived from trigger/question. */
+  originSummary?: string;
+  /** Optional link to chat message that created this rail. */
+  originMessageId?: string;
   snapshotPath?: string;
   traces?: AgentTrace[];
   telemetry?: RailTelemetry;
@@ -120,6 +131,14 @@ export interface Rail {
     createdAt: number;
     attempt?: number;
     totalAttempts?: number;
+    criticScore?: number;
+    violations?: Array<{ type: string; severity: string; description: string }>;
+  };
+  /** Greenfield: acceptance criteria for design phase and verification specs. */
+  acceptanceCriteria?: {
+    functional: string[];
+    visual: string[];
+    architectural: string[];
   };
 }
 

@@ -19,6 +19,8 @@ import { shareRoutes } from "./shareRoutes.js";
 import { metricsRoutes } from "./metrics.js";
 import { taskRoutes } from "./taskRoutes.js";
 import { violationsRoutes } from "./violations.js";
+import { railsRoutes } from "./railsRoutes.js";
+import { greenfieldRoutes } from "./greenfieldRoutes.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../client/dist");
 if (!fs.existsSync(distPath)) {
@@ -46,6 +48,8 @@ app.use("/api", workspaceRoutes);
 app.use("/api", shareRoutes);
 app.use("/api", metricsRoutes);
 app.use("/api", taskRoutes);
+app.use("/api", railsRoutes);
+app.use("/api", greenfieldRoutes);
 app.get("/health", (_req, res) => {
     res.json({ ok: true });
 });

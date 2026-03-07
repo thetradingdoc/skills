@@ -45,6 +45,8 @@ exports.createEmptySession = createEmptySession;
 exports.bumpSessionUsage = bumpSessionUsage;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const traceLogger_1 = require("./traceLogger");
+const telemetry_1 = require("./rail/telemetry");
 const SESSION_FILE = ".arch-agent-session.json";
 function getSessionPath(projectRoot) {
     return path.join(projectRoot, SESSION_FILE);
@@ -86,11 +88,18 @@ function bumpSessionUsage(projectRoot, delta) {
     const session = loadSession(projectRoot);
     if (!session)
         return;
+    const ctx = (0, traceLogger_1.getTraceContext)();
     if (typeof delta.tokenUsage === "number" && Number.isFinite(delta.tokenUsage)) {
         session.tokenUsage += delta.tokenUsage;
+        if (ctx.railId) {
+            (0, telemetry_1.recordTokens)(ctx.railId, delta.tokenUsage);
+        }
     }
     if (typeof delta.llmCallCount === "number" && Number.isFinite(delta.llmCallCount)) {
         session.llmCallCount += delta.llmCallCount;
+        if (ctx.railId) {
+            (0, telemetry_1.recordLlmCall)(ctx.railId);
+        }
     }
     saveSession(projectRoot, session);
 }

@@ -8,6 +8,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { ArchGraph, ContractFinding, CriticResult, CriticViolation } from "../types";
 import type { GraphCommand } from "../types";
 import { LAYER_ORDER as CANONICAL_LAYERS } from "../architecture/layerModel";
+import {
+  getGreenfieldCriticSystemSnippet,
+} from "../agent/rail/greenfieldCriticPlaybook";
+import { getAntiPatternWarnings } from "../agent/rail/manager";
 
 export const ARCH_RULESET_VERSION = "v1";
 
@@ -175,10 +179,10 @@ Do not include any additional fields. Do not wrap the JSON in markdown.`;
 }
 
 function buildProposedGraph(graphCommands: GraphCommand[] | GraphCommand | undefined): {
-  nodes: Array<{ id: string; layer?: string }>;
+  nodes: Array<{ id: string; layer?: string; label?: string }>;
   edges: Array<{ source: string; target: string }>;
 } {
-  const nodes: Array<{ id: string; layer?: string }> = [];
+  const nodes: Array<{ id: string; layer?: string; label?: string }> = [];
   const edges: Array<{ source: string; target: string }> = [];
   const cmds = graphCommands
     ? Array.isArray(graphCommands)
@@ -187,7 +191,11 @@ function buildProposedGraph(graphCommands: GraphCommand[] | GraphCommand | undef
     : [];
   for (const cmd of cmds) {
     if (cmd.action === "create_node") {
-      nodes.push({ id: cmd.id, layer: cmd.layer });
+      nodes.push({
+        id: cmd.id,
+        layer: cmd.layer,
+        label: "label" in cmd && typeof cmd.label === "string" ? cmd.label : undefined,
+      });
     }
     if (cmd.action === "connect") {
       edges.push({ source: cmd.fromId, target: cmd.toId });
@@ -258,6 +266,43 @@ function checkLayering(
   return violations;
 }
 
+function checkGreenfieldCollisions(
+  proposedNodes: Array<{ id: string; layer?: string }>,
+  existingGraph: ArchGraph | null | undefined
+): CriticViolation[] {
+  if (!existingGraph?.nodes?.length) return [];
+  const existingIds = new Set(existingGraph.nodes.map((n) => n.id));
+  const existingLabels = new Set(
+    existingGraph.nodes.map((n) => (n.suggestedLabel ?? n.label ?? "").toLowerCase().trim()).filter(Boolean)
+  );
+  const violations: CriticViolation[] = [];
+  for (const n of proposedNodes) {
+    if (existingIds.has(n.id)) {
+      violations.push({
+        type: "layer_violation",
+        severity: "high",
+        sourceNodeId: n.id,
+        description: `Proposed node id "${n.id}" already exists in the graph. Choose a different id or remove the existing module first.`,
+        suggestedFix: "Rename the proposed node or remove the existing one from the design.",
+      });
+    }
+    const label = "label" in n ? (n as { label?: string }).label : undefined;
+    if (typeof label === "string" && label.trim()) {
+      const lower = label.toLowerCase().trim();
+      if (existingLabels.has(lower)) {
+        violations.push({
+          type: "layer_violation",
+          severity: "high",
+          sourceNodeId: n.id,
+          description: `Proposed label "${label}" conflicts with an existing node. Use a distinct name.`,
+          suggestedFix: "Rename the proposed node to avoid collision.",
+        });
+      }
+    }
+  }
+  return violations;
+}
+
 export async function reviewGreenfieldAnswer(params: {
   question: string;
   answer: string;
@@ -265,8 +310,13 @@ export async function reviewGreenfieldAnswer(params: {
   graphCommand?: GraphCommand;
   apiKey?: string;
   apiKeyClaude?: string;
+  /** When provided, proposed node ids/labels are checked for collision with existing graph. */
+  existingGraph?: ArchGraph | null;
+  /** When provided with archetype, loads anti-patterns and injects into critic prompt. */
+  rootPath?: string | null;
+  archetype?: string | null;
 }): Promise<CriticResult> {
-  const { question, answer, graphCommands, graphCommand, apiKey, apiKeyClaude } = params;
+  const { question, answer, graphCommands, graphCommand, apiKey, apiKeyClaude, existingGraph, rootPath, archetype } = params;
   const commands = graphCommands ?? (graphCommand ? [graphCommand] : []);
   const { nodes, edges } = buildProposedGraph(commands);
 
@@ -323,6 +373,15 @@ export async function reviewGreenfieldAnswer(params: {
       violations: layerViolations,
     };
   }
+  const collisionViolations = checkGreenfieldCollisions(nodes, existingGraph);
+  if (collisionViolations.length > 0) {
+    return {
+      approved: false,
+      score: 4,
+      report: `Collision with existing graph: ${collisionViolations.map((v) => v.description).join("; ")}`,
+      violations: collisionViolations,
+    };
+  }
   const openai = getOpenAIClient(apiKey);
   const anthropicKey = getAnthropicKey(apiKeyClaude);
   if ((!openai && !anthropicKey) || nodes.length === 0) {
@@ -335,7 +394,14 @@ export async function reviewGreenfieldAnswer(params: {
   }
   const graphSummary = nodes.map((n) => `- ${n.id} (${n.layer})`).join("\n");
   const edgeSummary = edges.map((e) => `  ${e.source} → ${e.target}`).join("\n");
-  const prompt = `You are a senior software architect reviewing a greenfield design.
+  const antiWarnings =
+    rootPath && rootPath.trim()
+      ? getAntiPatternWarnings(rootPath, archetype ?? undefined)
+      : [];
+  const playbookSnippet = getGreenfieldCriticSystemSnippet(antiWarnings);
+  const prompt = `${playbookSnippet}
+
+You are a senior software architect reviewing a greenfield design. Apply the playbook rules above.
 
 Question: ${question}
 
@@ -349,9 +415,19 @@ Proposed edges:
 ${edgeSummary || "(none)"}
 
 Evaluate for coherence: Are responsibilities clear? Is layering sensible? Are dependencies logical?
-Respond with STRICT JSON:
-{ "approved": boolean, "score": 1-10, "report": "one paragraph", "violations": [] }
-No markdown.`;
+Extract acceptance criteria the design should satisfy (functional, visual, architectural).
+Respond with STRICT JSON only, no markdown:
+{
+  "approved": boolean,
+  "score": 1-10,
+  "report": "one paragraph",
+  "violations": [],
+  "acceptanceCriteria": {
+    "functional": ["criterion 1", "criterion 2"],
+    "visual": ["criterion 1"],
+    "architectural": ["criterion 1"]
+  }
+}`;
   try {
     const raw = (await callCriticLLM(prompt, apiKey, apiKeyClaude)) ?? "{}";
     const cleaned = raw.replace(/```json|```/g, "").trim();
@@ -362,7 +438,21 @@ No markdown.`;
     const report =
       typeof parsed.report === "string" ? parsed.report : approved ? "APPROVED" : "Not approved.";
     const violations = Array.isArray(parsed.violations) ? parsed.violations : [];
-    return { approved, score, report, violations };
+    const acceptanceCriteria =
+      parsed.acceptanceCriteria &&
+      typeof parsed.acceptanceCriteria === "object" &&
+      Array.isArray(parsed.acceptanceCriteria.functional)
+        ? {
+            functional: parsed.acceptanceCriteria.functional.filter((s: unknown) => typeof s === "string"),
+            visual: Array.isArray(parsed.acceptanceCriteria.visual)
+              ? parsed.acceptanceCriteria.visual.filter((s: unknown) => typeof s === "string")
+              : [],
+            architectural: Array.isArray(parsed.acceptanceCriteria.architectural)
+              ? parsed.acceptanceCriteria.architectural.filter((s: unknown) => typeof s === "string")
+              : [],
+          }
+        : undefined;
+    return { approved, score, report, violations, acceptanceCriteria };
   } catch {
     return {
       approved: true,

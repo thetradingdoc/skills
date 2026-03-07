@@ -372,6 +372,9 @@ export function failRail(rootPath: string, railId: RailId, reason: string): Rail
       archetype: updated.archetype ?? null,
       logicPath: updated.logicPath,
       reason,
+      lastCritique: updated.lastCritique ?? null,
+      violations:
+        updated.lastCritique?.violations ?? [],
     };
     const tmp = `${file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(anti, null, 2), "utf8");
@@ -506,6 +509,7 @@ export function updateRailPartial(
       | "intentSummary"
       | "intentDriftScore"
       | "lastCritique"
+      | "acceptanceCriteria"
     >
   >
 ): Rail | null {

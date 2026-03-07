@@ -40,11 +40,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.runLint = runLint;
 const path = __importStar(require("path"));
 const child_process_1 = require("child_process");
-function runLint(projectRoot, paths) {
+function runLint(projectRoot, paths, workingDir) {
     const errors = [];
     // Try tsc first (catches type errors)
     const tscProc = (0, child_process_1.spawnSync)("npx", ["tsc", "--noEmit", "--pretty", "false"], {
-        cwd: projectRoot,
+        cwd: workingDir ?? projectRoot,
         encoding: "utf-8",
         maxBuffer: 4 * 1024 * 1024,
     });
@@ -73,7 +73,7 @@ function runLint(projectRoot, paths) {
     // Try ESLint if configured
     const lintPaths = paths?.length ? paths : ["src"];
     const eslintProc = (0, child_process_1.spawnSync)("npx", ["eslint", ...lintPaths, "--format", "json"], {
-        cwd: projectRoot,
+        cwd: workingDir ?? projectRoot,
         encoding: "utf-8",
         maxBuffer: 4 * 1024 * 1024,
     });
@@ -81,7 +81,7 @@ function runLint(projectRoot, paths) {
     if (eslintProc.stdout) {
         try {
             const out = JSON.parse(eslintProc.stdout);
-            const root = path.resolve(projectRoot);
+            const root = path.resolve(workingDir ?? projectRoot);
             for (const file of out) {
                 const rel = path.relative(root, path.isAbsolute(file.filePath) ? file.filePath : path.join(root, file.filePath)).replace(/\\/g, "/");
                 for (const m of file.messages) {

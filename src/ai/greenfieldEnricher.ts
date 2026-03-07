@@ -12,6 +12,22 @@ import { validateGraphCommand, VALID_LAYERS } from "./validateGraphCommand";
 export type { GraphCommandValidationResult } from "./validateGraphCommand";
 export { validateGraphCommand } from "./validateGraphCommand";
 
+export type GreenfieldArchetype =
+  | "saas-web-app"
+  | "api-service"
+  | "data-pipeline"
+  | "monolith-split"
+  | "greenfield-materialize";
+
+export function inferGreenfieldArchetype(question: string): GreenfieldArchetype {
+  const q = question.toLowerCase();
+  if (/saas|web app|full.?stack|frontend|react|vue|angular|spa/i.test(q)) return "saas-web-app";
+  if (/api service|rest api|graphql|microservice|backend only/i.test(q)) return "api-service";
+  if (/data pipeline|etl|ingestion|streaming|batch processing/i.test(q)) return "data-pipeline";
+  if (/monolith|split|modularize|extract module/i.test(q)) return "monolith-split";
+  return "greenfield-materialize";
+}
+
 export type GreenfieldAskResult = {
   answer: string;
   /** Multiple create_node/connect commands per turn */

@@ -132,6 +132,8 @@ async function runTaskAtIndex(plan, taskIndex, rootPath, opts) {
             errorOutput: currentError,
             projectRoot: rootPath,
             apiKey: opts.apiKey,
+            rail: opts?.rail,
+            railHistory: opts?.railHistory,
         });
         if (llmResult.type === "no_api_key") {
             return {

@@ -4,6 +4,7 @@
  * Per-session limit, 80% warning, hard stop, extend mechanic.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.TIER2_FRACTION = void 0;
 exports.getTokenUsage = getTokenUsage;
 exports.getTokenBudget = getTokenBudget;
 exports.addTokenUsage = addTokenUsage;
@@ -16,6 +17,7 @@ const TOKEN_BUDGET_DEFAULT = 100_000;
 const WARNING_THRESHOLD = 0.8;
 const EXTEND_DEFAULT = 20_000;
 const CEILING = 500_000;
+exports.TIER2_FRACTION = 0.8;
 let tokenUsage = 0;
 let budget = TOKEN_BUDGET_DEFAULT;
 function getTokenUsage() {

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
 import { isValidProjectKey } from "./utils/deriveProjectKey.js";
 
 const router = Router();
@@ -148,12 +149,14 @@ router.get("/workspaces/:workspaceId/memories", requireUser, async (req, res) =>
     return;
   }
 
+  const limitParam = Math.min(parseInt(String(req.query.limit ?? 50), 10) || 50, 200);
   let query = supabaseAdmin
     .from("workspace_memories")
     .select("id, workspace_id, node_id, content, memory_type, created_at")
     .eq("workspace_id", workspaceId)
+    .is("superseded_at", null)
     .order("created_at", { ascending: false })
-    .limit(50);
+    .limit(limitParam);
 
   if (nodeId) {
     query = query.eq("node_id", nodeId);
@@ -165,6 +168,167 @@ router.get("/workspaces/:workspaceId/memories", requireUser, async (req, res) =>
     return res.status(500).json({ error: error.message });
   }
   return res.json({ memories: data ?? [] });
+});
+
+/** Update a workspace memory (content only). User must own workspace. */
+router.patch("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  const memoryId = req.params.memoryId;
+
+  if (!workspaceId || !memoryId) {
+    res.status(400).json({ error: "workspaceId and memoryId are required" });
+    return;
+  }
+
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : undefined;
+  if (content === undefined) {
+    res.status(400).json({ error: "content is required" });
+    return;
+  }
+  if (content.length > 5000) {
+    res.status(400).json({ error: "content must be at most 5000 characters" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_memories")
+    .update({ content })
+    .eq("id", memoryId)
+    .eq("workspace_id", workspaceId)
+    .select("id, workspace_id, node_id, content, memory_type, created_at")
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+  if (!data) {
+    return res.status(404).json({ error: "Memory not found" });
+  }
+  return res.json({ memory: data });
+});
+
+/** Create a workspace memory (user-explicit "remember this"). */
+router.post("/workspaces/:workspaceId/memories", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  const content = typeof req.body?.content === "string" ? req.body.content.trim() : undefined;
+  const nodeId = (typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : undefined) || null;
+  const supersedesId = (typeof req.body?.supersedesId === "string" ? req.body.supersedesId.trim() : undefined) || null;
+
+  if (!workspaceId || !content) {
+    res.status(400).json({ error: "workspaceId and content are required" });
+    return;
+  }
+  if (content.length > 5000) {
+    res.status(400).json({ error: "content must be at most 5000 characters" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  if (supersedesId) {
+    await supabaseAdmin
+      .from("workspace_memories")
+      .update({ superseded_at: new Date().toISOString() })
+      .eq("id", supersedesId)
+      .eq("workspace_id", workspaceId);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_memories")
+    .insert({
+      workspace_id: workspaceId,
+      node_id: nodeId || null,
+      content: content.slice(0, 5000),
+      memory_type: "user_saved",
+    })
+    .select("id, workspace_id, node_id, content, memory_type, created_at")
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: error.message });
+  }
+
+  const client = supabaseAdmin!;
+  setImmediate(() => {
+    maybePruneWorkspaceMemories(client, workspaceId).catch(() => {});
+  });
+
+  return res.status(201).json({ memory: data });
+});
+
+/** Delete a workspace memory. User must own workspace. */
+router.delete("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  const memoryId = req.params.memoryId;
+
+  if (!workspaceId || !memoryId) {
+    res.status(400).json({ error: "workspaceId and memoryId are required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data: deleted, error: delErr } = await supabaseAdmin
+    .from("workspace_memories")
+    .delete()
+    .eq("id", memoryId)
+    .eq("workspace_id", workspaceId)
+    .select("id");
+
+  if (delErr) {
+    return res.status(500).json({ error: delErr.message });
+  }
+  if (!deleted || deleted.length === 0) {
+    return res.status(404).json({ error: "Memory not found" });
+  }
+  return res.status(204).send();
 });
 
 /** Permanently delete a workspace and all associated data. */

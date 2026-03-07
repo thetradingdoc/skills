@@ -195,6 +195,40 @@ export async function getBlockingViolations(db, workspaceId, nodeIds) {
     }
     return Array.from(byId.values());
 }
+export async function getViolationSummariesByNode(db, workspaceId) {
+    const { data, error } = await db
+        .from("violations")
+        .select("source_node_id,severity,last_seen_at,structural_state,policy_state")
+        .eq("workspace_id", workspaceId);
+    if (error)
+        throw new Error(error.message);
+    const rows = data ?? [];
+    const summaries = {};
+    const order = ["low", "medium", "high", "critical"];
+    for (const r of rows) {
+        if (r.structural_state !== "active")
+            continue;
+        if (["resolved", "waived", "accepted"].includes(r.policy_state))
+            continue;
+        const nodeId = String(r.source_node_id);
+        const sev = String(r.severity || "medium");
+        const ts = r.last_seen_at ? Date.parse(r.last_seen_at) : undefined;
+        const existing = summaries[nodeId];
+        if (!existing) {
+            summaries[nodeId] = { highestSeverity: sev, count: 1, lastSeenAt: ts };
+        }
+        else {
+            existing.count += 1;
+            if (order.indexOf(sev) > order.indexOf(existing.highestSeverity)) {
+                existing.highestSeverity = sev;
+            }
+            if (ts && (!existing.lastSeenAt || ts > existing.lastSeenAt)) {
+                existing.lastSeenAt = ts;
+            }
+        }
+    }
+    return summaries;
+}
 /**
  * Build a human-readable governance notice for the agent given a set of node IDs.
  * This is designed to be injected into the system prompt or question context.
@@ -246,6 +280,53 @@ export async function markViolationTracked(db, violationId, jiraKey, jiraStatus 
         .from("violations")
         .update({ jira_key: jiraKey, jira_status: jiraStatus, policy_state: "tracked" })
         .eq("id", violationId);
+}
+/** Extract violations from a scanned graph (layer violations and drift from edges). */
+export function extractViolationsFromGraph(graph) {
+    const violations = [];
+    const nodes = graph.nodes ?? [];
+    const edges = graph.edges ?? [];
+    const nodeMap = new Map(nodes.map((n) => [n.id ?? "", n]));
+    for (const e of edges) {
+        const src = e.source ?? "";
+        const tgt = e.target ?? "";
+        const srcNode = nodeMap.get(src);
+        const tgtNode = nodeMap.get(tgt);
+        const srcLayer = srcNode?.layer ?? "?";
+        const tgtLayer = tgtNode?.layer ?? "?";
+        if (e.isLayerViolation) {
+            violations.push({
+                type: "layer_violation",
+                severity: "high",
+                sourceNodeId: src,
+                targetNodeId: tgt,
+                description: `${srcLayer} (${src}) should not depend on ${tgtLayer} (${tgt}). Lower layers depend on higher.`,
+                suggestedFix: "Invert the dependency or move the module to a higher layer.",
+            });
+        }
+        if (e.isDrift) {
+            violations.push({
+                type: "drift",
+                severity: "medium",
+                sourceNodeId: src,
+                targetNodeId: tgt,
+                description: e.driftReason ?? `${src} depends on ${tgt} (violates arch rules).`,
+                suggestedFix: "Remove the forbidden dependency or update the architecture rules.",
+            });
+        }
+    }
+    return violations;
+}
+/** Run a full violation scan: extract from graph, upsert with markAbsent, record snapshot. */
+export async function runViolationScan(db, workspaceId, graph, rulesVersion) {
+    const violations = extractViolationsFromGraph(graph);
+    await upsertViolations(db, {
+        workspaceId,
+        violations,
+        rulesVersion,
+        markAbsent: true,
+    });
+    await recordScanSnapshot(db, workspaceId, rulesVersion);
 }
 export async function recordScanSnapshot(db, workspaceId, rulesVersion) {
     const { data, error } = await db

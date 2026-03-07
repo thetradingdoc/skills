@@ -11,6 +11,7 @@ exports.callLLM = callLLM;
 const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const traceLogger_1 = require("./traceLogger");
 const sessionPersistence_1 = require("./sessionPersistence");
+const context_1 = require("./rail/context");
 const VALID_TOOLS = new Set(["write_file", "read_file"]);
 const CODE_WRITER_SYSTEM = `You are a code writer.
 
@@ -111,19 +112,40 @@ async function callLLM(context) {
     };
     try {
         const client = new sdk_1.default({ apiKey });
+        let system = CODE_WRITER_SYSTEM;
+        let messages = [{ role: "user", content: userMsg }];
+        if (context.rail) {
+            const railHistory = (0, context_1.buildRailContext)(context.rail, context.railHistory ?? [], 500);
+            const systemRail = `You are executing rail ${context.rail.id}.\n` +
+                `Frozen outcome: ${context.rail.frozenOutcome ?? context.rail.outcome}.\n` +
+                "Do not change the outcome; every step must move toward this outcome only.\n" +
+                "Do not introduce new goals, alter the specification, or expand scope beyond this rail.\n";
+            const systemMessages = railHistory
+                .filter((m) => m.role === "system")
+                .map((m) => m.content);
+            system = [systemRail, ...systemMessages, CODE_WRITER_SYSTEM]
+                .filter(Boolean)
+                .join("\n\n");
+            const priorTurns = railHistory.filter((m) => m.role === "user" || m.role === "assistant");
+            messages = [
+                ...priorTurns,
+                { role: "user", content: userMsg },
+            ];
+        }
         const response = await client.messages.create({
             model: "claude-sonnet-4-6",
             max_tokens: 8192,
             temperature: 0,
-            system: CODE_WRITER_SYSTEM,
+            system,
             tools: CODE_WRITER_TOOLS,
-            messages: [{ role: "user", content: userMsg }],
+            messages,
         });
         const usage = response.usage;
         const totalTokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
         if (context.projectRoot) {
             (0, sessionPersistence_1.bumpSessionUsage)(context.projectRoot, { tokenUsage: totalTokens, llmCallCount: 1 });
         }
+        (0, traceLogger_1.emitTrace)("llm_call", inputForTrace, { tokens: totalTokens }, "Code writer reasoning step");
         const toolUse = response.content.find((b) => b.type === "tool_use");
         if (toolUse) {
             const tool = toolUse.name;

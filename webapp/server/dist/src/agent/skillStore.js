@@ -150,10 +150,12 @@ function formatSkillSummary(rootPath, max = 20) {
         const rate = skill.usage_count
             ? `${(skill.success_rate * 100).toFixed(0)}%`
             : "n/a";
+        const flagged = skill.usage_count >= 5 && skill.success_rate < 0.4 ? " ⚠ LOW APPROVAL — consider refactor" : "";
         const tags = (skill.tags ?? []).join(", ");
         lines.push(`- ${skill.id} (${status}, used ${skill.usage_count}×, success ${rate})` +
             (tags ? ` [${tags}]` : "") +
-            (skill.description ? ` — ${skill.description}` : ""));
+            (skill.description ? ` — ${skill.description}` : "") +
+            flagged);
     }
     return lines.join("\n");
 }

@@ -51,6 +51,7 @@ const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const skillStore_1 = require("../agent/skillStore");
+const telemetry_1 = require("../agent/rail/telemetry");
 const client_1 = require("../jira/client");
 const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".mjs", ".cjs"]);
 const READ_FILE_MAX_CHARS = 3000;
@@ -238,6 +239,12 @@ function executeRunSkill(rootPath, skillId, args) {
             stdout && `stdout:\n${stdout}`,
             stderr && `stderr:\n${stderr}`,
         ].filter(Boolean);
+        const success = exitCode === 0;
+        // Persist per-skill usage into both the skill index and the rail telemetry
+        // so that plan_node can prefer higher-approval skills over time.
+        (0, skillStore_1.incrementUsage)(rootPath, skillId, success);
+        (0, telemetry_1.recordSkillUsage)(skillId, success);
+        (0, telemetry_1.saveSkillPerformance)(rootPath);
         return { result: outputParts.join("\n\n") || "Skill completed with no output." };
     }
     catch (err) {
@@ -377,7 +384,7 @@ async function executeJiraSearchByArchNodeId(_rootPath, archNodeId, maxResults =
             error: "archNodeId contains invalid characters. Use only letters, numbers, dash, underscore, slash, dot.",
         };
     }
-    const projectKey = (overrides?.projectKey ?? process.env.JIRA_PROJECT?.trim()) ?? "";
+    const projectKey = (overrides?.projectKey ?? "").trim();
     const label = `archNodeId:${archNodeId}`;
     const jqlBase = projectKey
         ? `project = ${projectKey} AND labels = '${label.replace(/'/g, "''")}'`

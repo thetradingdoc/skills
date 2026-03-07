@@ -125,6 +125,7 @@ function ArchNodeComponent({
 }: NodeProps<ArchNode & { isSelected: boolean }>) {
   const node = data;
   const isVirtual = (node as any).isVirtual === true;
+  const isVirtualError = (node as any).isVirtualError === true;
   const colors =
     LAYER_COLORS[(node.layer ?? "Uncategorized") as string] ??
     LAYER_COLORS["Uncategorized"];
@@ -215,7 +216,9 @@ function ArchNodeComponent({
           position: "relative",
           zIndex: 1,
           background: isVirtual
-            ? `repeating-linear-gradient(90deg,#a78bfa66 0,#a78bfa66 8px,transparent 8px,transparent 16px)`
+            ? isVirtualError
+              ? `repeating-linear-gradient(90deg,#f8514966 0,#f8514966 8px,transparent 8px,transparent 16px)`
+              : `repeating-linear-gradient(90deg,#a78bfa66 0,#a78bfa66 8px,transparent 8px,transparent 16px)`
             : `linear-gradient(90deg, ${colors.accent}88, ${colors.top}, ${colors.accent}88)`,
           borderRadius: "8px 8px 0 0",
         }}
@@ -360,13 +363,13 @@ function ArchNodeComponent({
           <div
             style={{
               fontSize: 8,
-              color: "#a78bfa",
+              color: isVirtualError ? "#f85149" : "#a78bfa",
               marginTop: 5,
               fontFamily: "monospace",
               letterSpacing: "0.05em",
             }}
           >
-            ◈ proposed
+            {isVirtualError ? "⚠ materialize failed" : "◈ proposed"}
           </div>
         )}
 
@@ -654,6 +657,8 @@ interface Props {
   }>;
   /** Proposed virtual edges between nodes. */
   proposedEdges?: Array<{ fromId: string; toId: string; edgeType?: string }>;
+  /** When materialize task failed, ghost nodes show error state (red border). */
+  ghostNodeStatus?: "ghost" | "error";
   /** Called when the user renames the workspace (card title). */
   onRenameWorkspace?: (name: string) => void;
   /** Called when the user clicks Share. Returns share URL or null. */
@@ -689,6 +694,7 @@ export function ArchCanvas({
   agentGraphCommand,
   proposedNodes,
   proposedEdges,
+  ghostNodeStatus,
   onRenameWorkspace,
   onShare,
   onSave,
@@ -880,6 +886,7 @@ export function ArchCanvas({
           : basePos
             ? { x: basePos.x + NODE_W + 24, y: basePos.y }
             : { x: 60, y: 80 };
+        const isError = ghostNodeStatus === "error";
         return {
           id: v.id,
           type: "arch",
@@ -900,11 +907,12 @@ export function ArchCanvas({
             isEntryPoint: false,
             depth: undefined,
             isVirtual: true,
+            isVirtualError: isError,
             isSelected: false,
           } as unknown as ArchNode & { isSelected: boolean },
           style: {
             background: "transparent",
-            border: "1px dashed #4b5563",
+            border: isError ? "1px dashed #f85149" : "1px dashed #4b5563",
             padding: 0,
             width: NODE_W,
             opacity: 1,
@@ -979,6 +987,7 @@ export function ArchCanvas({
     tracePathNodeIds,
     proposedNodes,
     proposedEdges,
+    ghostNodeStatus,
     setNodes,
     setEdges,
   ]);

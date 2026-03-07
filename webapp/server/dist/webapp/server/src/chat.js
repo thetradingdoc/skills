@@ -9,9 +9,10 @@ import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
 import { createTask, setTaskRunning, setTaskCompleted, setTaskFailed, isTaskCancelled, } from "./tasks.js";
 import { getUserJiraConfig } from "./jiraConfig.js";
 import { getWorkspaceProjectKey } from "./jira.js";
+import { saveDraft } from "./greenfieldDraft.js";
 const router = Router();
 router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-    const { question, graph, nodeId, history, workspaceId } = req.body;
+    const { question, graph, nodeId, history, workspaceId, greenfieldSessionId } = req.body;
     if (!question || typeof question !== "string") {
         res.status(400).json({ error: "question is required" });
         return;
@@ -217,12 +218,44 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
                 }
             })();
         }
+        if (mode === "greenfield" &&
+            greenfieldSessionId &&
+            typeof greenfieldSessionId === "string" &&
+            (result.graphCommands?.length || result.graphCommand)) {
+            const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
+            const nodes = [];
+            const edges = [];
+            for (const cmd of cmds) {
+                if (cmd.action === "create_node" && "id" in cmd) {
+                    nodes.push({
+                        id: cmd.id,
+                        label: cmd.label ?? cmd.id,
+                        layer: "layer" in cmd ? cmd.layer : undefined,
+                        description: "description" in cmd ? cmd.description : undefined,
+                        archNodeId: "archNodeId" in cmd ? cmd.archNodeId : undefined,
+                    });
+                }
+                if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
+                    edges.push({ source: cmd.fromId, target: cmd.toId });
+                }
+            }
+            if (nodes.length > 0 || edges.length > 0) {
+                try {
+                    saveDraft(greenfieldSessionId, { nodes, edges, workspaceId: workspaceId ?? undefined });
+                }
+                catch {
+                    // Non-fatal
+                }
+            }
+        }
         res.json({
             answer: result.answer,
             graphCommands: result.graphCommands,
             graphCommand: result.graphCommand,
             criticReport: result.criticReport,
             criticScore: result.criticScore,
+            acceptanceCriteria: result.acceptanceCriteria,
+            archetype: result.archetype,
             violations: (result.violations ?? []),
             relevantNodeIds: result.relevantNodeIds ?? undefined,
         });
@@ -236,7 +269,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
 });
 /** Async chat — returns 202 with taskId, client polls GET /api/tasks/:taskId */
 router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-    const { question, graph, nodeId, history } = req.body;
+    const { question, graph, nodeId, history, workspaceId, greenfieldSessionId } = req.body;
     if (!question || typeof question !== "string") {
         res.status(400).json({ error: "question is required" });
         return;
@@ -268,6 +301,23 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
     res.status(202).json({ taskId: task.taskId, status: "pending" });
     setTaskRunning(task.taskId);
     const findings = [];
+    let jiraConfig;
+    let jiraProjectKey;
+    if (req.user?.id) {
+        const userJira = await getUserJiraConfig(req.user.id);
+        if (userJira) {
+            jiraConfig = {
+                baseUrl: userJira.baseUrl,
+                email: userJira.email,
+                apiToken: userJira.apiToken,
+            };
+            jiraProjectKey =
+                (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ??
+                    userJira.project ??
+                    undefined;
+        }
+    }
+    const sessionIdForDraft = greenfieldSessionId;
     runArchitectureTask({
         question,
         graph,
@@ -278,16 +328,50 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         apiKeyClaude: process.env.ANTHROPIC_API_KEY,
         findings,
         rootPath,
+        jiraConfig,
+        jiraProjectKey: jiraProjectKey ?? undefined,
     })
         .then((result) => {
         if (isTaskCancelled(task.taskId))
             return;
+        if (mode === "greenfield" &&
+            sessionIdForDraft &&
+            typeof sessionIdForDraft === "string" &&
+            (result.graphCommands?.length || result.graphCommand)) {
+            const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
+            const nodes = [];
+            const edges = [];
+            for (const cmd of cmds) {
+                if (cmd.action === "create_node" && "id" in cmd) {
+                    nodes.push({
+                        id: cmd.id,
+                        label: cmd.label ?? cmd.id,
+                        layer: "layer" in cmd ? cmd.layer : undefined,
+                        description: "description" in cmd ? cmd.description : undefined,
+                        archNodeId: "archNodeId" in cmd ? cmd.archNodeId : undefined,
+                    });
+                }
+                if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
+                    edges.push({ source: cmd.fromId, target: cmd.toId });
+                }
+            }
+            if (nodes.length > 0 || edges.length > 0) {
+                try {
+                    saveDraft(sessionIdForDraft, { nodes, edges, workspaceId: workspaceId ?? undefined });
+                }
+                catch {
+                    // Non-fatal
+                }
+            }
+        }
         setTaskCompleted(task.taskId, {
             answer: result.answer,
             graphCommands: result.graphCommands,
             graphCommand: result.graphCommand,
             criticReport: result.criticReport,
             criticScore: result.criticScore,
+            acceptanceCriteria: result.acceptanceCriteria,
+            archetype: result.archetype,
             violations: result.violations ?? [],
             traceId: result.traceId,
         });

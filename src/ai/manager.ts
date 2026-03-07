@@ -13,11 +13,12 @@ import { ArchError, ArchErrorCode, ErrorCode, logArchError, toUserMessage } from
 import type { RouteResult } from "./questionRouter";
 import { routeQuestion } from "./questionRouter";
 import { askAboutArchitecture as askWithClaude } from "./claudeEnricher";
-import { askGreenfield } from "./greenfieldEnricher";
+import { askGreenfield, inferGreenfieldArchetype } from "./greenfieldEnricher";
 import { askGreenfieldMock } from "./mockGreenfieldEnricher";
 import { reviewArchitectureAnswer, reviewGreenfieldAnswer } from "./critic";
 import { recordSuccessfulRun } from "../agent/templateLibrary";
 import { recordTaskMetrics } from "./metrics";
+import { trimHistoryToBudget } from "./contextTrim";
 
 export interface ManagerResult {
   answer: string;
@@ -30,8 +31,14 @@ export interface ManagerResult {
   proposal?: unknown;
   violations?: CriticViolation[];
   traceId?: string;
+  /** Token usage from agent + critic (for telemetry and UI warning). */
+  tokenUsage?: { agentInput: number; agentOutput: number; criticInput?: number; criticOutput?: number };
   /** Node IDs routeQuestion selected as context for this answer */
   relevantNodeIds?: string[];
+  /** Greenfield: acceptance criteria from critic for rail persistence and spec generation */
+  acceptanceCriteria?: { functional: string[]; visual: string[]; architectural: string[] };
+  /** Greenfield: inferred archetype for template/anti-pattern routing */
+  archetype?: string;
 }
 
 /** Pluggable mode interface — enables future modes without touching orchestrator */
@@ -214,6 +221,12 @@ async function runAnalysisTask(params: {
     history
   );
 
+  const HISTORY_BUDGET = 60_000;
+  localHistory = trimHistoryToBudget(
+    localHistory as { role: string; content: string }[],
+    HISTORY_BUDGET
+  ) as ArchitectureChatHistory;
+
   let attempts = 0;
   const maxAttempts = 2;
   let lastAnswer = "";
@@ -222,6 +235,7 @@ async function runAnalysisTask(params: {
   let lastCriticScore = 0;
   let lastProposal: unknown;
   let lastViolations: CriticViolation[] = [];
+  let lastTokenUsage: ManagerResult["tokenUsage"];
 
   while (attempts < maxAttempts) {
     const claudeResult = await askWithClaude(
@@ -241,6 +255,12 @@ async function runAnalysisTask(params: {
     lastGraphCommand = claudeResult.graphCommand;
     lastProposal = claudeResult.proposal;
     const usedSaveSkill = claudeResult.usedSaveSkill === true;
+    if (claudeResult.tokenUsage) {
+      lastTokenUsage = {
+        agentInput: claudeResult.tokenUsage.input,
+        agentOutput: claudeResult.tokenUsage.output,
+      };
+    }
 
     const isNavigationOnly =
       route.intent === "show_layer" &&
@@ -395,6 +415,7 @@ async function runAnalysisTask(params: {
     violations: lastViolations,
     traceId,
     relevantNodeIds: route.relevantNodeIds,
+    ...(lastTokenUsage ? { tokenUsage: lastTokenUsage } : {}),
   };
 }
 
@@ -420,11 +441,23 @@ async function runGreenfieldTask(params: {
     `[manager] runGreenfieldTask | traceId=${traceId} | question="${question.slice(0, 80)}${question.length > 80 ? "…" : ""}"`
   );
 
+  const HISTORY_BUDGET = 60_000;
+  const trimmedHistory = trimHistoryToBudget(
+    (history ?? []) as { role: string; content: string }[],
+    HISTORY_BUDGET
+  ) as ArchitectureChatHistory;
+
   try {
   const useMock = process.env.USE_MOCK_GREENFIELD === "1" || process.env.USE_MOCK_GREENFIELD === "true";
   const greenfieldResult = useMock
-    ? await askGreenfieldMock({ question, history })
-    : await askGreenfield({ question, history, apiKeyClaude });
+    ? await askGreenfieldMock({ question, history: trimmedHistory })
+    : await askGreenfield({ question, history: trimmedHistory, apiKeyClaude });
+
+  const archetype = inferGreenfieldArchetype(params.question);
+  const rootPath =
+    params.graph?.projectRoot && typeof params.graph.projectRoot === "string" && params.graph.projectRoot.trim()
+      ? params.graph.projectRoot.trim()
+      : null;
 
   const review = await reviewGreenfieldAnswer({
     question,
@@ -433,6 +466,9 @@ async function runGreenfieldTask(params: {
     graphCommand: greenfieldResult.graphCommand,
     apiKey: apiKeyOpenAI,
     apiKeyClaude,
+    existingGraph: params.graph?.nodes?.length ? params.graph : null,
+    rootPath,
+    archetype,
   });
 
   const graphCommands = greenfieldResult.graphCommands ?? (greenfieldResult.graphCommand ? [greenfieldResult.graphCommand] : undefined);
@@ -444,6 +480,8 @@ async function runGreenfieldTask(params: {
     criticScore: review.score,
     violations: Array.isArray(review.violations) ? review.violations : [],
     traceId,
+    acceptanceCriteria: review.acceptanceCriteria,
+    archetype,
   };
   } catch (err) {
     if (err instanceof ArchError) throw err;

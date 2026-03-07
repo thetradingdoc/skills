@@ -103,6 +103,45 @@ export interface ArchEdge {
   isLayerViolation?: boolean;
 }
 
+export type BackgroundTaskStatus = "running" | "completed" | "failed" | "needs_review";
+
+export interface BackgroundTask {
+  id: string;
+  label: string;
+  mode: "greenfield" | "analysis";
+  /** Workspace this task belongs to — filter by activeWorkspaceId when rendering. */
+  workspaceId?: string | null;
+  status: BackgroundTaskStatus;
+  /** Optional remote task id from the backend /tasks API. */
+  remoteTaskId?: string;
+  /** Optional kind for specialized UI handling. */
+  kind?: "chat" | "materialize" | "other";
+  steps: string[];
+  currentStep: number;
+  totalSteps: number;
+  /** Retry attempt (e.g. 2/3 for self-correcting). Red when >= 2. */
+  retryAttempt?: number;
+  retryMax?: number;
+  createdAt: number;
+  result?: unknown;
+  error?: string;
+  /** SELF_CORRECTING: Reviewer rejection reason. */
+  rejectionReason?: string;
+  /** SELF_CORRECTING: What the agent is changing. */
+  selfCorrectingChange?: string;
+  /** Hallucination drift index 0–1. Blocks materialize when > 0.5 and unacknowledged. */
+  hallucinationIndex?: number;
+  hallucinationAcknowledged?: boolean;
+  /** Logic path steps for breadcrumb (e.g. ["UI", "API", "Jira"]). */
+  logicPath?: string[];
+  reviewed?: boolean;
+  dismissed?: boolean;
+  toastDismissed?: boolean;
+  prompt?: string;
+  answerPreview?: string;
+  railId?: string;
+}
+
 export interface ArchGraph {
   nodes: ArchNode[];
   edges: ArchEdge[];

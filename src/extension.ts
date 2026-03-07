@@ -1180,7 +1180,7 @@ async function openPanel(context: vscode.ExtensionContext) {
       }
       if (msg.action === "extend" && session) {
         const amount = msg.amount ?? 20_000;
-        const EXTEND_CEILING = 500_000;
+        const EXTEND_CEILING = 180_000;
         const baseTokenBudget = vscode.workspace.getConfiguration("archVisualizer").get<number>("tokenBudgetSession") ?? 100_000;
         const baseLlmLimit = vscode.workspace.getConfiguration("archVisualizer").get<number>("retryLimitSession") ?? 50;
         session.extendedTokenBudget = Math.min((session.extendedTokenBudget ?? 0) + amount, EXTEND_CEILING - baseTokenBudget);

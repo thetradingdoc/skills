@@ -10,11 +10,24 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.validateGraphCommand = void 0;
+exports.inferGreenfieldArchetype = inferGreenfieldArchetype;
 exports.askGreenfield = askGreenfield;
 const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const validateGraphCommand_1 = require("./validateGraphCommand");
 var validateGraphCommand_2 = require("./validateGraphCommand");
 Object.defineProperty(exports, "validateGraphCommand", { enumerable: true, get: function () { return validateGraphCommand_2.validateGraphCommand; } });
+function inferGreenfieldArchetype(question) {
+    const q = question.toLowerCase();
+    if (/saas|web app|full.?stack|frontend|react|vue|angular|spa/i.test(q))
+        return "saas-web-app";
+    if (/api service|rest api|graphql|microservice|backend only/i.test(q))
+        return "api-service";
+    if (/data pipeline|etl|ingestion|streaming|batch processing/i.test(q))
+        return "data-pipeline";
+    if (/monolith|split|modularize|extract module/i.test(q))
+        return "monolith-split";
+    return "greenfield-materialize";
+}
 const GREENFIELD_SYSTEM_PROMPT = `You are the Lead Software Architect.
 
 There is no repository yet. Design the full architecture from scratch based on the user's request.

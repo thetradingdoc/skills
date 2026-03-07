@@ -1,14 +1,26 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArchCanvas } from "./ArchCanvas";
-import type { ArchGraph, GraphCommand, CriticViolation, ArchNode } from "./types";
+import type {
+  ArchGraph,
+  GraphCommand,
+  CriticViolation,
+  ArchNode,
+  BackgroundTask,
+} from "./types";
 import { analyseGraph, type EdgeFilter } from "./analysis/graphAnalyser";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { supabase, getSupabaseConfigError } from "./supabaseClient";
 import { logAuthHashErrors, logAuthStateChange } from "./authDebug";
 import { JiraConnectModal } from "./JiraConnectModal";
+import { MemoriesPanel } from "./MemoriesPanel";
 
 import { deriveProjectKey, isValidProjectKey } from "./utils/deriveProjectKey";
+import { safeStorageGet, safeStorageSet, safeStorageRemove } from "./utils/safeStorage";
+import ReactMarkdown from "react-markdown";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 const API_BASE = "/api";
 
@@ -46,6 +58,293 @@ async function ensureProfile(accessToken: string): Promise<void> {
 
 function violationKey(v: CriticViolation): string {
   return `${v.type}:${v.sourceNodeId}:${v.targetNodeId ?? ""}`;
+}
+
+function RememberThisButton({
+  content,
+  nodeId,
+  workspaceId,
+  accessToken,
+}: {
+  content: string;
+  nodeId?: string;
+  workspaceId: string;
+  accessToken: string;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const handleClick = async () => {
+    if (saving || saved) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/memories`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ content, nodeId: nodeId || null }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to save");
+      setSaved(true);
+    } catch (err) {
+      console.error("Remember this failed:", err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={saving || saved}
+      title="Save this to workspace memory"
+      style={{
+        padding: "2px 8px",
+        fontSize: 10,
+        borderRadius: 4,
+        border: "1px solid #334155",
+        background: saved ? "rgba(34,197,94,0.2)" : "transparent",
+        color: saved ? "#4ade80" : "#94a3b8",
+        cursor: saving || saved ? "default" : "pointer",
+      }}
+    >
+      {saved ? "Saved" : saving ? "Saving…" : "Remember this"}
+    </button>
+  );
+}
+
+const COLUMN_CARD_ESTIMATE = 140;
+const COLUMN_MAX_HEIGHT = 420;
+
+function VirtualizedRailList({
+  items,
+  onCardClick,
+  onApproveClick,
+}: {
+  items: Array<{
+    id: string;
+    outcome?: string;
+    state?: string;
+    archetype?: string;
+    logicPath?: string[];
+    lastCritique?: { message?: string; attempt?: number; totalAttempts?: number } | null;
+    tasks?: Array<{ kind?: string; status?: string }>;
+  }>;
+  onCardClick: (r: { id: string }) => void;
+  onApproveClick?: (r: { id: string }) => void;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => COLUMN_CARD_ESTIMATE,
+    overscan: 3,
+  });
+  if (items.length === 0) return null;
+  return (
+    <div ref={parentRef} style={{ maxHeight: COLUMN_MAX_HEIGHT, overflowY: "auto" }}>
+      <div
+        style={{
+          height: virtualizer.getTotalSize(),
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const r = items[virtualRow.index];
+          if (!r) return null;
+          const verifTask = (r.tasks ?? []).find((t) => t.kind === "verification");
+          const status = verifTask?.status ?? "unknown";
+          const isGreenfield =
+            typeof r.archetype === "string" && r.archetype.toLowerCase().includes("greenfield");
+          const lastMsg = r.lastCritique?.message ?? "";
+          return (
+            <div
+              key={r.id}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+                paddingBottom: 8,
+              }}
+            >
+              <div
+                style={{
+                  borderRadius: 8,
+                  border: "1px solid #30363d",
+                  background: "#0d1117",
+                  padding: 8,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 4,
+                }}
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData("application/x-rail-id", r.id);
+                }}
+                onClick={() => onCardClick(r)}
+              >
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "#e6edf3",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={r.outcome || r.id}
+                  >
+                    {r.outcome?.slice(0, 60) || r.id}
+                  </div>
+                  {isGreenfield && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 6px",
+                        borderRadius: 999,
+                        border: "1px solid rgba(56,189,248,0.6)",
+                        color: "#7dd3fc",
+                      }}
+                    >
+                      Greenfield
+                    </span>
+                  )}
+                  {r.archetype === "greenfield-materialize" &&
+                    r.state === "VERIFYING" &&
+                    onApproveClick && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onApproveClick(r);
+                        }}
+                        style={{
+                          fontSize: 10,
+                          padding: "2px 6px",
+                          borderRadius: 6,
+                          background: "#7c3aed",
+                          color: "white",
+                          border: "none",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Approve
+                      </button>
+                    )}
+                </div>
+                {(r.tasks ?? []).length > 0 && (
+                  <div
+                    style={{
+                      fontSize: 9,
+                      color: "#6b7280",
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 4,
+                    }}
+                  >
+                    {(r.tasks ?? []).slice(0, 4).map((t, i) => (
+                      <span key={`${t.kind}-${t.status}-${i}`}>
+                        {t.kind}:{t.status ?? "?"}
+                      </span>
+                    ))}
+                    {(r.tasks ?? []).length > 4 && (
+                      <span>+{r.tasks!.length - 4}</span>
+                    )}
+                  </div>
+                )}
+                {r.state === "SELF_CORRECTING" &&
+                  r.lastCritique &&
+                  typeof r.lastCritique.attempt === "number" &&
+                  typeof r.lastCritique.totalAttempts === "number" && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        color: "#f59e0b",
+                        fontWeight: 600,
+                      }}
+                    >
+                      Attempt {r.lastCritique.attempt}/{r.lastCritique.totalAttempts}
+                    </span>
+                  )}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      padding: "1px 6px",
+                      borderRadius: 999,
+                      background: "#111827",
+                      color: "#9ca3af",
+                      border: "1px solid #1f2937",
+                    }}
+                  >
+                    {r.state ?? "UNKNOWN"}
+                  </span>
+                  {verifTask && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        background:
+                          status === "completed"
+                            ? "rgba(16,185,129,0.15)"
+                            : status === "rejected"
+                              ? "rgba(248,113,113,0.15)"
+                              : "rgba(59,130,246,0.15)",
+                        color:
+                          status === "completed"
+                            ? "#6ee7b7"
+                            : status === "rejected"
+                              ? "#fecaca"
+                              : "#bfdbfe",
+                        border:
+                          status === "completed"
+                            ? "1px solid rgba(16,185,129,0.5)"
+                            : status === "rejected"
+                              ? "1px solid rgba(248,113,113,0.5)"
+                              : "1px solid rgba(59,130,246,0.5)",
+                      }}
+                    >
+                      Verify: {status}
+                    </span>
+                  )}
+                </div>
+                {lastMsg && (
+                  <div style={{ fontSize: 11, color: "#9ca3af", maxHeight: 48, overflow: "hidden" }}>
+                    {lastMsg.slice(0, 140)}
+                    {lastMsg.length > 140 ? "…" : ""}
+                  </div>
+                )}
+                {r.logicPath && r.logicPath.length > 0 && (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "#6b7280",
+                      fontFamily: "monospace",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    title={r.logicPath.join(" → ")}
+                  >
+                    {r.logicPath.join(" → ")}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function LittleLabsScene() {
@@ -406,6 +705,11 @@ export default function App() {
   const [aiQuestion, setAiQuestion] = useState("");
   const [chatTabs, setChatTabs] = useState([{ id: "1", label: "Chat 1" }]);
   const [activeChatId, setActiveChatId] = useState("1");
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveThreadId(null);
+  }, [activeWorkspaceId]);
   const [chatSessions, setChatSessions] = useState<Record<string, Array<{ role: "user" | "assistant"; content: string }>>>(
     { "1": [] }
   );
@@ -444,8 +748,138 @@ export default function App() {
   >([]);
   const [activeViolations, setActiveViolations] = useState<CriticViolation[]>([]);
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat">("dashboard");
+  const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
+  const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "memories">("dashboard");
+  const [mainViewMode, setMainViewMode] = useState<"graph" | "board">("graph");
+  const [showModeSwitchConfirm, setShowModeSwitchConfirm] = useState(false);
+  const [pendingModeSwitch, setPendingModeSwitch] = useState<"graph" | "board" | null>(null);
+  const [rails, setRails] = useState<
+    Array<{
+      id: string;
+      outcome?: string;
+      state?: string;
+      archetype?: string;
+      logicPath?: string[];
+      sessionId?: string;
+      updatedAt?: number;
+      createdAt?: number;
+      lastCritique?: {
+        source: string;
+        message: string;
+        failureType?: string;
+        createdAt: number;
+        attempt?: number;
+        totalAttempts?: number;
+        criticScore?: number;
+      } | null;
+      hallucinationIndex?: number | null;
+      acceptanceCriteria?: {
+        functional: string[];
+        visual: string[];
+        architectural: string[];
+      } | null;
+      tasks?: Array<{
+        id: string;
+        kind?: string;
+        description?: string;
+        status?: string;
+        createdAt?: number;
+      }>;
+    }>
+  >([]);
+  const BOARD_FILTERS_KEY = "boardFilters";
+  const readBoardFilters = () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const fromUrl = {
+      search: urlParams.get("search") ?? undefined,
+      archetype: urlParams.get("archetype") ?? undefined,
+      onlyWithFailures: urlParams.get("onlyWithFailures") === "1",
+    };
+    if (fromUrl.search !== undefined || fromUrl.archetype || fromUrl.onlyWithFailures) {
+      return {
+        search: typeof fromUrl.search === "string" ? fromUrl.search : "",
+        archetype: typeof fromUrl.archetype === "string" ? fromUrl.archetype : "all",
+        onlyWithFailures: fromUrl.onlyWithFailures,
+      };
+    }
+    try {
+      const raw = localStorage.getItem(BOARD_FILTERS_KEY);
+      if (!raw) return { search: "", archetype: "all", onlyWithFailures: false };
+      const p = JSON.parse(raw) as { search?: string; archetype?: string; onlyWithFailures?: boolean };
+      return {
+        search: typeof p.search === "string" ? p.search : "",
+        archetype: typeof p.archetype === "string" ? p.archetype : "all",
+        onlyWithFailures: p.onlyWithFailures === true,
+      };
+    } catch {
+      return { search: "", archetype: "all", onlyWithFailures: false };
+    }
+  };
+  const initialFilters = readBoardFilters();
+  const [railSearch, setRailSearch] = useState<string>(initialFilters.search);
+  const [railArchetypeFilter, setRailArchetypeFilter] = useState<string>(initialFilters.archetype);
+  const [railOnlyWithFailures, setRailOnlyWithFailures] = useState<boolean>(initialFilters.onlyWithFailures);
+  const [railWorkspaceFilter, setRailWorkspaceFilter] = useState<string | null>(null);
+  const [railStateFilter, setRailStateFilter] = useState<Set<string>>(
+    () =>
+      new Set([
+        "PRE_PLANNING",
+        "PLANNING",
+        "AWAITING_APPROVAL",
+        "EXECUTING",
+        "AWAITING_HITL",
+        "VERIFYING",
+        "SELF_CORRECTING",
+        "MATERIALIZING",
+        "ARCHIVED",
+        "FAILED",
+        "SUSPENDED",
+      ])
+  );
+  const [railsPerColumn, setRailsPerColumn] = useState<number>(50);
+  const [railDropError, setRailDropError] = useState<string | null>(null);
   const [dashboardLastSeenViolations, setDashboardLastSeenViolations] = useState(0);
+  const [showThinkingPanel, setShowThinkingPanel] = useState<boolean>(false);
+  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
+  const backgroundTasksRef = useRef<BackgroundTask[]>([]);
+  backgroundTasksRef.current = backgroundTasks;
+  const tasksForWorkspace = useMemo(
+    () =>
+      backgroundTasks.filter(
+        (t) => !activeWorkspaceId || t.workspaceId === activeWorkspaceId
+      ),
+    [backgroundTasks, activeWorkspaceId]
+  );
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [materializeError, setMaterializeError] = useState<string | null>(null);
+  const [lastCriticResult, setLastCriticResult] = useState<{
+    score: number;
+    report: string;
+    violations: CriticViolation[];
+  } | null>(null);
+  const [greenfieldSessionId, setGreenfieldSessionId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("greenfieldSessionId");
+    } catch {
+      return null;
+    }
+  });
+  const [greenfieldAcceptanceCriteria, setGreenfieldAcceptanceCriteria] = useState<{
+    functional: string[];
+    visual: string[];
+    architectural: string[];
+  } | null>(null);
+  const [pendingRailApproval, setPendingRailApproval] = useState<{ railId: string; rootPath: string } | null>(
+    null
+  );
+  const [selectedRailId, setSelectedRailId] = useState<string | null>(null);
+  const [selectedRailDetail, setSelectedRailDetail] = useState<any | null>(null);
+  const [selectedRailSandboxPaths, setSelectedRailSandboxPaths] = useState<string[] | null>(null);
+  const [selectedRailSandboxLoading, setSelectedRailSandboxLoading] = useState(false);
+  const [lastMaterializedSnapshot, setLastMaterializedSnapshot] = useState<{
+    targetRoot: string;
+    created: string[];
+  } | null>(null);
 
   const criticalViolationsCount = activeViolations.filter(
     (v) => v.severity === "critical"
@@ -478,6 +912,7 @@ export default function App() {
   const [signupRepos, setSignupRepos] = useState("");
   const [signupPendingConfirmation, setSignupPendingConfirmation] = useState(false);
   const [showNewRepoConfirm, setShowNewRepoConfirm] = useState(false);
+  const [showReplaceDraftPrompt, setShowReplaceDraftPrompt] = useState(false);
   const [showWorkspaceDropUp, setShowWorkspaceDropUp] = useState(false);
   const [savedWorkspaces, setSavedWorkspaces] = useState<
     Array<{ id: string; name: string; created_at: string }>
@@ -491,6 +926,11 @@ export default function App() {
   const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
   const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
   const [editingTabId, setEditingTabId] = useState<string | null>(null);
+  const [threadListOpen, setThreadListOpen] = useState(false);
+  const [threadList, setThreadList] = useState<Array<{ id: string; title: string; created_at?: string; updated_at?: string }>>([]);
+  const [threadSearch, setThreadSearch] = useState("");
+  const [threadListLoading, setThreadListLoading] = useState(false);
+  const [tokenWarning, setTokenWarning] = useState<{ input: number; output: number; overBudget?: boolean } | null>(null);
   const [editingVirtualNodeId, setEditingVirtualNodeId] = useState<string | null>(null);
   const [editingDraft, setEditingDraft] = useState<{ label: string; archNodeId: string } | null>(null);
   const [designHistory, setDesignHistory] = useState<
@@ -506,8 +946,289 @@ export default function App() {
   const skipNextJiraFetchRef = useRef(false);
   const trackViolationRef = useRef<(v: CriticViolation) => void>(() => {});
   const workspaceDropUpRef = useRef<HTMLDivElement | null>(null);
+  const tasksPollAbortRef = useRef<Map<string, boolean>>(new Map());
   const activeChatIdRef = useRef<string>(activeChatId);
   const chatSessionsRef = useRef<Record<string, Array<{ role: "user" | "assistant"; content: string }>>>(chatSessions);
+
+  const isGreenfieldMode = !!graph && graph.nodes.length === 0;
+
+  useEffect(() => {
+    try {
+      if (greenfieldSessionId) localStorage.setItem("greenfieldSessionId", greenfieldSessionId);
+      else localStorage.removeItem("greenfieldSessionId");
+    } catch {
+      // ignore
+    }
+  }, [greenfieldSessionId]);
+
+  useEffect(() => {
+    const wsId = mainViewMode === "board" ? (railWorkspaceFilter ?? activeWorkspaceId) : activeWorkspaceId;
+    if (!selectedRailId || !wsId || !accessToken) {
+      setSelectedRailDetail(null);
+      setSelectedRailSandboxPaths(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/rails/${encodeURIComponent(selectedRailId)}?workspaceId=${encodeURIComponent(wsId)}`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        setSelectedRailDetail(data);
+      } catch {
+        if (!cancelled) setSelectedRailDetail(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRailId, mainViewMode, railWorkspaceFilter, activeWorkspaceId, accessToken]);
+
+  const effectiveRailsWorkspaceId = railWorkspaceFilter ?? activeWorkspaceId;
+  useEffect(() => {
+    if (mainViewMode !== "board") return;
+    if (!effectiveRailsWorkspaceId || !accessToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/rails?workspaceId=${encodeURIComponent(effectiveRailsWorkspaceId)}`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) return;
+        const items = Array.isArray(data.rails) ? data.rails : [];
+        setRails(
+          items.map((r: any) => ({
+            id: String(r.id),
+            outcome: typeof r.outcome === "string" ? r.outcome : undefined,
+            state: typeof r.state === "string" ? r.state : undefined,
+            archetype: typeof r.archetype === "string" ? r.archetype : undefined,
+            logicPath: Array.isArray(r.logicPath)
+              ? r.logicPath
+                  .map((s: any) =>
+                    s && typeof s.layer === "string" && typeof s.nodeId === "string"
+                      ? `${s.layer}:${s.nodeId}`
+                      : null
+                  )
+                  .filter((x: string | null): x is string => x != null)
+              : undefined,
+            sessionId: typeof r.sessionId === "string" ? r.sessionId : undefined,
+            updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : undefined,
+            createdAt: typeof r.createdAt === "number" ? r.createdAt : undefined,
+            lastCritique:
+              r.lastCritique && typeof r.lastCritique === "object"
+                ? {
+                    source: String(r.lastCritique.source ?? ""),
+                    message: String(r.lastCritique.message ?? ""),
+                    failureType:
+                      typeof r.lastCritique.failureType === "string" ? r.lastCritique.failureType : undefined,
+                    createdAt: Number(r.lastCritique.createdAt ?? Date.now()),
+                    attempt:
+                      typeof r.lastCritique.attempt === "number" ? r.lastCritique.attempt : undefined,
+                    totalAttempts:
+                      typeof r.lastCritique.totalAttempts === "number"
+                        ? r.lastCritique.totalAttempts
+                        : undefined,
+                    criticScore:
+                      typeof r.lastCritique.criticScore === "number"
+                        ? r.lastCritique.criticScore
+                        : undefined,
+                  }
+                : null,
+            hallucinationIndex:
+              typeof r.hallucinationIndex === "number" ? r.hallucinationIndex : null,
+            acceptanceCriteria:
+              r.acceptanceCriteria && typeof r.acceptanceCriteria === "object"
+                ? {
+                    functional: Array.isArray(r.acceptanceCriteria.functional)
+                      ? r.acceptanceCriteria.functional.filter((x: any) => typeof x === "string")
+                      : [],
+                    visual: Array.isArray(r.acceptanceCriteria.visual)
+                      ? r.acceptanceCriteria.visual.filter((x: any) => typeof x === "string")
+                      : [],
+                    architectural: Array.isArray(r.acceptanceCriteria.architectural)
+                      ? r.acceptanceCriteria.architectural.filter((x: any) => typeof x === "string")
+                      : [],
+                  }
+                : null,
+            tasks: Array.isArray(r.tasks)
+              ? r.tasks.map((t: any) => ({
+                  id: String(t.id),
+                  kind: typeof t.kind === "string" ? t.kind : undefined,
+                  description: typeof t.description === "string" ? t.description : undefined,
+                  status: typeof t.status === "string" ? t.status : undefined,
+                  createdAt: typeof t.createdAt === "number" ? t.createdAt : undefined,
+                }))
+              : [],
+          }))
+        );
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [mainViewMode, effectiveRailsWorkspaceId, accessToken]);
+
+  useEffect(() => {
+    setRailWorkspaceFilter(null);
+  }, [activeWorkspaceId]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        BOARD_FILTERS_KEY,
+        JSON.stringify({
+          search: railSearch,
+          archetype: railArchetypeFilter,
+          onlyWithFailures: railOnlyWithFailures,
+        })
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (railSearch) params.set("search", railSearch); else params.delete("search");
+      if (railArchetypeFilter && railArchetypeFilter !== "all") params.set("archetype", railArchetypeFilter); else params.delete("archetype");
+      if (railOnlyWithFailures) params.set("onlyWithFailures", "1"); else params.delete("onlyWithFailures");
+      const qs = params.toString();
+      const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+      window.history.replaceState(null, "", url);
+    } catch {
+      // ignore
+    }
+  }, [railSearch, railArchetypeFilter, railOnlyWithFailures]);
+
+  const filteredRails = useMemo(() => {
+    const search = railSearch.trim().toLowerCase();
+    return rails.filter((r) => {
+      if (r.state && !railStateFilter.has(r.state)) return false;
+      if (railArchetypeFilter !== "all") {
+        if (!r.archetype || r.archetype !== railArchetypeFilter) return false;
+      }
+      if (railOnlyWithFailures) {
+        const hasFailedVerification =
+          (r.tasks ?? []).some((t) => t.kind === "verification" && t.status === "rejected") ||
+          (r.lastCritique?.source === "playwright" && (r.lastCritique?.criticScore ?? 0) < 8);
+        if (!hasFailedVerification) return false;
+      }
+      if (search) {
+        const haystack = `${r.outcome ?? ""} ${r.archetype ?? ""} ${r.sessionId ?? ""}`.toLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+      return true;
+    });
+  }, [rails, railSearch, railStateFilter, railArchetypeFilter, railOnlyWithFailures]);
+
+  useEffect(() => {
+    if (!isGreenfieldMode) return;
+    if (!accessToken) return;
+    if (greenfieldSessionId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/greenfield/session`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ workspaceId: activeWorkspaceId ?? undefined }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        const sid = typeof data.sessionId === "string" ? data.sessionId : null;
+        if (!sid) return;
+        if (!cancelled) setGreenfieldSessionId(sid);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isGreenfieldMode, accessToken, greenfieldSessionId, activeWorkspaceId]);
+
+  useEffect(() => {
+    if (!isGreenfieldMode) return;
+    if (!accessToken) return;
+    if (!greenfieldSessionId) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(greenfieldSessionId)}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        if (cancelled) return;
+        const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+        const edges = Array.isArray(data.edges) ? data.edges : [];
+        setVirtualNodes(
+          nodes
+            .filter((n: any) => n && typeof n.id === "string")
+            .map((n: any) => ({
+              id: n.id,
+              label: typeof n.label === "string" ? n.label : n.id,
+              layer: typeof n.layer === "string" ? n.layer : undefined,
+              description: typeof n.description === "string" ? n.description : undefined,
+              archNodeId: typeof n.archNodeId === "string" ? n.archNodeId : undefined,
+            }))
+        );
+        setVirtualEdges(
+          edges
+            .filter((e: any) => e && typeof e.source === "string" && typeof e.target === "string")
+            .map((e: any) => ({ fromId: e.source, toId: e.target }))
+        );
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isGreenfieldMode, accessToken, greenfieldSessionId]);
+
+  useEffect(() => {
+    if (!isGreenfieldMode) return;
+    if (!accessToken) return;
+    if (!greenfieldSessionId) return;
+
+    const handle = window.setTimeout(() => {
+      const nodesPayload = virtualNodes.map((n) => ({
+        id: n.id,
+        label: n.label,
+        layer: n.layer,
+        description: n.description,
+        archNodeId: n.archNodeId,
+      }));
+      const edgesPayload = virtualEdges.map((e) => ({ source: e.fromId, target: e.toId }));
+      fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(greenfieldSessionId)}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          nodes: nodesPayload,
+          edges: edgesPayload,
+          workspaceId: activeWorkspaceId ?? undefined,
+        }),
+      }).catch(() => {});
+    }, 600);
+
+    return () => window.clearTimeout(handle);
+  }, [isGreenfieldMode, accessToken, greenfieldSessionId, virtualNodes, virtualEdges, activeWorkspaceId]);
 
   const handleSignOut = useCallback(async () => {
     if (!supabase || isSigningOut) return;
@@ -530,7 +1251,11 @@ export default function App() {
       setAiQuestion("");
       setVirtualNodes([]);
       setVirtualEdges([]);
+      setGreenfieldSessionId(null);
+      setGreenfieldAcceptanceCriteria(null);
+      setPendingRailApproval(null);
       setActiveViolations([]);
+      setViolationsRestoreError(null);
       setAgentGraphCommand(null);
       setJiraConfigured(null);
       setJiraConnectedEmail(null);
@@ -550,7 +1275,13 @@ export default function App() {
     } catch {
       // ignore
     }
-    setGraph(null);
+    setGraph({
+      nodes: [],
+      edges: [],
+      generatedAt: Date.now(),
+      projectRoot: "",
+      projectName: "My workspace",
+    });
     setRepoUrl("");
     setActiveWorkspaceId(null);
     setJiraProjectKey(null);
@@ -562,7 +1293,11 @@ export default function App() {
     setAiQuestion("");
     setVirtualNodes([]);
     setVirtualEdges([]);
+    setGreenfieldSessionId(null);
+    setGreenfieldAcceptanceCriteria(null);
+    setPendingRailApproval(null);
     setActiveViolations([]);
+    setViolationsRestoreError(null);
     setAgentGraphCommand(null);
     setShowNewRepoConfirm(false);
     setShowWorkspaceDropUp(false);
@@ -677,6 +1412,7 @@ export default function App() {
       setActiveWorkspaceId(null);
       setGraph(null);
       setActiveViolations([]);
+      setViolationsRestoreError(null);
       setVirtualNodes([]);
       setVirtualEdges([]);
       setSelectedNode(null);
@@ -693,12 +1429,18 @@ export default function App() {
     async (workspaceId: string, tokenOverride?: string) => {
       const token = tokenOverride ?? accessToken;
       if (!token) return;
+      setViolationsRestoreError(null);
       try {
         const res = await fetch(`${API_BASE}/violations?workspaceId=${workspaceId}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
+        if (!res.ok) {
+          const msg = data.error ?? `Failed to load violations (${res.status})`;
+          console.warn("[violations] Restore failed:", msg);
+          setViolationsRestoreError(msg);
+          return;
+        }
         const stored = (data.violations ?? []) as CriticViolation[];
         if (!stored.length) return;
         const key = (v: CriticViolation) =>
@@ -748,8 +1490,10 @@ export default function App() {
             }),
           };
         });
-      } catch {
-        // non-fatal
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[violations] Restore failed:", msg);
+        setViolationsRestoreError(msg);
       }
     },
     [accessToken]
@@ -798,7 +1542,7 @@ export default function App() {
           setJiraProjectKeyReady(true);
           setShowWorkspaceDropUp(false);
           setError(null);
-          fetchPersistedViolations(workspaceId, token).catch(() => {});
+          await fetchPersistedViolations(workspaceId, token);
           // Restore saved chat context for this workspace
           try {
             const saved = localStorage.getItem(`chat:${workspaceId}`);
@@ -886,19 +1630,35 @@ export default function App() {
     }
   }, [autosaveEnabled]);
 
-  // Persist chat context per workspace
+  // Persist chat context per workspace (debounced 1.5s to reduce writes for large histories)
+  const chatPersistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!activeWorkspaceId) return;
-    try {
+    if (chatPersistTimeoutRef.current) clearTimeout(chatPersistTimeoutRef.current);
+    chatPersistTimeoutRef.current = setTimeout(() => {
       const key = `chat:${activeWorkspaceId}`;
-      localStorage.setItem(
-        key,
-        JSON.stringify({ chatTabs, chatSessions, activeChatId })
-      );
-    } catch {
-      // ignore
-    }
+      safeStorageSet(key, JSON.stringify({ chatTabs, chatSessions, activeChatId }));
+      chatPersistTimeoutRef.current = null;
+    }, 1500);
+    return () => {
+      if (chatPersistTimeoutRef.current) clearTimeout(chatPersistTimeoutRef.current);
+    };
   }, [activeWorkspaceId, chatTabs, chatSessions, activeChatId]);
+
+  // Cleanup old dismissed background tasks (older than 5 minutes)
+  const BACKGROUND_TASK_CLEANUP_MS = 5 * 60 * 1000;
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const cutoff = Date.now() - BACKGROUND_TASK_CLEANUP_MS;
+      setBackgroundTasks((prev) => {
+        const filtered = prev.filter(
+          (t) => !(t.dismissed === true && t.createdAt < cutoff)
+        );
+        return filtered.length < prev.length ? filtered : prev;
+      });
+    }, 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!showAuthModal) setSignupPendingConfirmation(false);
@@ -1276,88 +2036,54 @@ export default function App() {
       const q = (overrideQuestion ?? aiQuestion.trim()).trim();
       if (!q || !graph) return;
 
-    setChatLoading(true);
-      if (!overrideQuestion) setAiQuestion("");
-    const currentHistory = chatSessionsRef.current[activeChatIdRef.current] ?? [];
-    const historyForRequest = [...currentHistory, { role: "user" as const, content: q }];
-    const cid = activeChatIdRef.current;
-    setChatSessions((s) => ({
-      ...s,
-      [cid]: [...(s[cid] ?? []), { role: "user", content: q }],
-    }));
+      const inFlight = backgroundTasksRef.current.some(
+        (t) =>
+          t.kind === "chat" &&
+          t.status === "running" &&
+          (t.prompt ?? t.label ?? "").trim() === q &&
+          (t.workspaceId ?? activeWorkspaceId) === activeWorkspaceId
+      );
+      if (inFlight) return;
 
-    const history = historyForRequest;
-
-    try {
-      // Get fresh token (refresh if needed; fallback to getSession)
-      let token = accessToken;
-      if (supabase) {
-        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-        if (!refreshError && refreshData.session?.access_token) {
-          token = refreshData.session.access_token;
-          setAccessToken(token);
-        } else {
-          const { data } = await supabase.auth.getSession();
-          const fallbackToken = data.session?.access_token ?? accessToken;
-          if (refreshError && !fallbackToken) {
-            const cid = activeChatIdRef.current;
-            setChatSessions((s) => ({
-              ...s,
-              [cid]: [
-                ...(s[cid] ?? []),
-                { role: "assistant" as const, content: "Your session has expired. Please sign in again." },
-              ],
-            }));
-            setAccessToken(null);
-            return;
-          }
-          token = fallbackToken;
-        }
-      }
-      if (!token) {
-        throw new Error("Please sign in first.");
-      }
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          question: q,
-          graph,
-          nodeId: selectedNode ?? undefined,
-          history,
+      const clientTaskId = crypto.randomUUID?.() ?? `task-${Date.now()}`;
+      const mode: "greenfield" | "analysis" =
+        graph.nodes.length === 0 ? "greenfield" : "analysis";
+      const taskSteps = ["Send question", "Run critic review", "Update graph"];
+      setBackgroundTasks((prev) => [
+        ...prev,
+        {
+          id: clientTaskId,
+          label: q.slice(0, 50) + (q.length > 50 ? "…" : ""),
+          mode,
+          kind: "chat",
+          status: "running" as const,
+          steps: taskSteps,
+          currentStep: 0,
+          totalSteps: taskSteps.length,
+          createdAt: Date.now(),
+          reviewed: false,
+          dismissed: false,
+          toastDismissed: false,
+          prompt: q,
           workspaceId: activeWorkspaceId ?? undefined,
-        }),
-      });
+        },
+      ]);
+      setActiveTaskId(clientTaskId);
 
-      const data = await res.json().catch(() => ({}));
+      setChatLoading(true);
+      if (!overrideQuestion) setAiQuestion("");
+      const currentHistory = chatSessionsRef.current[activeChatIdRef.current] ?? [];
+      const historyForRequest = [...currentHistory, { role: "user" as const, content: q }];
+      const cid = activeChatIdRef.current;
+      setChatSessions((s) => ({
+        ...s,
+        [cid]: [...(s[cid] ?? []), { role: "user", content: q }],
+      }));
 
-      if (!res.ok) {
-        if (res.status === 401) {
-          setAccessToken(null);
-          if (import.meta.env.DEV) {
-            fetch(`${API_BASE}/auth/config`)
-              .then((r) => r.json())
-              .then((cfg) => {
-                const clientRef = import.meta.env.VITE_SUPABASE_URL?.match(
-                  /https?:\/\/([^.]+)\.supabase\.co/
-                )?.[1];
-                console.warn(
-                  "[Auth] 401 — token rejected. Debug:",
-                  { serverProjectRef: cfg.projectRef, clientProjectRef: clientRef },
-                  "→ Project refs must match. Run server with DEBUG_AUTH=true for token logs."
-                );
-              })
-              .catch(() => {});
-          }
-          throw new Error("Session expired. Please sign in again.");
-        }
-        throw new Error(data.error || res.statusText);
-      }
+      const history = historyForRequest;
 
-      const violations = (data.violations ?? []) as CriticViolation[];
+      const applyChatResult = (data: any) => {
+        const violations = (data.violations ?? []) as CriticViolation[];
       if (violations.length > 0) {
         // Merge into activeViolations list (dedupe by sourceNodeId + type + targetNodeId)
         setActiveViolations((prev) => {
@@ -1411,16 +2137,57 @@ export default function App() {
         }
       }
 
-      const answer = data.answer ?? "No response.";
+        const answer = data.answer ?? "No response.";
+        const acceptanceCriteria =
+          data.acceptanceCriteria &&
+          typeof data.acceptanceCriteria === "object" &&
+          Array.isArray((data.acceptanceCriteria as any).functional)
+            ? {
+                functional: Array.isArray((data.acceptanceCriteria as any).functional)
+                  ? ((data.acceptanceCriteria as any).functional as any[]).filter((x) => typeof x === "string")
+                  : [],
+                visual: Array.isArray((data.acceptanceCriteria as any).visual)
+                  ? ((data.acceptanceCriteria as any).visual as any[]).filter((x) => typeof x === "string")
+                  : [],
+                architectural: Array.isArray((data.acceptanceCriteria as any).architectural)
+                  ? ((data.acceptanceCriteria as any).architectural as any[]).filter((x) => typeof x === "string")
+                  : [],
+              }
+            : null;
+        if (acceptanceCriteria) {
+          setGreenfieldAcceptanceCriteria(acceptanceCriteria);
+        }
       const criticReport =
         typeof data.criticReport === "string" && data.criticReport
           ? data.criticReport
           : undefined;
-      const graphCommands = (data.graphCommands ?? (data.graphCommand ? [data.graphCommand] : [])) as GraphCommand[];
-      const relevantNodeIds = Array.isArray(data.relevantNodeIds)
+      const criticScore =
+        typeof data.criticScore === "number" ? data.criticScore : 0;
+      setLastCriticResult({
+        score: criticScore,
+        report: criticReport ?? "",
+        violations,
+      });
+        const needsReview =
+          violations.length > 0 || (criticReport && criticScore < 7);
+        setBackgroundTasks((prev) =>
+          prev.map((t) =>
+            t.id === clientTaskId
+              ? {
+                  ...t,
+                  status: needsReview ? "needs_review" : "completed",
+                  currentStep: t.totalSteps,
+                  result: data,
+                  answerPreview: typeof answer === "string" ? answer.slice(0, 200) : "",
+                }
+              : t
+          )
+        );
+        const graphCommands = (data.graphCommands ?? (data.graphCommand ? [data.graphCommand] : [])) as GraphCommand[];
+        const relevantNodeIds = Array.isArray(data.relevantNodeIds)
         ? (data.relevantNodeIds as string[]).filter((id): id is string => typeof id === "string")
         : [];
-      if (graphCommands.length > 0) {
+        if (graphCommands.length > 0) {
         setAgentGraphCommand(graphCommands[0]);
         const newNodes: Array<{ id: string; label: string; layer?: string; archNodeId?: string; description?: string }> = [];
         const newEdges: Array<{ fromId: string; toId: string; edgeType?: string }> = [];
@@ -1449,16 +2216,31 @@ export default function App() {
         if (newNodes.length > 0 || newEdges.length > 0) {
           setVirtualNodes((prev) => [...prev, ...newNodes]);
           setVirtualEdges((prev) => [...prev, ...newEdges]);
+          setMaterializeError(null);
         }
       } else if (relevantNodeIds.length > 0) {
         setAgentGraphCommand({ action: "highlight_nodes", nodeIds: relevantNodeIds });
       }
 
-      const cid = activeChatIdRef.current;
+      const tu = data.tokenUsage as { input?: number; output?: number } | undefined;
+      const inputTokens = tu?.input ?? 0;
+      const outputTokens = tu?.output ?? 0;
+      const totalTokens = inputTokens + outputTokens;
+      const CONTEXT_SAFE = 180_000;
+      const WARNING_THRESHOLD = Math.floor(CONTEXT_SAFE * 0.8);
+      if (totalTokens >= CONTEXT_SAFE) {
+        setTokenWarning({ input: inputTokens, output: outputTokens, overBudget: true });
+      } else if (inputTokens >= WARNING_THRESHOLD) {
+        setTokenWarning({ input: inputTokens, output: outputTokens, overBudget: false });
+      } else if (inputTokens > 0) {
+        setTokenWarning(null);
+      }
+
+      const cidInner = activeChatIdRef.current;
       setChatSessions((prev) => {
-        const current = prev[cid] ?? [];
+        const currentInner = prev[cidInner] ?? [];
         const updated: Array<{ role: "user" | "assistant"; content: string }> = [
-          ...current,
+          ...currentInner,
           { role: "assistant", content: answer },
           ...(criticReport
             ? [{ role: "assistant" as const, content: `Critic: ${criticReport}` }]
@@ -1466,34 +2248,294 @@ export default function App() {
         ];
         return {
           ...prev,
-          [cid]: updated,
+          [cidInner]: updated,
         };
       });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const cid = activeChatIdRef.current;
-      setChatSessions((s) => ({
-        ...s,
-        [cid]: [
-          ...(s[cid] ?? []),
-          { role: "assistant", content: `Error: ${msg}` },
-        ],
-      }));
-    } finally {
-      setChatLoading(false);
-    }
-  },
+      };
+
+      try {
+        // Get fresh token (refresh if needed; fallback to getSession)
+        let token = accessToken;
+        if (supabase) {
+          const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError && refreshData.session?.access_token) {
+            token = refreshData.session.access_token;
+            setAccessToken(token);
+          } else {
+            const { data } = await supabase.auth.getSession();
+            const fallbackToken = data.session?.access_token ?? accessToken;
+            if (refreshError && !fallbackToken) {
+              const cidInner = activeChatIdRef.current;
+              setChatSessions((s) => ({
+                ...s,
+                [cidInner]: [
+                  ...(s[cidInner] ?? []),
+                  { role: "assistant" as const, content: "Your session has expired. Please sign in again." },
+                ],
+              }));
+              setAccessToken(null);
+              return;
+            }
+            token = fallbackToken;
+          }
+        }
+        if (!token) {
+          throw new Error("Please sign in first.");
+        }
+        const res = await fetch(`${API_BASE}/chat-async`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            question: q,
+            graph,
+            nodeId: selectedNode ?? undefined,
+            history,
+            workspaceId: activeWorkspaceId ?? undefined,
+            ...(activeThreadId ? { threadId: activeThreadId } : {}),
+            ...(graph.nodes.length === 0 && greenfieldSessionId
+              ? { greenfieldSessionId }
+              : {}),
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          if (res.status === 401) {
+            setAccessToken(null);
+            if (import.meta.env.DEV) {
+              fetch(`${API_BASE}/auth/config`)
+                .then((r) => r.json())
+                .then((cfg) => {
+                  const clientRef = import.meta.env.VITE_SUPABASE_URL?.match(
+                    /https?:\/\/([^.]+)\.supabase\.co/
+                  )?.[1];
+                  console.warn(
+                    "[Auth] 401 — token rejected. Debug:",
+                    { serverProjectRef: cfg.projectRef, clientProjectRef: clientRef },
+                    "→ Project refs must match. Run server with DEBUG_AUTH=true for token logs."
+                  );
+                })
+                .catch(() => {});
+            }
+            throw new Error("Session expired. Please sign in again.");
+          }
+          throw new Error(data.error || res.statusText);
+        }
+
+        const remoteTaskId = typeof data.taskId === "string" ? data.taskId : null;
+        if (!remoteTaskId) {
+          throw new Error("Server did not return a taskId for async chat.");
+        }
+
+        setBackgroundTasks((prev) =>
+          prev.map((t) => (t.id === clientTaskId ? { ...t, remoteTaskId } : t))
+        );
+
+        tasksPollAbortRef.current.set(remoteTaskId, false);
+
+        const poll = async (attempt: number) => {
+          if (tasksPollAbortRef.current.get(remoteTaskId)) return;
+          try {
+            const r = await fetch(`${API_BASE}/tasks/${remoteTaskId}`);
+            const payload = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              throw new Error(payload.error || r.statusText);
+            }
+            const status = payload.status as "pending" | "running" | "completed" | "failed" | "cancelled";
+            if (status === "pending" || status === "running") {
+              const delay = Math.min(2000 + attempt * 500, 8000);
+              setTimeout(() => poll(attempt + 1), delay);
+              return;
+            }
+            if (status === "failed" || status === "cancelled") {
+              const msg = typeof payload.error === "string" ? payload.error : "Task failed.";
+              setBackgroundTasks((prev) =>
+                prev.map((t) =>
+                  t.id === clientTaskId
+                    ? {
+                        ...t,
+                        status: "failed" as const,
+                        error: msg,
+                        currentStep: t.totalSteps,
+                      }
+                    : t
+                )
+              );
+              setChatSessions((s) => {
+                const cidInner2 = activeChatIdRef.current;
+                return {
+                  ...s,
+                  [cidInner2]: [
+                    ...(s[cidInner2] ?? []),
+                    { role: "assistant" as const, content: `Error: ${msg}` },
+                  ],
+                };
+              });
+              return;
+            }
+
+            if (status === "completed") {
+              applyChatResult(payload.result ?? {});
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setBackgroundTasks((prev) =>
+              prev.map((t) =>
+                t.id === clientTaskId
+                  ? {
+                      ...t,
+                      status: "failed" as const,
+                      error: msg,
+                      currentStep: t.totalSteps,
+                    }
+                  : t
+              )
+            );
+            setChatSessions((s) => {
+              const cidInner3 = activeChatIdRef.current;
+              return {
+                ...s,
+                [cidInner3]: [
+                  ...(s[cidInner3] ?? []),
+                  { role: "assistant" as const, content: `Error: ${msg}` },
+                ],
+              };
+            });
+          }
+        };
+
+        poll(0);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const cidErr = activeChatIdRef.current;
+        setBackgroundTasks((prev) =>
+          prev.map((t) =>
+            t.id === clientTaskId
+              ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
+              : t
+          )
+        );
+        setChatSessions((s) => ({
+          ...s,
+          [cidErr]: [
+            ...(s[cidErr] ?? []),
+            { role: "assistant", content: `Error: ${msg}` },
+          ],
+        }));
+      } finally {
+        setChatLoading(false);
+      }
+    },
     [aiQuestion, graph, selectedNode, accessToken, jiraConfigured, activeWorkspaceId]
   );
 
-  const addChatTab = useCallback(() => {
-    setChatTabs((prev) => {
-      const nextId = String(Math.max(0, ...prev.map((t) => parseInt(t.id, 10) || 0)) + 1);
+  const addChatTab = useCallback(async () => {
+    const nextId = String(
+      Math.max(0, ...chatTabs.map((t) => parseInt(t.id, 10) || 0)) + 1
+    );
+    let threadId: string | null = null;
+    if (accessToken && activeWorkspaceId) {
+      try {
+        const res = await fetch(
+          `${API_BASE}/workspaces/${activeWorkspaceId}/threads`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ title: `Chat ${nextId}` }),
+          }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          threadId = data.id ?? null;
+        }
+      } catch {
+        /* non-fatal */
+      }
+    }
+    setChatTabs((prev) => [
+      ...prev,
+      { id: nextId, label: `Chat ${nextId}`, threadId: threadId ?? undefined },
+    ]);
     setChatSessions((s) => ({ ...s, [nextId]: [] }));
     setActiveChatId(nextId);
-      return [...prev, { id: nextId, label: `Chat ${nextId}` }];
-    });
-  }, []);
+    if (threadId) setActiveThreadId(threadId);
+    setTokenWarning(null);
+  }, [chatTabs, accessToken, activeWorkspaceId]);
+
+  const fetchThreads = useCallback(async (search?: string) => {
+    if (!accessToken || !activeWorkspaceId) {
+      setThreadList([]);
+      return;
+    }
+    setThreadListLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (search && search.trim()) params.set("q", search.trim());
+      const res = await fetch(
+        `${API_BASE}/workspaces/${activeWorkspaceId}/threads?${params}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to load threads");
+      setThreadList(data.threads ?? []);
+    } catch {
+      setThreadList([]);
+    } finally {
+      setThreadListLoading(false);
+    }
+  }, [accessToken, activeWorkspaceId]);
+
+  const openThread = useCallback(
+    async (thread: { id: string; title: string }) => {
+      if (!accessToken || !activeWorkspaceId) return;
+      const existingTab = chatTabs.find((t) => (t as { threadId?: string }).threadId === thread.id);
+      if (existingTab) {
+        setActiveChatId(existingTab.id);
+        setActiveThreadId(thread.id);
+        setThreadListOpen(false);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `${API_BASE}/workspaces/${activeWorkspaceId}/threads/${thread.id}/messages?limit=200`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Failed to load messages");
+        const messages = (data.messages ?? []).map((m: { role: string; content: string }) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
+        const nextId = String(Math.max(0, ...chatTabs.map((t) => parseInt(t.id, 10) || 0)) + 1);
+        setChatTabs((prev) => [
+          ...prev,
+          { id: nextId, label: thread.title.slice(0, 40) || "Chat", threadId: thread.id },
+        ]);
+        setChatSessions((s) => ({ ...s, [nextId]: messages }));
+        setActiveChatId(nextId);
+        setActiveThreadId(thread.id);
+        setThreadListOpen(false);
+      } catch {
+        /* non-fatal */
+      }
+    },
+    [accessToken, activeWorkspaceId, chatTabs]
+  );
+
+  useEffect(() => {
+    if (threadListOpen && accessToken && activeWorkspaceId) {
+      const q = threadSearch.trim();
+      const t = setTimeout(() => fetchThreads(q || undefined), q ? 200 : 0);
+      return () => clearTimeout(t);
+    }
+  }, [threadListOpen, threadSearch, accessToken, activeWorkspaceId, fetchThreads]);
 
   const closeChatTab = useCallback((tabId: string, e: React.MouseEvent) => {
       e.stopPropagation();
@@ -1501,7 +2543,9 @@ export default function App() {
       if (prev.length <= 1) return prev;
       const remaining = prev.filter((t) => t.id !== tabId);
       if (activeChatIdRef.current === tabId) {
-        setActiveChatId(remaining[0]?.id ?? "1");
+        const nextTab = remaining[0];
+        setActiveChatId(nextTab?.id ?? "1");
+        setActiveThreadId((nextTab as { threadId?: string })?.threadId ?? null);
       }
       setChatSessions((s) => {
         const next = { ...s };
@@ -1808,13 +2852,135 @@ export default function App() {
     [virtualNodes, virtualEdges]
   );
 
+  const handleResetGreenfieldDraft = useCallback(async () => {
+    setDesignHistory([]);
+    setEditingVirtualNodeId(null);
+    setEditingDraft(null);
+    setVirtualNodes([]);
+    setVirtualEdges([]);
+    setGreenfieldAcceptanceCriteria(null);
+    setPendingRailApproval(null);
+    const sid = greenfieldSessionId;
+    setGreenfieldSessionId(null);
+    if (!sid || !accessToken) return;
+    try {
+      await fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(sid)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch {
+      // ignore
+    }
+  }, [greenfieldSessionId, accessToken]);
+
   const handleMaterialize = useCallback(async () => {
     const targetRoot = materializeTargetPath.trim();
     if (!targetRoot || !accessToken || virtualNodes.length === 0) return;
+    setMaterializeError(null);
+    const materializeTaskId = crypto.randomUUID?.() ?? `materialize-${Date.now()}`;
+    const matSteps = ["Validate nodes", "Write files", "Rescan workspace"];
+    setBackgroundTasks((prev) => [
+      ...prev,
+      {
+        id: materializeTaskId,
+        label: "Materialize architecture",
+        mode: "greenfield",
+        kind: "materialize",
+        status: "running" as const,
+        steps: matSteps,
+        currentStep: 0,
+        totalSteps: matSteps.length,
+        createdAt: Date.now(),
+        reviewed: false,
+        dismissed: false,
+        toastDismissed: false,
+        workspaceId: activeWorkspaceId ?? undefined,
+      },
+    ]);
+    setActiveTaskId(materializeTaskId);
     setMaterializeLoading(true);
+    const nodesPayload = virtualNodes.map((vn) => ({
+      id: vn.id,
+      label: vn.label,
+      layer: vn.layer,
+      archNodeId: vn.archNodeId ?? vn.id,
+    }));
+
+    const applyMaterializeResult = async (data: any) => {
+      const created = Array.isArray(data.created) ? data.created : [];
+      if (created.length > 0) setLastMaterializedSnapshot({ targetRoot, created });
+      const railId = typeof data.railId === "string" ? data.railId : null;
+      const verificationPassed =
+        (data?.verification && typeof data.verification.passed === "boolean" && data.verification.passed === true) ||
+        data?.verificationPassed === true;
+      const materializeNeedsReview = Array.isArray(data.errors) && data.errors.length > 0;
+      setBackgroundTasks((prev) =>
+        prev.map((t) =>
+          t.id === materializeTaskId
+            ? {
+                ...t,
+                status: materializeNeedsReview ? "needs_review" : "completed",
+                currentStep: t.totalSteps,
+                railId: railId ?? t.railId,
+                result: data,
+              }
+            : t
+        )
+      );
+      setChatSessions((prev) => {
+        const current = prev[activeChatId] ?? [];
+        const msg = railId
+          ? verificationPassed
+            ? `Verification passed. Approval required to apply. Rail: ${railId}.`
+            : `Verification failed. Approval blocked. Rail: ${railId}.`
+          : `Materialized ${created.length} node(s)${data.errors?.length ? `; ${data.errors.length} error(s)` : ""}.`;
+        return {
+          ...prev,
+          [activeChatId]: [...current, { role: "assistant", content: msg }],
+        };
+      });
+      setShowMaterializeModal(false);
+      if (railId) {
+        if (verificationPassed) {
+          setPendingRailApproval({ railId, rootPath: targetRoot });
+        }
+        return;
+      }
+      setVirtualNodes([]);
+      setVirtualEdges([]);
+      setDesignHistory([]);
+      setMaterializeTargetPath("");
+      if (data.recommendRescan && activeWorkspaceId && accessToken) {
+        try {
+          const r = await fetch(`${API_BASE}/scan/refresh`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+          });
+          const refreshData = await r.json().catch(() => ({}));
+          if (r.ok && refreshData.nodes) {
+            setGraph(analyseGraph(refreshData));
+          }
+        } catch {
+          // Non-fatal
+        }
+      } else if (targetRoot && /github\.com[/:]/i.test(targetRoot)) {
+        setRepoUrl(targetRoot);
+        await scanRepo(targetRoot);
+      }
+    };
+
     try {
+      const lastUserMsg =
+        chatHistory
+          .slice()
+          .reverse()
+          .find((m) => m.role === "user")?.content ?? "Greenfield materialize";
       const idempotencyKey = `materialize-${targetRoot}-${virtualNodes.map((n) => n.id).sort().join(",")}`;
-      const res = await fetch(`${API_BASE}/materialize`, {
+      const res = await fetch(`${API_BASE}/materialize-async`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1823,54 +2989,188 @@ export default function App() {
         },
         body: JSON.stringify({
           targetRoot,
-          nodes: virtualNodes.map((vn) => ({
-            id: vn.id,
-            label: vn.label,
-            layer: vn.layer,
-            archNodeId: vn.archNodeId ?? vn.id,
-          })),
+          nodes: nodesPayload,
+          useRailFlow: isGreenfieldMode,
+          sessionId: isGreenfieldMode ? greenfieldSessionId ?? undefined : undefined,
+          outcome: isGreenfieldMode ? lastUserMsg : undefined,
+          acceptanceCriteria: isGreenfieldMode ? greenfieldAcceptanceCriteria ?? undefined : undefined,
+          lastCritique: lastCriticResult
+            ? {
+                criticScore: lastCriticResult.score,
+                message: lastCriticResult.report,
+                violations: lastCriticResult.violations,
+              }
+            : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(data.error || res.statusText);
       }
-      setChatSessions((prev) => {
-        const current = prev[activeChatId] ?? [];
-        const msg = `Materialized ${data.created?.length ?? 0} node(s)${data.errors?.length ? `; ${data.errors.length} error(s)` : ""}.`;
-        return {
-          ...prev,
-          [activeChatId]: [...current, { role: "assistant", content: msg }],
-        };
-      });
-      setVirtualNodes([]);
-      setVirtualEdges([]);
-      setMaterializeTargetPath("");
-      setShowMaterializeModal(false);
-      if (targetRoot) {
-        setRepoUrl(targetRoot);
-        await scanRepo(targetRoot);
+      const remoteTaskId = typeof data.taskId === "string" ? data.taskId : null;
+      if (!remoteTaskId) {
+        throw new Error("Server did not return a taskId for materialize.");
       }
+
+      setBackgroundTasks((prev) =>
+        prev.map((t) => (t.id === materializeTaskId ? { ...t, remoteTaskId } : t))
+      );
+
+      tasksPollAbortRef.current.set(remoteTaskId, false);
+
+      const poll = async (attempt: number) => {
+        if (tasksPollAbortRef.current.get(remoteTaskId)) return;
+        try {
+          const r = await fetch(`${API_BASE}/tasks/${remoteTaskId}`);
+          const payload = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            throw new Error(payload.error || r.statusText);
+          }
+          const status = payload.status as "pending" | "running" | "completed" | "failed" | "cancelled";
+          if (status === "pending" || status === "running") {
+            const delay = Math.min(2000 + attempt * 500, 8000);
+            setTimeout(() => poll(attempt + 1), delay);
+            return;
+          }
+          if (status === "failed" || status === "cancelled") {
+            const msg = typeof payload.error === "string" ? payload.error : "Materialize failed.";
+            setMaterializeError(msg);
+            setBackgroundTasks((prev) =>
+              prev.map((t) =>
+                t.id === materializeTaskId
+                  ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
+                  : t
+              )
+            );
+            setChatSessions((prev) => {
+              const current = prev[activeChatId] ?? [];
+              return {
+                ...prev,
+                [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
+              };
+            });
+            setShowMaterializeModal(false);
+            return;
+          }
+          if (status === "completed") {
+            await applyMaterializeResult(payload.result ?? {});
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setMaterializeError(msg);
+          setBackgroundTasks((prev) =>
+            prev.map((t) =>
+              t.id === materializeTaskId
+                ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
+                : t
+            )
+          );
+          setChatSessions((prev) => {
+            const current = prev[activeChatId] ?? [];
+            return {
+              ...prev,
+              [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
+            };
+          });
+          setShowMaterializeModal(false);
+        } finally {
+          setMaterializeLoading(false);
+        }
+      };
+
+      poll(0);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMaterializeError(msg);
+      setBackgroundTasks((prev) =>
+        prev.map((t) =>
+          t.id === materializeTaskId
+            ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
+            : t
+        )
+      );
       setChatSessions((prev) => {
         const current = prev[activeChatId] ?? [];
-        const msg = `Materialize failed: ${err instanceof Error ? err.message : String(err)}`;
         return {
           ...prev,
-          [activeChatId]: [...current, { role: "assistant", content: msg }],
+          [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
         };
       });
       setShowMaterializeModal(false);
-    } finally {
       setMaterializeLoading(false);
     }
   }, [
     materializeTargetPath,
     accessToken,
     virtualNodes,
+    chatHistory,
+    isGreenfieldMode,
+    greenfieldSessionId,
+    greenfieldAcceptanceCriteria,
+    lastCriticResult,
     activeChatId,
     scanRepo,
+    activeWorkspaceId,
   ]);
+
+  const handleApprovePendingRail = useCallback(async () => {
+    if (!pendingRailApproval || !accessToken) return;
+    const { railId, rootPath } = pendingRailApproval;
+    try {
+      const res = await fetch(`${API_BASE}/materialize/approve`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ rootPath, railId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || res.statusText);
+      }
+      setPendingRailApproval(null);
+      setVirtualNodes([]);
+      setVirtualEdges([]);
+      setDesignHistory([]);
+      setMaterializeTargetPath("");
+      if (activeWorkspaceId) {
+        try {
+          const r = await fetch(`${API_BASE}/scan/refresh`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+          });
+          const refreshData = await r.json().catch(() => ({}));
+          if (r.ok && refreshData.nodes) {
+            setGraph(analyseGraph(refreshData));
+          }
+        } catch {
+          // ignore
+        }
+      }
+      setChatSessions((prev) => {
+        const current = prev[activeChatId] ?? [];
+        return {
+          ...prev,
+          [activeChatId]: [...current, { role: "assistant", content: "Materialization approved and applied." }],
+        };
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMaterializeError(msg);
+      setChatSessions((prev) => {
+        const current = prev[activeChatId] ?? [];
+        return {
+          ...prev,
+          [activeChatId]: [...current, { role: "assistant", content: `Approve failed: ${msg}` }],
+        };
+      });
+    }
+  }, [pendingRailApproval, accessToken, activeWorkspaceId, activeChatId]);
 
   const handleFixViolation = useCallback((v: CriticViolation) => {
     const fixPrompt =
@@ -3753,7 +5053,83 @@ export default function App() {
           >
             Chat
           </button>
+          <button
+            onClick={() => setSidebarTab("memories")}
+            style={{
+              flex: 1,
+              fontSize: 11,
+              padding: "4px 8px",
+              borderRadius: 999,
+              border:
+                sidebarTab === "memories"
+                  ? "1px solid #58a6ff"
+                  : "1px solid #30363d",
+              background: sidebarTab === "memories" ? "#1f2937" : "#161b22",
+              color: sidebarTab === "memories" ? "#e6edf3" : "#8b949e",
+              cursor: "pointer",
+            }}
+          >
+            Memories
+          </button>
         </div>
+
+        {/* Greenfield entry CTA when graph is empty and no proposed nodes */}
+        {sidebarTab === "dashboard" &&
+          graph?.nodes.length === 0 &&
+          (virtualNodes?.length ?? 0) === 0 && (
+            <div
+              style={{
+                background: "#111827",
+                borderRadius: 8,
+                padding: 12,
+                border: "1px dashed #4b5563",
+                marginBottom: 8,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#e5e7eb",
+                  marginBottom: 6,
+                  fontWeight: 600,
+                }}
+              >
+                Start in Greenfield Mode
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#9ca3af",
+                  marginBottom: 10,
+                }}
+              >
+                Design a new architecture from scratch. The agent will propose modules and
+                connections on the canvas without requiring a scanned repository.
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSidebarTab("chat");
+                  setAiQuestion(
+                    graph?.projectName
+                      ? `Design a clean, modular architecture for ${graph.projectName} from scratch.`
+                      : "Design a clean, modular architecture for a new project from scratch."
+                  );
+                }}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  background: "#4c1d95",
+                  color: "#e5e7eb",
+                  borderRadius: 6,
+                  border: "1px solid #7c3aed",
+                  cursor: "pointer",
+                }}
+              >
+                Design from scratch
+              </button>
+            </div>
+          )}
 
         {/* Dashboard content: project overview, edges, focus, violations, governance, proposed nodes */}
         {sidebarTab === "dashboard" && (
@@ -3895,6 +5271,151 @@ export default function App() {
             ))}
           </div>
 
+          {/* Agent tasks card — zero-height when no tasks */}
+          {tasksForWorkspace.filter((t) => t.dismissed !== true).length > 0 && (
+          <div
+            style={{
+              marginTop: 16,
+              paddingTop: 12,
+              borderTop: "1px solid #30363d",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#7d8590",
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                }}
+              >
+                Agent Tasks
+              </div>
+              {(() => {
+                const wsTasks = tasksForWorkspace;
+                const running = wsTasks.filter((t) => t.status === "running").length;
+                const needsReview = wsTasks.filter((t) => t.status === "needs_review").length;
+                const completed = wsTasks.filter((t) => t.status === "completed").length;
+                if (wsTasks.length === 0) {
+                  return (
+                    <span style={{ fontSize: 10, color: "#6b7280" }}>
+                      No tasks yet
+                    </span>
+                  );
+                }
+                return (
+                  <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
+                    {running} running ·{" "}
+                    <span style={{ color: needsReview > 0 ? "#f59e0b" : "#6b7280" }}>
+                      {needsReview} needs review
+                    </span>{" "}
+                    · {completed} completed
+                  </span>
+                );
+              })()}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {tasksForWorkspace
+                .filter((t) => t.dismissed !== true)
+                .slice()
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .slice(0, 5)
+                .map((t) => {
+                  const isAttention = t.status === "failed" || t.status === "needs_review";
+                  const border = isAttention ? "1px solid rgba(245,158,11,0.6)" : "1px solid #30363d";
+                  const bg = isAttention ? "rgba(245,158,11,0.06)" : "#111827";
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        setSidebarTab("chat");
+                        setActiveTaskId(t.id);
+                        setBackgroundTasks((prev) =>
+                          prev.map((x) =>
+                            x.id === t.id ? { ...x, reviewed: true } : x
+                          )
+                        );
+                      }}
+                      style={{
+                        width: "100%",
+                        padding: "6px 8px",
+                        borderRadius: 6,
+                        background: bg,
+                        border,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        cursor: "pointer",
+                        textAlign: "left",
+                      }}
+                    >
+                      <span
+                        style={{
+                          padding: "2px 6px",
+                          borderRadius: 999,
+                          border: "1px solid #30363d",
+                          fontSize: 9,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                          color: "#cbd5f5",
+                        }}
+                      >
+                        {t.mode}
+                      </span>
+                      <span
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 11,
+                          color: "#e5e7eb",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {t.label}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color:
+                            t.status === "running"
+                              ? "#60a5fa"
+                              : t.status === "completed"
+                                ? "#4ade80"
+                                : "#f59e0b",
+                        }}
+                      >
+                        {t.status === "needs_review" ? "needs review" : t.status}
+                      </span>
+                      {(t.retryAttempt != null && t.retryMax != null) && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontFamily: "monospace",
+                            color: (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
+                          }}
+                        >
+                          {t.retryAttempt}/{t.retryMax}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
+          )}
+
           {/* Edges */}
           <div
             style={{
@@ -4024,6 +5545,21 @@ export default function App() {
                 )}
               </div>
             </div>
+            {violationsRestoreError && (
+              <div
+                style={{
+                  padding: "6px 12px",
+                  margin: "0 12px 8px",
+                  background: "rgba(248,81,73,0.12)",
+                  border: "1px solid rgba(248,81,73,0.3)",
+                  borderRadius: 6,
+                  fontSize: 10,
+                  color: "#f87171",
+                }}
+              >
+                Could not restore violations: {violationsRestoreError}
+              </div>
+            )}
             {activeViolations.length === 0 ? (
               <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
                 No active violations. Ask the agent about your architecture to find issues.
@@ -4617,6 +6153,40 @@ export default function App() {
                 </button>
               )}
             </div>
+            {materializeError && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: 8,
+                  borderRadius: 6,
+                  background: "rgba(248,81,73,0.12)",
+                  border: "1px solid #f85149",
+                  color: "#f85149",
+                  fontSize: 11,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span>{materializeError}</span>
+                <button
+                  type="button"
+                  onClick={() => setMaterializeError(null)}
+                  style={{
+                    padding: "2px 6px",
+                    fontSize: 10,
+                    background: "transparent",
+                    color: "#f85149",
+                    border: "1px solid #f85149",
+                    borderRadius: 4,
+                    cursor: "pointer",
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             {virtualNodes.map((vn) => (
               <div
                 key={vn.id}
@@ -4791,6 +6361,12 @@ export default function App() {
                 setMaterializeTargetPath(graph?.projectRoot ?? "");
                 setShowMaterializeModal(true);
               }}
+              disabled={
+                tasksForWorkspace.some(
+                  (t) =>
+                    (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
+                )
+              }
               style={{
                 width: "100%",
                 marginTop: 10,
@@ -4802,11 +6378,62 @@ export default function App() {
                 fontSize: 12,
                 cursor: "pointer",
                 fontWeight: 600,
+                opacity: tasksForWorkspace.some(
+                  (t) => (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
+                )
+                  ? 0.5
+                  : 1,
               }}
-              title="Create folders and index files for all proposed nodes"
+              title={
+                tasksForWorkspace.some(
+                  (t) => (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
+                )
+                  ? "Acknowledge drift in the task detail panel first"
+                  : "Create folders and index files for all proposed nodes"
+              }
             >
               Materialize this Architecture
             </button>
+            <button
+              onClick={handleResetGreenfieldDraft}
+              style={{
+                width: "100%",
+                marginTop: 8,
+                padding: "8px 12px",
+                background: "#0d1117",
+                color: "#f85149",
+                border: "1px solid #f85149",
+                borderRadius: 6,
+                fontSize: 12,
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+              title="Delete the saved draft and start over"
+            >
+              Reset Greenfield Draft
+            </button>
+          </div>
+        )}
+
+        {sidebarTab === "memories" && (
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: 12,
+              background: "#1c2128",
+              borderRadius: 8,
+              border: "1px solid #30363d",
+            }}
+          >
+            <div style={{ color: "#7d8590", fontSize: 11, marginBottom: 12, textTransform: "uppercase", letterSpacing: 1 }}>
+              Workspace Memories
+            </div>
+            <MemoriesPanel
+              workspaceId={activeWorkspaceId}
+              accessToken={accessToken}
+              graph={graph}
+            />
           </div>
         )}
 
@@ -4819,33 +6446,76 @@ export default function App() {
             minHeight: 0,
           }}
         >
-          {/* Agent section: Chat tabs at top */}
-          <div
+        {/* Agent section: Chat tabs at top */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            paddingBottom: 8,
+            marginBottom: 8,
+            borderBottom: "1px solid #30363d",
+            flexShrink: 0,
+          }}
+        >
+          <span
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 4,
-              paddingBottom: 8,
-              marginBottom: 8,
-              borderBottom: "1px solid #30363d",
-              flexShrink: 0,
+              color: "#7d8590",
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: 1,
             }}
           >
-            <span
-              style={{
-                color: "#7d8590",
-                fontSize: 11,
-                textTransform: "uppercase",
-                letterSpacing: 1,
-                marginRight: 8,
-              }}
-            >
-              Agent
-            </span>
+            Agent
+          </span>
+          <span
+            style={{
+              padding: "2px 8px",
+              borderRadius: 999,
+              fontSize: 10,
+              textTransform: "uppercase",
+              letterSpacing: 0.5,
+              background:
+                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
+                  ? "rgba(22,163,74,0.16)"
+                  : "rgba(59,130,246,0.16)",
+              color:
+                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
+                  ? "#4ade80"
+                  : "#93c5fd",
+              border:
+                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
+                  ? "1px solid rgba(34,197,94,0.4)"
+                  : "1px solid rgba(59,130,246,0.4)",
+            }}
+          >
+            {graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
+              ? "Greenfield"
+              : "Analysis"}
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowThinkingPanel((v) => !v)}
+            style={{
+              marginLeft: "auto",
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid #374151",
+              background: showThinkingPanel ? "#111827" : "transparent",
+              color: "#9ca3af",
+              fontSize: 10,
+              cursor: "pointer",
+            }}
+          >
+            {showThinkingPanel ? "Hide thinking" : "Show thinking"}
+          </button>
             {chatTabs.map((tab) => (
               <div
                 key={tab.id}
-                onClick={() => setActiveChatId(tab.id)}
+                onClick={() => {
+                  setActiveChatId(tab.id);
+                  setActiveThreadId((tab as { threadId?: string }).threadId ?? null);
+                }}
                 onDoubleClick={(e) => {
                   e.stopPropagation();
                   setEditingTabId(tab.id);
@@ -4915,6 +6585,99 @@ export default function App() {
                 )}
               </div>
             ))}
+            <div style={{ position: "relative", display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 4 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setThreadListOpen((v) => !v);
+                  if (!threadListOpen) setThreadSearch("");
+                }}
+                title="Open a past conversation"
+                style={{
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  background: threadListOpen ? "#21262d" : "transparent",
+                  color: "#8b949e",
+                  border: "1px solid #30363d",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              >
+                History
+              </button>
+              {threadListOpen && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: "100%",
+                    left: 0,
+                    marginTop: 4,
+                    minWidth: 220,
+                    maxHeight: 280,
+                    background: "#0d1117",
+                    border: "1px solid #30363d",
+                    borderRadius: 8,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                    zIndex: 100,
+                    display: "flex",
+                    flexDirection: "column",
+                    overflow: "hidden",
+                  }}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <input
+                    type="text"
+                    value={threadSearch}
+                    onChange={(e) => setThreadSearch(e.target.value)}
+                    placeholder="Search threads…"
+                    style={{
+                      margin: 8,
+                      padding: "6px 10px",
+                      fontSize: 12,
+                      background: "#161b22",
+                      border: "1px solid #30363d",
+                      borderRadius: 6,
+                      color: "#e6edf3",
+                      outline: "none",
+                    }}
+                  />
+                  <div style={{ overflowY: "auto", flex: 1, maxHeight: 220 }}>
+                    {threadListLoading ? (
+                      <div style={{ padding: 12, color: "#8b949e", fontSize: 12 }}>Loading…</div>
+                    ) : threadList.length === 0 ? (
+                      <div style={{ padding: 12, color: "#8b949e", fontSize: 12 }}>No threads found</div>
+                    ) : (
+                      threadList.map((t) => (
+                        <div
+                          key={t.id}
+                          onClick={() => openThread(t)}
+                          style={{
+                            padding: "8px 12px",
+                            fontSize: 12,
+                            color: "#c9d1d9",
+                            cursor: "pointer",
+                            borderBottom: "1px solid #21262d",
+                          }}
+                          onMouseEnter={(e) => {
+                            e.currentTarget.style.background = "#21262d";
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.background = "transparent";
+                          }}
+                        >
+                          {(t.title || "Untitled").slice(0, 50)}
+                          {t.updated_at && (
+                            <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
+                              {new Date(t.updated_at).toLocaleDateString()}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               onClick={addChatTab}
               title="New chat — Start a fresh conversation. Your current chat history is preserved."
@@ -4926,12 +6689,675 @@ export default function App() {
                 border: "1px dashed #30363d",
                 borderRadius: 6,
                 cursor: "pointer",
-                marginLeft: 4,
               }}
             >
               +
             </button>
           </div>
+
+          {(() => {
+            const visibleTasks = tasksForWorkspace.filter((t) => t.dismissed !== true);
+            if (visibleTasks.length === 0) return null;
+            return (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: 8,
+                  borderRadius: 8,
+                  background: "#0d1117",
+                  border: "1px solid #30363d",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#7d8590",
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                    marginBottom: 6,
+                  }}
+                >
+                  Agent Tasks
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {visibleTasks
+                    .slice()
+                    .sort((a, b) => b.createdAt - a.createdAt)
+                    .slice(0, 8)
+                    .map((t) => {
+                      const statusColor =
+                        t.status === "running"
+                          ? "#58a6ff"
+                          : t.status === "completed"
+                            ? "#3fb950"
+                            : "#f59e0b";
+                      const isAttention = t.status === "failed" || t.status === "needs_review";
+                      return (
+                        <div
+                          key={t.id}
+                          onClick={() => {
+                            setActiveTaskId(t.id);
+                            setBackgroundTasks((prev) =>
+                              prev.map((x) =>
+                                x.id === t.id ? { ...x, reviewed: true } : x
+                              )
+                            );
+                          }}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: isAttention ? "1px solid rgba(245,158,11,0.4)" : "1px solid #21262d",
+                            background: isAttention ? "rgba(245,158,11,0.08)" : "transparent",
+                            cursor: "pointer",
+                          }}
+                          title="Click to view task details"
+                        >
+                          <span
+                            style={{
+                              padding: "2px 6px",
+                              borderRadius: 999,
+                              fontSize: 9,
+                              textTransform: "uppercase",
+                              letterSpacing: 0.5,
+                              border: "1px solid #30363d",
+                              color: "#c9d1d9",
+                            }}
+                          >
+                            {t.mode}
+                          </span>
+                          <span
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              color: "#e6edf3",
+                              fontSize: 11,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {t.label}
+                          </span>
+                          <span
+                            style={{
+                              padding: "2px 6px",
+                              borderRadius: 999,
+                              fontSize: 9,
+                              textTransform: "uppercase",
+                              letterSpacing: 0.5,
+                              background: `${statusColor}22`,
+                              border: `1px solid ${statusColor}55`,
+                              color: statusColor,
+                            }}
+                          >
+                            {t.status === "needs_review" ? "needs review" : t.status}
+                          </span>
+                          {t.totalSteps > 0 && (
+                            <span style={{ fontSize: 10, color: "#7d8590", fontFamily: "monospace" }}>
+                              {Math.min(t.currentStep, t.totalSteps)}/{t.totalSteps}
+                            </span>
+                          )}
+                          {(t.retryAttempt != null && t.retryMax != null) && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontFamily: "monospace",
+                                fontWeight: 600,
+                                color: t.status === "running" && (t.retryAttempt ?? 0) >= 2 ? "#f59e0b" : (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
+                              }}
+                            >
+                              Attempt {t.retryAttempt}/{t.retryMax}
+                            </span>
+                          )}
+                          {t.railId && (
+                            <a
+                              href="#"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setMainViewMode("board");
+                                setSelectedRailId(t.railId ?? null);
+                                setActiveTaskId(null);
+                              }}
+                              style={{
+                                fontSize: 10,
+                                color: "#58a6ff",
+                                textDecoration: "none",
+                              }}
+                            >
+                              View on Board
+                            </a>
+                          )}
+                          {(t.status === "completed" || t.reviewed === true) && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setBackgroundTasks((prev) =>
+                                  prev.map((x) =>
+                                    x.id === t.id ? { ...x, dismissed: true } : x
+                                  )
+                                );
+                                setActiveTaskId((cur) => (cur === t.id ? null : cur));
+                              }}
+                              title="Dismiss task"
+                              style={{
+                                padding: 0,
+                                width: 18,
+                                height: 18,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                background: "transparent",
+                                border: "1px solid #30363d",
+                                borderRadius: 6,
+                                color: "#7d8590",
+                                cursor: "pointer",
+                                fontSize: 12,
+                              }}
+                            >
+                              ×
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            );
+          })()}
+          {/* Thinking panel */}
+          {showThinkingPanel && (
+            <div
+              style={{
+                marginTop: 8,
+                marginBottom: 4,
+                padding: 8,
+                borderRadius: 6,
+                background: "#111827",
+                border: "1px solid #1f2937",
+                fontSize: 12,
+                color: "#9ca3af",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 4,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                    color: "#6b7280",
+                  }}
+                >
+                  Thinking
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowThinkingPanel(false)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "#6b7280",
+                    fontSize: 11,
+                    cursor: "pointer",
+                  }}
+                >
+                  Hide
+                </button>
+              </div>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+              {(() => {
+                const t = activeTaskId
+                  ? backgroundTasks.find((x) => x.id === activeTaskId)
+                  : backgroundTasks.find((x) => x.status === "running");
+                if (!t) return "The agent will stream its reasoning here as tasks run.";
+                return t.prompt ?? "No prompt recorded for this task.";
+              })()}
+            </div>
+            </div>
+          )}
+
+          {lastCriticResult && (
+            <div
+              style={{
+                marginBottom: 8,
+                padding: 10,
+                borderRadius: 6,
+                background: "#111827",
+                border: "1px solid #30363d",
+                fontSize: 11,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 10,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                  color: "#f59e0b",
+                  marginBottom: 6,
+                }}
+              >
+                Critic — score: {lastCriticResult.score}/10
+              </div>
+              <div style={{ color: "#9ca3af", marginBottom: 8, whiteSpace: "pre-wrap" }}>
+                {lastCriticResult.report}
+              </div>
+              {lastCriticResult.violations.length > 0 && (
+                <ul style={{ margin: 0, paddingLeft: 16, color: "#e5e7eb" }}>
+                  {lastCriticResult.violations.slice(0, 10).map((v, i) => (
+                    <li key={i}>
+                      [{v.severity}] {v.description}
+                    </li>
+                  ))}
+                  {lastCriticResult.violations.length > 10 && (
+                    <li>+{lastCriticResult.violations.length - 10} more</li>
+                  )}
+                </ul>
+              )}
+              <button
+                type="button"
+                onClick={() => setLastCriticResult(null)}
+                style={{
+                  marginTop: 6,
+                  padding: "2px 8px",
+                  fontSize: 10,
+                  background: "transparent",
+                  color: "#6b7280",
+                  border: "1px solid #374151",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {activeTaskId && (() => {
+            const task = backgroundTasks.find((t) => t.id === activeTaskId);
+            if (!task) return null;
+            return (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: 10,
+                  borderRadius: 6,
+                  background: "#0f172a",
+                  border: "1px solid #1e293b",
+                  fontSize: 11,
+                  maxHeight: 320,
+                  overflowY: "auto",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: 8,
+                    flexWrap: "wrap",
+                    gap: 6,
+                  }}
+                >
+                  <span style={{ color: "#e2e8f0", fontWeight: 600 }}>{task.label}</span>
+                  {task.logicPath && task.logicPath.length > 0 && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        fontSize: 10,
+                        fontFamily: "monospace",
+                        color: "#9ca3af",
+                      }}
+                    >
+                      {task.logicPath.map((step, i) => (
+                        <span key={i}>
+                          <span
+                            style={{
+                              color: task.currentStep === i ? "#58a6ff" : "#6b7280",
+                              fontWeight: task.currentStep === i ? 600 : 400,
+                            }}
+                          >
+                            {step}
+                          </span>
+                          {i < task.logicPath!.length - 1 && <span style={{ marginLeft: 4 }}>→</span>}
+                        </span>
+                      ))}
+                      {(task.hallucinationIndex ?? 0) > 0.5 && (
+                        <span style={{ marginLeft: 6, color: "#f59e0b" }}>⚠ drift</span>
+                      )}
+                    </div>
+                  )}
+                  <span
+                    style={{
+                      padding: "2px 6px",
+                      borderRadius: 4,
+                      fontSize: 10,
+                      background:
+                        task.status === "running"
+                          ? "rgba(59,130,246,0.2)"
+                          : task.status === "failed" || task.status === "needs_review"
+                            ? "rgba(248,81,73,0.2)"
+                            : "rgba(34,197,94,0.2)",
+                      color: "#e2e8f0",
+                    }}
+                  >
+                    {task.status}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBackgroundTasks((prev) =>
+                        prev.map((x) =>
+                          x.id === task.id ? { ...x, reviewed: true } : x
+                        )
+                      );
+                      setActiveTaskId(null);
+                    }}
+                    style={{
+                      padding: "2px 6px",
+                      background: "transparent",
+                      border: "none",
+                      color: "#94a3b8",
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
+                  <strong>Thinking</strong>
+                </div>
+                <div style={{ color: "#9ca3af", fontSize: 11, marginBottom: 4 }}>
+                  {task.prompt ?? "No prompt available."}
+                </div>
+                {task.answerPreview && (
+                  <div
+                    style={{
+                      color: "#6b7280",
+                      fontSize: 11,
+                      marginBottom: 6,
+                      maxHeight: 80,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {task.answerPreview}
+                  </div>
+                )}
+                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
+                  <strong>Exploring</strong>
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 18, color: "#9ca3af", fontSize: 11, marginBottom: 6 }}>
+                  {task.steps.map((s, idx) => {
+                    const stepDone = task.totalSteps > 0 && task.currentStep > idx;
+                    return (
+                      <li
+                        key={idx}
+                        style={{
+                          textDecoration: stepDone ? "line-through" : undefined,
+                          color: stepDone ? "#6b7280" : "#9ca3af",
+                        }}
+                      >
+                        {idx + 1}. {s}
+                        {stepDone && " ✓"}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 2 }}>
+                  <strong>Todos</strong>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <div
+                    style={{
+                      flex: 1,
+                      height: 4,
+                      borderRadius: 999,
+                      background: "#111827",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <div
+                      style={{
+                        width:
+                          task.totalSteps > 0
+                            ? `${(Math.min(task.currentStep, task.totalSteps) / task.totalSteps) * 100}%`
+                            : "0%",
+                        height: "100%",
+                        background: "#22c55e",
+                        transition: "width 0.2s ease",
+                      }}
+                    />
+                  </div>
+                  <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
+                    {task.totalSteps > 0
+                      ? `${Math.min(task.currentStep, task.totalSteps)}/${task.totalSteps}`
+                      : "0/0"}
+                  </span>
+                </div>
+                {(task.retryAttempt != null || task.rejectionReason) && (
+                  <div style={{ marginBottom: 8, padding: 8, background: "rgba(245,158,11,0.08)", borderRadius: 6, border: "1px solid rgba(245,158,11,0.3)" }}>
+                    <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                      Self-correcting
+                    </div>
+                    {task.retryAttempt != null && task.retryMax != null && (
+                      <div style={{ fontSize: 10, color: "#e5e7eb", marginBottom: 4 }}>
+                        Attempt {task.retryAttempt}/{task.retryMax}
+                      </div>
+                    )}
+                    {task.rejectionReason && (
+                      <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 4 }}>
+                        <strong>Rejection:</strong> {task.rejectionReason}
+                      </div>
+                    )}
+                    {task.selfCorrectingChange && (
+                      <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                        <strong>Changing:</strong> {task.selfCorrectingChange}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {(task.hallucinationIndex != null && task.hallucinationIndex > 0) && (
+                  <div style={{ marginBottom: 8, padding: 8, background: "rgba(245,158,11,0.06)", borderRadius: 6, border: "1px solid rgba(245,158,11,0.2)" }}>
+                    <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                      Drift
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <div style={{ flex: 1, height: 6, background: "#111827", borderRadius: 999, overflow: "hidden" }}>
+                        <div
+                          style={{
+                            width: `${Math.min(100, task.hallucinationIndex! * 100)}%`,
+                            height: "100%",
+                            background: (task.hallucinationIndex ?? 0) > 0.5 ? "#f85149" : "#f59e0b",
+                            transition: "width 0.2s",
+                          }}
+                        />
+                      </div>
+                      <span style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af" }}>
+                        {(task.hallucinationIndex! * 100).toFixed(0)}%
+                      </span>
+                    </div>
+                    {(task.hallucinationIndex ?? 0) > 0.5 && !task.hallucinationAcknowledged && (
+                      <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 4 }}>
+                        Acknowledge drift to allow materialize.
+                      </div>
+                    )}
+                    {!task.hallucinationAcknowledged && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBackgroundTasks((prev) =>
+                            prev.map((x) => (x.id === task.id ? { ...x, hallucinationAcknowledged: true } : x))
+                          );
+                        }}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 10,
+                          background: "rgba(34,197,94,0.2)",
+                          color: "#4ade80",
+                          border: "1px solid #22c55e",
+                          borderRadius: 4,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Acknowledge drift
+                      </button>
+                    )}
+                  </div>
+                )}
+                {(task.kind === "materialize" || task.label === "Materialize architecture") &&
+                  (() => {
+                    const paths: string[] =
+                      task.status === "completed" && task.result && typeof task.result === "object" && Array.isArray((task.result as { created?: string[] }).created)
+                        ? (task.result as { created: string[] }).created
+                        : virtualNodes.map((n) => {
+                            const id = n.archNodeId ?? n.id;
+                            return /\.(ts|tsx|js|jsx)$/.test(id) ? id : `${id}/index.ts`;
+                          });
+                    if (paths.length === 0) return null;
+                    const isDone = task.status === "completed";
+                    return (
+                      <div style={{ marginBottom: 8 }}>
+                        <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
+                          <strong>Files</strong>
+                        </div>
+                        <div
+                          style={{
+                            maxHeight: 100,
+                            overflowY: "auto",
+                            padding: "6px 8px",
+                            background: "#0d1117",
+                            borderRadius: 4,
+                            border: "1px solid #21262d",
+                            fontSize: 10,
+                            fontFamily: "monospace",
+                            color: "#9ca3af",
+                          }}
+                        >
+                          {paths.map((p, i) => (
+                            <div
+                              key={i}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "2px 0",
+                              }}
+                            >
+                              <span style={{ color: isDone ? "#22c55e" : "#6b7280", flexShrink: 0 }}>
+                                {isDone ? "✓" : "⏳"}
+                              </span>
+                              <span style={{ wordBreak: "break-all" }}>{p}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                {(task.kind === "materialize" || task.label === "Materialize architecture") &&
+                  task.status === "failed" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (virtualNodes.length > 0 && materializeTargetPath.trim()) {
+                        handleMaterialize();
+                      } else {
+                        setShowMaterializeModal(true);
+                      }
+                    }}
+                    style={{
+                      marginTop: 4,
+                      padding: "6px 12px",
+                      fontSize: 11,
+                      background: "rgba(34,197,94,0.2)",
+                      color: "#4ade80",
+                      border: "1px solid #22c55e",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Retry materialize
+                  </button>
+                )}
+                {task.status === "completed" &&
+                  task.label === "Materialize architecture" &&
+                  lastMaterializedSnapshot && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!lastMaterializedSnapshot || !accessToken) return;
+                      try {
+                        const res = await fetch(`${API_BASE}/materialize/undo`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${accessToken}`,
+                          },
+                          body: JSON.stringify({
+                            targetRoot: lastMaterializedSnapshot.targetRoot,
+                            created: lastMaterializedSnapshot.created,
+                          }),
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                          throw new Error(data.error || res.statusText);
+                        }
+                        setLastMaterializedSnapshot(null);
+                        setChatSessions((prev) => {
+                          const current = prev[activeChatId] ?? [];
+                          const msg = data.message ?? "Undo materialization completed.";
+                          return {
+                            ...prev,
+                            [activeChatId]: [...current, { role: "assistant", content: msg }],
+                          };
+                        });
+                        if (lastMaterializedSnapshot.targetRoot) {
+                          setRepoUrl(lastMaterializedSnapshot.targetRoot);
+                          await scanRepo(lastMaterializedSnapshot.targetRoot);
+                        }
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setMaterializeError(msg);
+                        setChatSessions((prev) => {
+                          const current = prev[activeChatId] ?? [];
+                          return {
+                            ...prev,
+                            [activeChatId]: [...current, { role: "assistant", content: `Undo failed: ${msg}` }],
+                          };
+                        });
+                      }
+                    }}
+                    style={{
+                      marginTop: 4,
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      background: "rgba(248,81,73,0.15)",
+                      color: "#f87171",
+                      border: "1px solid #f87171",
+                      borderRadius: 4,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Undo materialization
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
           {/* Chat history */}
           <div
             ref={chatScrollRef}
@@ -4945,6 +7371,91 @@ export default function App() {
               minHeight: 80,
             }}
           >
+            {(() => {
+              const needsReviewTasks = tasksForWorkspace.filter(
+                (x) =>
+                  x.dismissed !== true &&
+                  (x.status === "failed" || x.status === "needs_review") &&
+                  x.toastDismissed !== true &&
+                  x.reviewed !== true
+              );
+              if (needsReviewTasks.length === 0) return null;
+              const t = needsReviewTasks[0];
+              const count = needsReviewTasks.length;
+              const color = t.status === "failed" ? "#f85149" : "#f59e0b";
+              const bg = t.status === "failed" ? "rgba(248,81,73,0.12)" : "rgba(245,158,11,0.12)";
+              const border = t.status === "failed" ? "1px solid #f85149" : "1px solid rgba(245,158,11,0.5)";
+              return (
+                <div
+                  style={{
+                    padding: 10,
+                    borderRadius: 8,
+                    background: bg,
+                    border,
+                    color,
+                    fontSize: 12,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: 1, opacity: 0.9 }}>
+                      {count > 1 ? `${count} tasks need review` : "Needs review"}
+                    </div>
+                    <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {count > 1 ? "Click Review to open the first task" : t.label}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTaskId(t.id);
+                        setBackgroundTasks((prev) =>
+                          prev.map((x) =>
+                            x.id === t.id ? { ...x, reviewed: true } : x
+                          )
+                        );
+                      }}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: 11,
+                        background: "transparent",
+                        color,
+                        border: `1px solid ${color}`,
+                        borderRadius: 6,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Review
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBackgroundTasks((prev) =>
+                          prev.map((x) =>
+                            needsReviewTasks.some((n) => n.id === x.id) ? { ...x, toastDismissed: true } : x
+                          )
+                        );
+                      }}
+                      style={{
+                        padding: "4px 10px",
+                        fontSize: 11,
+                        background: "transparent",
+                        color: "#7d8590",
+                        border: "1px solid #30363d",
+                        borderRadius: 6,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
             {chatHistory.length === 0 && !chatLoading && (
               <div
                 style={{
@@ -4959,6 +7470,9 @@ export default function App() {
             )}
             {chatHistory.map((m, i) => {
               const isCritic = m.role === "assistant" && m.content.startsWith("Critic:");
+              const isAssistant = m.role === "assistant" && !isCritic;
+              const prevUser = i > 0 && chatHistory[i - 1]?.role === "user" ? chatHistory[i - 1]?.content : null;
+              const contentToSave = prevUser ? `${prevUser}\n\n${m.content}` : m.content;
               return (
               <div
                 key={i}
@@ -4976,15 +7490,92 @@ export default function App() {
               >
                 <div
                   style={{
-                    fontSize: 10,
-                      color: isCritic ? "#f59e0b" : "#7d8590",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
                     marginBottom: 4,
-                    textTransform: "uppercase",
                   }}
                 >
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: isCritic ? "#f59e0b" : "#7d8590",
+                      textTransform: "uppercase",
+                    }}
+                  >
                     {m.role === "user" ? "You" : isCritic ? "Critic" : "Assistant"}
+                  </div>
+                  {isAssistant && accessToken && activeWorkspaceId && (
+                    <RememberThisButton
+                      content={contentToSave.slice(0, 5000)}
+                      nodeId={selectedNode ?? undefined}
+                      workspaceId={activeWorkspaceId}
+                      accessToken={accessToken}
+                    />
+                  )}
                 </div>
-                {m.content}
+                <ReactMarkdown
+                  components={{
+                    code({ node, className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || "");
+                      const isBlock =
+                        match || String(children).includes("\n");
+
+                      if (isBlock && match) {
+                        return (
+                          <SyntaxHighlighter
+                            style={vscDarkPlus}
+                            language={match[1]}
+                            PreTag="div"
+                            customStyle={{
+                              borderRadius: "8px",
+                              fontSize: "0.875em",
+                              margin: "12px 0",
+                            }}
+                          >
+                            {String(children).replace(/\n$/, "")}
+                          </SyntaxHighlighter>
+                        );
+                      }
+
+                      if (isBlock) {
+                        return (
+                          <SyntaxHighlighter
+                            style={vscDarkPlus}
+                            PreTag="div"
+                            customStyle={{
+                              borderRadius: "8px",
+                              fontSize: "0.875em",
+                              margin: "12px 0",
+                            }}
+                          >
+                            {String(children).replace(/\n$/, "")}
+                          </SyntaxHighlighter>
+                        );
+                      }
+
+                      // Inline code
+                      return (
+                        <code
+                          style={{
+                            backgroundColor: "rgba(255, 100, 100, 0.15)",
+                            color: "#ff6b6b",
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                            fontSize: "0.875em",
+                            fontFamily: "monospace",
+                            border: "1px solid rgba(255, 100, 100, 0.3)",
+                          }}
+                          {...props}
+                        >
+                          {children}
+                        </code>
+                      );
+                    },
+                  }}
+                >
+                  {m.content}
+                </ReactMarkdown>
               </div>
               );
             })}
@@ -5045,6 +7636,100 @@ export default function App() {
               >
                 Fix this
               </button>
+            </div>
+          )}
+
+          {lastMaterializedSnapshot && (
+            <div
+              style={{
+                padding: "8px 10px",
+                background: "rgba(34,197,94,0.1)",
+                border: "1px solid rgba(34,197,94,0.3)",
+                borderRadius: 6,
+                fontSize: 11,
+                color: "#4ade80",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 8,
+              }}
+            >
+              <span>Materialized {lastMaterializedSnapshot.created.length} file(s) into {lastMaterializedSnapshot.targetRoot}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!lastMaterializedSnapshot || !accessToken) return;
+                  try {
+                    const res = await fetch(`${API_BASE}/materialize/undo`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                      body: JSON.stringify({
+                        targetRoot: lastMaterializedSnapshot.targetRoot,
+                        created: lastMaterializedSnapshot.created,
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      throw new Error(data.error || res.statusText);
+                    }
+                    setLastMaterializedSnapshot(null);
+                    setChatSessions((prev) => {
+                      const current = prev[activeChatId] ?? [];
+                      const msg = data.message ?? "Undo materialization completed.";
+                      return {
+                        ...prev,
+                        [activeChatId]: [...current, { role: "assistant", content: msg }],
+                      };
+                    });
+                    if (lastMaterializedSnapshot.targetRoot) {
+                      setRepoUrl(lastMaterializedSnapshot.targetRoot);
+                      await scanRepo(lastMaterializedSnapshot.targetRoot);
+                    }
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    setMaterializeError(msg);
+                    setChatSessions((prev) => {
+                      const current = prev[activeChatId] ?? [];
+                      return {
+                        ...prev,
+                        [activeChatId]: [...current, { role: "assistant", content: `Undo failed: ${msg}` }],
+                      };
+                    });
+                  }
+                }}
+                style={{
+                  padding: "2px 8px",
+                  fontSize: 10,
+                  background: "transparent",
+                  color: "#4ade80",
+                  border: "1px solid rgba(34,197,94,0.5)",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Undo
+              </button>
+            </div>
+          )}
+
+          {tokenWarning && (
+            <div
+              style={{
+                padding: "6px 10px",
+                marginBottom: 8,
+                background: tokenWarning.overBudget ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)",
+                border: tokenWarning.overBudget ? "1px solid rgba(239,68,68,0.4)" : "1px solid rgba(245,158,11,0.4)",
+                borderRadius: 6,
+                fontSize: 11,
+                color: tokenWarning.overBudget ? "#f87171" : "#fbbf24",
+              }}
+            >
+              {tokenWarning.overBudget
+                ? `Context over limit (${((tokenWarning.input + tokenWarning.output) / 1000).toFixed(1)}K tokens). Start a new chat to avoid errors.`
+                : `Context near limit (${((tokenWarning.input + tokenWarning.output) / 1000).toFixed(1)}K tokens). Consider starting a new chat.`}
             </div>
           )}
 
@@ -5167,7 +7852,11 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setShowWorkspaceDropUp(false);
-                    setShowNewRepoConfirm(true);
+                    if (virtualNodes.length > 0 && greenfieldSessionId) {
+                      setShowReplaceDraftPrompt(true);
+                    } else {
+                      setShowNewRepoConfirm(true);
+                    }
                   }}
                   style={{
                     width: "100%",
@@ -5238,6 +7927,89 @@ export default function App() {
         }}
       />
 
+      {showReplaceDraftPrompt && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+          }}
+          onClick={() => setShowReplaceDraftPrompt(false)}
+        >
+          <div
+            style={{
+              background: "#21262d",
+              border: "1px solid #30363d",
+              borderRadius: 8,
+              padding: 20,
+              maxWidth: 380,
+              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ marginBottom: 12, fontSize: 14, color: "#e6edf3" }}>
+              Replace existing draft?
+            </div>
+            <div style={{ marginBottom: 16, fontSize: 12, color: "#9ca3af" }}>
+              You have an unsaved Greenfield draft. What would you like to do?
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              <button
+                onClick={() => setShowReplaceDraftPrompt(false)}
+                style={{
+                  padding: "8px 16px",
+                  background: "#30363d",
+                  color: "#e6edf3",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowReplaceDraftPrompt(false);
+                  // Keep existing — stay on current draft
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "#238636",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Keep existing
+              </button>
+              <button
+                onClick={() => {
+                  setShowReplaceDraftPrompt(false);
+                  handleNewRepo();
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "#f85149",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Replace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showNewRepoConfirm && (
         <div
           style={{
@@ -5339,36 +8111,64 @@ export default function App() {
             <div style={{ marginBottom: 12, fontSize: 12, color: "#7d8590" }}>
               Enter the target folder path where modules will be created:
             </div>
-            {virtualNodes.length > 0 && (
-              <div
-                style={{
-                  marginBottom: 12,
-                  padding: 8,
-                  background: "#0d1117",
-                  borderRadius: 6,
-                  fontSize: 11,
-                  color: "#7d8590",
-                  maxHeight: 100,
-                  overflowY: "auto",
-                }}
-              >
-                <div style={{ marginBottom: 4, color: "#a78bfa" }}>
-                  Will create {virtualNodes.length} node(s):
-                </div>
-                {virtualNodes.map((vn) => {
-                  const path = vn.archNodeId ?? vn.id;
-                  const filePath = path.includes(".") ? path : `${path}/index.ts`;
-                  const full = materializeTargetPath.trim()
-                    ? `${materializeTargetPath.trim()}/${filePath}`
-                    : filePath;
-                  return (
-                    <div key={vn.id} style={{ fontFamily: "monospace", marginBottom: 2 }}>
-                      {full}
+            {virtualNodes.length > 0 && (() => {
+              const base = materializeTargetPath.trim();
+              const paths = virtualNodes.map((vn) => {
+                const path = vn.archNodeId ?? vn.id;
+                return path.includes(".") ? path : `${path}/index.ts`;
+              });
+              const fullPaths = base ? paths.map((p) => `${base}/${p}`) : paths;
+              const tree: Record<string, unknown> = {};
+              for (const p of fullPaths) {
+                const parts = p.split("/").filter(Boolean);
+                let cur: Record<string, unknown> = tree;
+                for (let i = 0; i < parts.length; i++) {
+                  const key = parts[i];
+                  const isFile = i === parts.length - 1 && (key.includes(".") || key === "index.ts");
+                  if (isFile) {
+                    cur[key] = "file";
+                  } else {
+                    if (!(key in cur) || cur[key] === "file") cur[key] = {};
+                    cur = cur[key] as Record<string, unknown>;
+                  }
+                }
+              }
+              const renderTree = (obj: Record<string, unknown>, indent: number) => {
+                return Object.entries(obj).map(([k, v]) =>
+                  v === "file" ? (
+                    <div key={k} style={{ fontFamily: "monospace", marginLeft: indent * 12, marginBottom: 2, color: "#94a3b8" }}>
+                      {k}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                  ) : (
+                    <div key={k}>
+                      <div style={{ fontFamily: "monospace", marginLeft: indent * 12, marginBottom: 2, color: "#a78bfa" }}>
+                        {k}/
+                      </div>
+                      {renderTree((v as Record<string, unknown>) ?? {}, indent + 1)}
+                    </div>
+                  )
+                );
+              };
+              return (
+                <div
+                  style={{
+                    marginBottom: 12,
+                    padding: 8,
+                    background: "#0d1117",
+                    borderRadius: 6,
+                    fontSize: 11,
+                    color: "#7d8590",
+                    maxHeight: 140,
+                    overflowY: "auto",
+                  }}
+                >
+                  <div style={{ marginBottom: 6, color: "#a78bfa" }}>
+                    Will create {virtualNodes.length} node(s):
+                  </div>
+                  {renderTree(tree, 0)}
+                </div>
+              );
+            })()}
             <input
               type="text"
               value={materializeTargetPath}
@@ -5424,7 +8224,115 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, minWidth: 0 }}>
+      {pendingRailApproval && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+          }}
+          onClick={() => setPendingRailApproval(null)}
+        >
+          <div
+            style={{
+              background: "#21262d",
+              border: "1px solid #30363d",
+              borderRadius: 8,
+              padding: 20,
+              maxWidth: 420,
+              width: "90%",
+              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ marginBottom: 10, fontSize: 14, color: "#e6edf3" }}>
+              Approve materialization
+            </div>
+            <div style={{ marginBottom: 12, fontSize: 12, color: "#7d8590" }}>
+              Rail: <span style={{ fontFamily: "monospace", color: "#a78bfa" }}>{pendingRailApproval.railId}</span>
+            </div>
+            <div style={{ marginBottom: 16, fontSize: 12, color: "#7d8590" }}>
+              Target: <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>{pendingRailApproval.rootPath}</span>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setPendingRailApproval(null)}
+                style={{
+                  padding: "8px 16px",
+                  background: "#30363d",
+                  color: "#e6edf3",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Not yet
+              </button>
+              <button
+                onClick={handleApprovePendingRail}
+                style={{
+                  padding: "8px 16px",
+                  background: "#7c3aed",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Approve & apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {/* [ Graph | Board | Chat ] tabs */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "8px 12px",
+            borderBottom: "1px solid #30363d",
+            flexShrink: 0,
+          }}
+        >
+          {(["graph", "board"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => {
+                const hasActiveTask = tasksForWorkspace.some((t) => t.status === "running");
+                const hasUnsavedGhosts = virtualNodes.length > 0;
+                if ((hasActiveTask || hasUnsavedGhosts) && mainViewMode !== mode) {
+                  setPendingModeSwitch(mode);
+                  setShowModeSwitchConfirm(true);
+                  return;
+                }
+                setMainViewMode(mode);
+              }}
+              style={{
+                padding: "6px 12px",
+                fontSize: 12,
+                borderRadius: 6,
+                border: "1px solid transparent",
+                background: mainViewMode === mode ? "#238636" : "transparent",
+                color: mainViewMode === mode ? "white" : "#8b949e",
+                cursor: "pointer",
+              }}
+            >
+              {mode.charAt(0).toUpperCase() + mode.slice(1)}
+            </button>
+          ))}
+        </div>
+        {mainViewMode === "graph" && (
         <ArchCanvas
           graph={graph!}
           selectedNode={selectedNode}
@@ -5432,9 +8340,30 @@ export default function App() {
           repoUrl={repoUrl}
           onNodeSelect={setSelectedNode}
           edgeFilter={activeFilters}
-          agentGraphCommand={agentGraphCommand}
+          agentGraphCommand={
+            mainViewMode === "graph" &&
+            selectedRailDetail &&
+            (selectedRailDetail.baselineNodeIds?.length ||
+              (Array.isArray(selectedRailDetail.logicPath) &&
+                selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string")))
+              ? {
+                  action: "highlight_nodes" as const,
+                  nodeIds:
+                    selectedRailDetail.baselineNodeIds ??
+                    (selectedRailDetail.logicPath ?? [])
+                      .map((s: any) => (s && typeof s.nodeId === "string" ? s.nodeId : null))
+                      .filter(Boolean),
+                }
+              : agentGraphCommand
+          }
           proposedNodes={virtualNodes}
           proposedEdges={virtualEdges}
+          ghostNodeStatus={
+            virtualNodes.length > 0 &&
+            tasksForWorkspace.some((t) => t.kind === "materialize" && t.status === "failed")
+              ? "error"
+              : undefined
+          }
           onRenameWorkspace={handleRenameWorkspaceTitle}
           onShare={activeWorkspaceId ? handleShare : undefined}
           onSave={activeWorkspaceId ? handleSaveWorkspace : undefined}
@@ -5445,8 +8374,893 @@ export default function App() {
           autosaveEnabled={autosaveEnabled}
           onToggleAutosave={setAutosaveEnabled}
         />
+        )}
+        {mainViewMode === "board" && (
+          <div
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+              background: "#0d1117",
+              minWidth: 0,
+            }}
+          >
+            <div style={{ padding: "16px 16px 12px", flexShrink: 0 }}>
+              <div style={{ fontSize: 11, color: "#7d8590", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+                Board
+              </div>
+            </div>
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                padding: "0 16px 16px",
+                minHeight: 0,
+              }}
+            >
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 10,
+                marginBottom: 14,
+                alignItems: "center",
+                minWidth: 0,
+              }}
+            >
+                  <input
+                    type="text"
+                    value={railSearch}
+                    onChange={(e) => setRailSearch(e.target.value)}
+                    placeholder="Search rails by outcome, archetype, session…"
+                    style={{
+                      flex: 1,
+                      minWidth: 180,
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #30363d",
+                      background: "#010409",
+                      color: "#e6edf3",
+                    }}
+                  />
+                  {savedWorkspaces.length > 1 && (
+                    <select
+                      value={railWorkspaceFilter ?? ""}
+                      onChange={(e) => setRailWorkspaceFilter(e.target.value ? e.target.value : null)}
+                      style={{
+                        padding: "6px 8px",
+                        fontSize: 12,
+                        borderRadius: 6,
+                        border: "1px solid #30363d",
+                        background: "#010409",
+                        color: "#e6edf3",
+                      }}
+                    >
+                      <option value="">Current workspace</option>
+                      {savedWorkspaces.map((w: { id: string; title?: string }) => (
+                        <option key={w.id} value={w.id}>
+                          {(w as { title?: string }).title ?? w.id}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <select
+                    value={railArchetypeFilter}
+                    onChange={(e) => setRailArchetypeFilter(e.target.value)}
+                    style={{
+                      padding: "6px 8px",
+                      fontSize: 12,
+                      borderRadius: 6,
+                      border: "1px solid #30363d",
+                      background: "#010409",
+                      color: "#e6edf3",
+                    }}
+                  >
+                    <option value="all">All archetypes</option>
+                    {Array.from(
+                      new Set((rails ?? []).map((r) => r.archetype).filter((a): a is string => !!a))
+                    ).map((a) => (
+                      <option key={a} value={a}>
+                        {a}
+                      </option>
+                    ))}
+                  </select>
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 11,
+                      color: "#9ca3af",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={railOnlyWithFailures}
+                      onChange={(e) => setRailOnlyWithFailures(e.target.checked)}
+                    />
+                    <span>Only with verification failures</span>
+                  </label>
+                </div>
+            {railDropError && (
+                  <div
+                    style={{
+                      marginBottom: 12,
+                      padding: "8px 12px",
+                      borderRadius: 6,
+                      background: "rgba(248,113,113,0.15)",
+                      border: "1px solid rgba(248,113,113,0.5)",
+                      color: "#fecaca",
+                      fontSize: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span>{railDropError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setRailDropError(null)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "#fecaca",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        padding: "0 4px",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+            <div
+              style={{
+                display: "flex",
+                gap: 16,
+                alignItems: "stretch",
+                overflowX: "auto",
+                overflowY: "hidden",
+                paddingBottom: 8,
+                minHeight: "min(420px, calc(100vh - 200px))",
+              }}
+            >
+                {(
+                  [
+                  { key: "PRE_PLANNING", label: "Pre-planning" },
+                  { key: "PLANNING", label: "Planning" },
+                  { key: "AWAITING_APPROVAL", label: "Awaiting approval" },
+                  { key: "EXECUTING", label: "Executing" },
+                  { key: "VERIFYING", label: "Verifying" },
+                  { key: "SELF_CORRECTING", label: "Self-correcting" },
+                  { key: "MATERIALIZING", label: "Materializing" },
+                  { key: "ARCHIVED", label: "Archived" },
+                  { key: "FAILED", label: "Failed" },
+                  { key: "SUSPENDED", label: "Suspended" },
+                ] as const
+                ).map((col, colIndex) => {
+                  const columnAll = filteredRails.filter((r) => r.state === col.key);
+                  const items = columnAll.slice(0, railsPerColumn);
+                  const isEmpty = items.length === 0;
+                  const isFirstColumn = colIndex === 0;
+                  const showOnboarding = isFirstColumn && rails.length === 0;
+                  return (
+                    <div
+                      key={col.key}
+                      style={{
+                        minWidth: 280,
+                        width: 280,
+                        flexShrink: 0,
+                        background: "#161b22",
+                        borderRadius: 12,
+                        border: "1px solid #21262d",
+                        padding: 12,
+                        display: "flex",
+                        flexDirection: "column",
+                        boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                      }}
+                      onDrop={async (e) => {
+                        e.preventDefault();
+                        setRailDropError(null);
+                        const railId = e.dataTransfer.getData("application/x-rail-id");
+                        if (!railId || !activeWorkspaceId || !accessToken) return;
+                        try {
+                          const res = await fetch(
+                            `${API_BASE}/rails/${encodeURIComponent(railId)}/state?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+                            {
+                              method: "POST",
+                              headers: {
+                                "Content-Type": "application/json",
+                                Authorization: `Bearer ${accessToken}`,
+                              },
+                              body: JSON.stringify({ state: col.key }),
+                            }
+                          );
+                          const data = await res.json().catch(() => ({}));
+                          if (!res.ok) {
+                            const msg = typeof data.error === "string" ? data.error : `Invalid transition. ${col.key} may not be allowed.`;
+                            setRailDropError(msg);
+                            setTimeout(() => setRailDropError(null), 6000);
+                            return;
+                          }
+                          setRails((prev) =>
+                            prev.map((r) => (r.id === railId ? { ...r, state: data.state ?? col.key } : r))
+                          );
+                        } catch (err) {
+                          const msg = err instanceof Error ? err.message : "Failed to move rail.";
+                          setRailDropError(msg);
+                          setTimeout(() => setRailDropError(null), 6000);
+                        }
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: 10,
+                          paddingBottom: 8,
+                          borderBottom: "1px solid #21262d",
+                        }}
+                      >
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "#e6edf3" }}>{col.label}</span>
+                        <span style={{ fontSize: 11, color: "#6b7280", fontFamily: "monospace" }}>
+                          {columnAll.length}
+                          {columnAll.length > railsPerColumn ? ` (${items.length})` : ""}
+                        </span>
+                      </div>
+                      <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+                          {showOnboarding ? (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "#7d8590",
+                            lineHeight: 1.5,
+                            padding: 12,
+                            background: "rgba(33,38,45,0.6)",
+                            borderRadius: 8,
+                            border: "1px dashed #30363d",
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: 6, color: "#9ca3af" }}>No rails yet</div>
+                          <div style={{ color: "#6b7280" }}>
+                            Rails are agent work items that move left→right as tasks run. Create them
+                            from Chat (analysis) or Greenfield (materialize). Each rail tracks tasks,
+                            verification, and state.
+                          </div>
+                        </div>
+                      ) : items.length === 0 ? (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            color: "#4b5563",
+                            padding: 12,
+                            fontStyle: "italic",
+                          }}
+                        >
+                          No rails in this state. Drop rails here.
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          <VirtualizedRailList
+                            items={items}
+                            onCardClick={(r) => setSelectedRailId(r.id)}
+                            onApproveClick={
+                              graph?.projectRoot
+                                ? (r) => {
+                                    setPendingRailApproval({ railId: r.id, rootPath: graph.projectRoot ?? "" });
+                                    setSelectedRailId(null);
+                                    setSelectedRailDetail(null);
+                                  }
+                                : undefined
+                            }
+                          />
+                          {columnAll.length > items.length && (
+                            <button
+                              type="button"
+                              onClick={() => setRailsPerColumn((n) => n + 50)}
+                              style={{
+                                marginTop: 4,
+                                padding: "4px 6px",
+                                fontSize: 10,
+                                borderRadius: 999,
+                                border: "1px solid #374151",
+                                background: "#020617",
+                                color: "#9ca3af",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Show more…
+                            </button>
+                          )}
+                        </div>
+                      )}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
+
+      {selectedRailDetail && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 90,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={() => {
+            setSelectedRailId(null);
+            setSelectedRailDetail(null);
+            setSelectedRailSandboxPaths(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#010409",
+              borderRadius: 12,
+              border: "1px solid #30363d",
+              maxWidth: 720,
+              width: "90%",
+              maxHeight: "80vh",
+              padding: 16,
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
+              }}
+            >
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#e6edf3" }}>
+                Rail details
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRailId(null);
+                  setSelectedRailDetail(null);
+                  setSelectedRailSandboxPaths(null);
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontSize: 16,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
+              <div style={{ marginBottom: 4 }}>
+                <strong>ID:</strong>{" "}
+                <span style={{ fontFamily: "monospace" }}>{selectedRailDetail.id}</span>
+              </div>
+              {selectedRailDetail.outcome && (
+                <div style={{ marginBottom: 4 }}>
+                  <strong>Outcome:</strong> {selectedRailDetail.outcome}
+                </div>
+              )}
+              {selectedRailDetail.originSummary && (
+                <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8" }}>
+                  <strong>Why:</strong> {selectedRailDetail.originSummary}
+                </div>
+              )}
+              <div style={{ marginBottom: 4 }}>
+                <strong>State:</strong> {selectedRailDetail.state}
+              </div>
+              {selectedRailDetail.archetype && (
+                <div style={{ marginBottom: 4 }}>
+                  <strong>Archetype:</strong> {selectedRailDetail.archetype}
+                </div>
+              )}
+              {(selectedRailDetail.createdAt != null || selectedRailDetail.updatedAt != null) && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #21262d", fontSize: 11 }}>
+                  <strong>Timeline</strong>
+                  {selectedRailDetail.createdAt != null && (
+                    <div>Created: {new Date(selectedRailDetail.createdAt).toLocaleString()}</div>
+                  )}
+                  {selectedRailDetail.updatedAt != null && (
+                    <div>Updated: {new Date(selectedRailDetail.updatedAt).toLocaleString()}</div>
+                  )}
+                </div>
+              )}
+            </div>
+            {Array.isArray(selectedRailDetail.tasks) && selectedRailDetail.tasks.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#e6edf3", marginBottom: 4 }}>
+                  Tasks
+                </div>
+                <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                  {selectedRailDetail.tasks.map((t: any) => (
+                    <li
+                      key={t.id}
+                      style={{
+                        padding: "4px 0",
+                        borderBottom: "1px solid #111827",
+                        fontSize: 11,
+                        color: "#9ca3af",
+                      }}
+                    >
+                      <span style={{ fontWeight: 600 }}>{t.kind ?? "task"}</span>{" "}
+                      <span>· {t.status ?? "unknown"}</span>
+                      {t.kind === "verification" &&
+                        selectedRailDetail.lastCritique &&
+                        typeof selectedRailDetail.lastCritique.attempt === "number" &&
+                        typeof selectedRailDetail.lastCritique.totalAttempts === "number" && (
+                          <span style={{ marginLeft: 4, color: "#f59e0b" }}>
+                            (Attempt {selectedRailDetail.lastCritique.attempt}/{selectedRailDetail.lastCritique.totalAttempts})
+                          </span>
+                        )}
+                      {t.description && <div>{t.description}</div>}
+                      {t.kind === "verification" && t.evidence && t.status === "rejected" && (
+                        <details style={{ marginTop: 4 }}>
+                          <summary style={{ cursor: "pointer", color: "#f87171" }}>Playwright failure details</summary>
+                          <pre
+                            style={{
+                              marginTop: 4,
+                              padding: 8,
+                              background: "#1c1917",
+                              borderRadius: 6,
+                              fontSize: 10,
+                              overflow: "auto",
+                              maxHeight: 200,
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {typeof t.evidence === "string" ? t.evidence : JSON.stringify(t.evidence, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {selectedRailDetail.lastCritique && (
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#e6edf3", marginBottom: 4 }}>
+                  Last critique
+                </div>
+                <div style={{ fontSize: 11, color: "#9ca3af", whiteSpace: "pre-wrap" }}>
+                  {selectedRailDetail.lastCritique.message}
+                </div>
+                {selectedRailDetail.lastCritique.source === "playwright" &&
+                  selectedRailDetail.lastCritique.message && (
+                  <details style={{ marginTop: 8 }}>
+                    <summary style={{ cursor: "pointer", color: "#f87171", fontSize: 11 }}>
+                      Playwright failure details
+                    </summary>
+                    <pre
+                      style={{
+                        marginTop: 4,
+                        padding: 8,
+                        background: "#1c1917",
+                        borderRadius: 6,
+                        fontSize: 10,
+                        overflow: "auto",
+                        maxHeight: 300,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {selectedRailDetail.lastCritique.message}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            )}
+            {["SELF_CORRECTING", "FAILED"].includes(selectedRailDetail.state) && (
+              <div style={{ marginBottom: 12 }}>
+                <button
+                  type="button"
+                  disabled={selectedRailSandboxLoading}
+                  onClick={async () => {
+                    if (selectedRailSandboxPaths !== null) return;
+                    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                    if (!accessToken || !wsId) return;
+                    setSelectedRailSandboxLoading(true);
+                    try {
+                      const r = await fetch(
+                        `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/sandbox/files?workspaceId=${encodeURIComponent(wsId)}`,
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                      );
+                      const data = await r.json().catch(() => ({}));
+                      if (r.ok && Array.isArray(data.paths)) setSelectedRailSandboxPaths(data.paths);
+                    } finally {
+                      setSelectedRailSandboxLoading(false);
+                    }
+                  }}
+                  style={{
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    background: "#1e3a5f",
+                    color: "#58a6ff",
+                    border: "1px solid #2563eb",
+                    borderRadius: 6,
+                    cursor: selectedRailSandboxLoading ? "wait" : "pointer",
+                  }}
+                >
+                  {selectedRailSandboxLoading ? "Loading…" : selectedRailSandboxPaths ? "Sandbox files" : "View sandbox files"}
+                </button>
+                {selectedRailSandboxPaths && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: 8,
+                      background: "#0d1117",
+                      borderRadius: 6,
+                      maxHeight: 200,
+                      overflowY: "auto",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      color: "#9ca3af",
+                    }}
+                  >
+                    {selectedRailSandboxPaths.length === 0 ? (
+                      <div>No files</div>
+                    ) : (
+                      selectedRailSandboxPaths.map((p, i) => (
+                        <div key={i} style={{ padding: "2px 0" }}>{p}</div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+              {selectedRailDetail.state === "SUSPENDED" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                    if (!accessToken || !wsId) return;
+                    try {
+                      const r = await fetch(
+                        `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/state?workspaceId=${encodeURIComponent(wsId)}`,
+                        {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${accessToken}`,
+                          },
+                          body: JSON.stringify({ state: "EXECUTING" }),
+                        }
+                      );
+                      const data = await r.json().catch(() => ({}));
+                      if (!r.ok) throw new Error(data.error || r.statusText);
+                      setRails((prev) =>
+                        prev.map((r) => (r.id === selectedRailDetail.id ? { ...r, state: "EXECUTING" } : r))
+                      );
+                      setSelectedRailDetail((d: any) => (d ? { ...d, state: "EXECUTING" } : d));
+                    } catch (err) {
+                      console.error("Resume failed:", err);
+                    }
+                  }}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#059669",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                >
+                  Resume
+                </button>
+              )}
+              {["EXECUTING", "AWAITING_APPROVAL", "VERIFYING", "SELF_CORRECTING", "MATERIALIZING"].includes(
+                selectedRailDetail.state
+              ) && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                    if (!accessToken || !wsId) return;
+                    try {
+                      const r = await fetch(
+                        `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/state?workspaceId=${encodeURIComponent(wsId)}`,
+                        {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${accessToken}`,
+                          },
+                          body: JSON.stringify({ state: "SUSPENDED" }),
+                        }
+                      );
+                      const data = await r.json().catch(() => ({}));
+                      if (!r.ok) throw new Error(data.error || r.statusText);
+                      setRails((prev) =>
+                        prev.map((r) => (r.id === selectedRailDetail.id ? { ...r, state: "SUSPENDED" } : r))
+                      );
+                      setSelectedRailDetail((d: any) => (d ? { ...d, state: "SUSPENDED" } : d));
+                    } catch (err) {
+                      console.error("Suspend failed:", err);
+                    }
+                  }}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#dc2626",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                >
+                  Suspend
+                </button>
+              )}
+              {graph &&
+                (selectedRailDetail.baselineNodeIds?.length ||
+                  (Array.isArray(selectedRailDetail.logicPath) &&
+                    selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string"))) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nodeIds =
+                      selectedRailDetail.baselineNodeIds ??
+                      (selectedRailDetail.logicPath ?? [])
+                        .map((s: any) => (s && typeof s.nodeId === "string" ? s.nodeId : null))
+                        .filter(Boolean);
+                    if (nodeIds.length > 0) {
+                      setAgentGraphCommand({ action: "highlight_nodes", nodeIds });
+                      setMainViewMode("graph");
+                      setSelectedRailId(null);
+                      setSelectedRailDetail(null);
+                    }
+                  }}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#1e3a5f",
+                    color: "#60a5fa",
+                    border: "1px solid #2563eb",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                >
+                  Jump to graph
+                </button>
+              )}
+              {selectedRailDetail.archetype === "analysis-chat" &&
+                ["PRE_PLANNING", "PLANNING", "AWAITING_APPROVAL"].includes(selectedRailDetail.state) &&
+                (selectedRailDetail.tasks ?? []).some((t: { kind?: string }) => t.kind === "code_change") && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                      if (!accessToken || !wsId) return;
+                      const execTaskId = `exec-${selectedRailDetail.id}-${Date.now()}`;
+                      setBackgroundTasks((prev) => [
+                        ...prev,
+                        {
+                          id: execTaskId,
+                          label: "Run analysis in sandbox",
+                          mode: "analysis",
+                          status: "running" as const,
+                          kind: "other" as const,
+                          steps: ["Execute code tasks", "Lint & Vitest", "Verify"],
+                          currentStep: 0,
+                          totalSteps: 3,
+                          railId: selectedRailDetail.id,
+                          createdAt: Date.now(),
+                          workspaceId: wsId ?? undefined,
+                        },
+                      ]);
+                      setActiveTaskId(execTaskId);
+                      setSelectedRailId(null);
+                      setSelectedRailDetail(null);
+                      try {
+                        const r = await fetch(
+                          `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/execute?workspaceId=${encodeURIComponent(wsId)}`,
+                          { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } }
+                        );
+                        const data = await r.json().catch(() => ({}));
+                        if (!r.ok) throw new Error(data.error || r.statusText);
+                        const remoteId = data.taskId;
+                        setBackgroundTasks((prev) =>
+                          prev.map((t) => (t.id === execTaskId ? { ...t, remoteTaskId: remoteId } : t))
+                        );
+                        const poll = async (attempt: number) => {
+                          if (!remoteId) return;
+                          const pr = await fetch(`${API_BASE}/tasks/${remoteId}`, {
+                            headers: { Authorization: `Bearer ${accessToken}` },
+                          });
+                          const payload = await pr.json().catch(() => ({}));
+                          const status = payload.status;
+                          if (status === "pending" || status === "running") {
+                            setTimeout(() => poll(attempt + 1), Math.min(2000 + attempt * 500, 8000));
+                            return;
+                          }
+                          setBackgroundTasks((prev) =>
+                            prev.map((t) =>
+                              t.id === execTaskId
+                                ? {
+                                    ...t,
+                                    status: (status === "failed" || status === "cancelled" ? "failed" : "completed") as "failed" | "completed",
+                                    error: status === "failed" ? payload.error : undefined,
+                                    currentStep: 3,
+                                  }
+                                : t
+                            )
+                          );
+                          if (status === "completed") {
+                            setRails((prev) =>
+                              prev.map((r) =>
+                                r.id === selectedRailDetail.id ? { ...r, state: payload.result?.verificationPassed ? "VERIFYING" : "SELF_CORRECTING" } : r
+                              )
+                            );
+                          }
+                        };
+                        poll(0);
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setBackgroundTasks((prev) =>
+                          prev.map((t) => (t.id === execTaskId ? { ...t, status: "failed" as const, error: msg, currentStep: 3 } : t))
+                        );
+                      }
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      background: "#059669",
+                      color: "white",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    Run in sandbox
+                  </button>
+                )}
+              {selectedRailDetail.archetype === "greenfield-materialize" &&
+                selectedRailDetail.state === "VERIFYING" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingRailApproval({
+                        railId: selectedRailDetail.id,
+                        rootPath: graph?.projectRoot ?? "",
+                      });
+                      setSelectedRailId(null);
+                      setSelectedRailDetail(null);
+                    }}
+                    style={{
+                      padding: "6px 12px",
+                      background: "#7c3aed",
+                      color: "white",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor: "pointer",
+                      fontSize: 12,
+                    }}
+                  >
+                    Approve materialization
+                  </button>
+                )}
+              <button
+                type="button"
+                onClick={() => {
+                  const related = tasksForWorkspace.find((t) => t.railId === selectedRailDetail.id);
+                  if (related) setActiveTaskId(related.id);
+                  setSelectedRailId(null);
+                  setSelectedRailDetail(null);
+                }}
+                style={{
+                  padding: "6px 12px",
+                  background: "#111827",
+                  color: "#e5e7eb",
+                  border: "1px solid #374151",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Focus task
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showModeSwitchConfirm && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+          onClick={() => {
+            setShowModeSwitchConfirm(false);
+            setPendingModeSwitch(null);
+          }}
+        >
+          <div
+            style={{
+              background: "#161b22",
+              border: "1px solid #30363d",
+              borderRadius: 12,
+              padding: 24,
+              maxWidth: 360,
+              color: "#e6edf3",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Switch view?</div>
+            <p style={{ fontSize: 13, color: "#8b949e", marginBottom: 20, lineHeight: 1.5 }}>
+              You have an active background task or unsaved ghost nodes. Switching may leave them running. Continue?
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowModeSwitchConfirm(false);
+                  setPendingModeSwitch(null);
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "transparent",
+                  color: "#8b949e",
+                  border: "1px solid #30363d",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingModeSwitch) {
+                    setMainViewMode(pendingModeSwitch);
+                  }
+                  setShowModeSwitchConfirm(false);
+                  setPendingModeSwitch(null);
+                }}
+                style={{
+                  padding: "8px 16px",
+                  background: "#238636",
+                  color: "white",
+                  border: "1px solid #238636",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showJiraConnectModal && (
         <JiraConnectModal

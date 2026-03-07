@@ -92,7 +92,7 @@ async function runArchitectureTask(params) {
     }
 }
 async function runAnalysisTask(params) {
-    const { question, graph, nodeId, history, apiKeyOpenAI, apiKeyClaude, findings, rootPath, traceId, jiraConfig, jiraProjectKey, } = params;
+    const { question, graph, nodeId, history, apiKeyOpenAI, apiKeyClaude, findings, rootPath, traceId, jiraConfig, jiraProjectKey, rail, } = params;
     const resolvedRoot = path.resolve(rootPath);
     const rootExists = fs.existsSync(resolvedRoot);
     const hasFiles = rootExists &&
@@ -155,7 +155,7 @@ async function runAnalysisTask(params) {
     let lastProposal;
     let lastViolations = [];
     while (attempts < maxAttempts) {
-        const claudeResult = await (0, claudeEnricher_1.askAboutArchitecture)(question, graph, nodeId, localHistory, apiKeyClaude, findings, rootPath, jiraConfig, jiraProjectKey);
+        const claudeResult = await (0, claudeEnricher_1.askAboutArchitecture)(question, graph, nodeId, localHistory, apiKeyClaude, findings, rootPath, jiraConfig, jiraProjectKey, rail ?? undefined);
         lastAnswer = claudeResult.answer;
         lastGraphCommand = claudeResult.graphCommand;
         lastProposal = claudeResult.proposal;
@@ -176,6 +176,7 @@ async function runAnalysisTask(params) {
                 graph,
                 findings,
                 apiKey: apiKeyOpenAI,
+                apiKeyClaude,
             });
         lastCriticReport = review.report;
         lastCriticScore = review.score;
@@ -295,12 +296,20 @@ async function runGreenfieldTask(params) {
         const greenfieldResult = useMock
             ? await (0, mockGreenfieldEnricher_1.askGreenfieldMock)({ question, history })
             : await (0, greenfieldEnricher_1.askGreenfield)({ question, history, apiKeyClaude });
+        const archetype = (0, greenfieldEnricher_1.inferGreenfieldArchetype)(params.question);
+        const rootPath = params.graph?.projectRoot && typeof params.graph.projectRoot === "string" && params.graph.projectRoot.trim()
+            ? params.graph.projectRoot.trim()
+            : null;
         const review = await (0, critic_1.reviewGreenfieldAnswer)({
             question,
             answer: greenfieldResult.answer,
             graphCommands: greenfieldResult.graphCommands,
             graphCommand: greenfieldResult.graphCommand,
             apiKey: apiKeyOpenAI,
+            apiKeyClaude,
+            existingGraph: params.graph?.nodes?.length ? params.graph : null,
+            rootPath,
+            archetype,
         });
         const graphCommands = greenfieldResult.graphCommands ?? (greenfieldResult.graphCommand ? [greenfieldResult.graphCommand] : undefined);
         return {
@@ -311,6 +320,8 @@ async function runGreenfieldTask(params) {
             criticScore: review.score,
             violations: Array.isArray(review.violations) ? review.violations : [],
             traceId,
+            acceptanceCriteria: review.acceptanceCriteria,
+            archetype,
         };
     }
     catch (err) {

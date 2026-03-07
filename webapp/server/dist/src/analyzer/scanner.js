@@ -102,6 +102,7 @@ function checkHealth(modulePath) {
             (f.endsWith("README.md") || f.endsWith(".context.md"))),
         hasTests: flat.some((f) => typeof f === "string" &&
             (f.includes(".test.") || f.includes(".spec."))),
+        // "No context" in the UI means the module is missing a .context.md file.
         hasContext: flat.some((f) => typeof f === "string" && f.endsWith(".context.md")),
     };
 }

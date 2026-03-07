@@ -12,6 +12,7 @@ export function logAuth(
     tokenPreview?: string;
     success?: boolean;
     userId?: string;
+    method?: string;
     error?: string;
     errorCode?: string;
     networkError?: boolean;
@@ -29,6 +30,7 @@ export function logAuth(
     parts.push(opts.success ? "ok" : "fail");
   }
   if (opts.userId) parts.push(`user=${opts.userId}`);
+  if (opts.method) parts.push(`method=${opts.method}`);
   if (opts.error) parts.push(`error=${opts.error}`);
   if (opts.errorCode) parts.push(`code=${opts.errorCode}`);
   if (opts.networkError) parts.push("network_error");

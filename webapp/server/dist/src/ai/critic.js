@@ -8,26 +8,58 @@ exports.reviewArchitectureAnswer = reviewArchitectureAnswer;
 exports.reviewGreenfieldAnswer = reviewGreenfieldAnswer;
 /**
  * Critic — architecture review for analysis and greenfield answers.
- * Uses OpenAI gpt-4o-mini for LLM-based review when API key is available.
+ * Uses OpenAI gpt-4o-mini when OPENAI_API_KEY is set. Falls back to Claude
+ * (Anthropic) when OPENAI_API_KEY is not set but ANTHROPIC_API_KEY is set.
  */
 const openai_1 = __importDefault(require("openai"));
+const sdk_1 = __importDefault(require("@anthropic-ai/sdk"));
 const layerModel_1 = require("../architecture/layerModel");
+const greenfieldCriticPlaybook_1 = require("../agent/rail/greenfieldCriticPlaybook");
+const manager_1 = require("../agent/rail/manager");
 exports.ARCH_RULESET_VERSION = "v1";
 const LAYER_INDEX = layerModel_1.LAYER_ORDER.reduce((acc, layer, idx) => {
     acc[layer] = idx;
     return acc;
 }, {});
-function getClient(apiKey) {
+function getOpenAIClient(apiKey) {
     const key = apiKey ?? process.env.OPENAI_API_KEY?.trim();
     return key ? new openai_1.default({ apiKey: key }) : null;
 }
+function getAnthropicKey(apiKeyClaude) {
+    const key = apiKeyClaude ?? process.env.ANTHROPIC_API_KEY?.trim();
+    return key || null;
+}
+async function callCriticLLM(prompt, apiKey, apiKeyClaude) {
+    const openai = getOpenAIClient(apiKey);
+    if (openai) {
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            max_tokens: 800,
+            messages: [{ role: "user", content: prompt }],
+        });
+        return completion.choices[0]?.message?.content ?? null;
+    }
+    const anthropicKey = getAnthropicKey(apiKeyClaude);
+    if (anthropicKey) {
+        const client = new sdk_1.default({ apiKey: anthropicKey });
+        const response = await client.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 800,
+            messages: [{ role: "user", content: prompt }],
+        });
+        const textBlock = response.content.find((b) => b.type === "text");
+        return textBlock && "text" in textBlock ? textBlock.text : null;
+    }
+    return null;
+}
 async function reviewArchitectureAnswer(params) {
-    const client = getClient(params.apiKey);
-    if (!client) {
+    const openai = getOpenAIClient(params.apiKey);
+    const anthropicKey = getAnthropicKey(params.apiKeyClaude);
+    if (!openai && !anthropicKey) {
         return {
             approved: true,
             score: 10,
-            report: "No OpenAI API key; auto-approved.",
+            report: "No OpenAI or Anthropic API key; auto-approved.",
             violations: [],
         };
     }
@@ -96,12 +128,7 @@ Respond with STRICT JSON (no markdown) in this shape:
 If there are no violations, return "violations": [].
 Do not include any additional fields. Do not wrap the JSON in markdown.`;
     try {
-        const completion = await client.chat.completions.create({
-            model: "gpt-4o-mini",
-            max_tokens: 800,
-            messages: [{ role: "user", content: prompt }],
-        });
-        const raw = completion.choices[0]?.message?.content ?? "";
+        const raw = (await callCriticLLM(prompt, params.apiKey, params.apiKeyClaude)) ?? "";
         const cleaned = raw.replace(/```json|```/g, "").trim();
         let parsed = {};
         try {
@@ -144,7 +171,11 @@ function buildProposedGraph(graphCommands) {
         : [];
     for (const cmd of cmds) {
         if (cmd.action === "create_node") {
-            nodes.push({ id: cmd.id, layer: cmd.layer });
+            nodes.push({
+                id: cmd.id,
+                layer: cmd.layer,
+                label: "label" in cmd && typeof cmd.label === "string" ? cmd.label : undefined,
+            });
         }
         if (cmd.action === "connect") {
             edges.push({ source: cmd.fromId, target: cmd.toId });
@@ -213,8 +244,40 @@ function checkLayering(nodes, edges) {
     }
     return violations;
 }
+function checkGreenfieldCollisions(proposedNodes, existingGraph) {
+    if (!existingGraph?.nodes?.length)
+        return [];
+    const existingIds = new Set(existingGraph.nodes.map((n) => n.id));
+    const existingLabels = new Set(existingGraph.nodes.map((n) => (n.suggestedLabel ?? n.label ?? "").toLowerCase().trim()).filter(Boolean));
+    const violations = [];
+    for (const n of proposedNodes) {
+        if (existingIds.has(n.id)) {
+            violations.push({
+                type: "layer_violation",
+                severity: "high",
+                sourceNodeId: n.id,
+                description: `Proposed node id "${n.id}" already exists in the graph. Choose a different id or remove the existing module first.`,
+                suggestedFix: "Rename the proposed node or remove the existing one from the design.",
+            });
+        }
+        const label = "label" in n ? n.label : undefined;
+        if (typeof label === "string" && label.trim()) {
+            const lower = label.toLowerCase().trim();
+            if (existingLabels.has(lower)) {
+                violations.push({
+                    type: "layer_violation",
+                    severity: "high",
+                    sourceNodeId: n.id,
+                    description: `Proposed label "${label}" conflicts with an existing node. Use a distinct name.`,
+                    suggestedFix: "Rename the proposed node to avoid collision.",
+                });
+            }
+        }
+    }
+    return violations;
+}
 async function reviewGreenfieldAnswer(params) {
-    const { question, answer, graphCommands, graphCommand, apiKey } = params;
+    const { question, answer, graphCommands, graphCommand, apiKey, apiKeyClaude, existingGraph, rootPath, archetype } = params;
     const commands = graphCommands ?? (graphCommand ? [graphCommand] : []);
     const { nodes, edges } = buildProposedGraph(commands);
     const MAX_NODES = 30;
@@ -270,8 +333,18 @@ async function reviewGreenfieldAnswer(params) {
             violations: layerViolations,
         };
     }
-    const client = getClient(apiKey);
-    if (!client || nodes.length === 0) {
+    const collisionViolations = checkGreenfieldCollisions(nodes, existingGraph);
+    if (collisionViolations.length > 0) {
+        return {
+            approved: false,
+            score: 4,
+            report: `Collision with existing graph: ${collisionViolations.map((v) => v.description).join("; ")}`,
+            violations: collisionViolations,
+        };
+    }
+    const openai = getOpenAIClient(apiKey);
+    const anthropicKey = getAnthropicKey(apiKeyClaude);
+    if ((!openai && !anthropicKey) || nodes.length === 0) {
         return {
             approved: true,
             score: 8,
@@ -281,7 +354,13 @@ async function reviewGreenfieldAnswer(params) {
     }
     const graphSummary = nodes.map((n) => `- ${n.id} (${n.layer})`).join("\n");
     const edgeSummary = edges.map((e) => `  ${e.source} → ${e.target}`).join("\n");
-    const prompt = `You are a senior software architect reviewing a greenfield design.
+    const antiWarnings = rootPath && rootPath.trim()
+        ? (0, manager_1.getAntiPatternWarnings)(rootPath, archetype ?? undefined)
+        : [];
+    const playbookSnippet = (0, greenfieldCriticPlaybook_1.getGreenfieldCriticSystemSnippet)(antiWarnings);
+    const prompt = `${playbookSnippet}
+
+You are a senior software architect reviewing a greenfield design. Apply the playbook rules above.
 
 Question: ${question}
 
@@ -295,23 +374,41 @@ Proposed edges:
 ${edgeSummary || "(none)"}
 
 Evaluate for coherence: Are responsibilities clear? Is layering sensible? Are dependencies logical?
-Respond with STRICT JSON:
-{ "approved": boolean, "score": 1-10, "report": "one paragraph", "violations": [] }
-No markdown.`;
+Extract acceptance criteria the design should satisfy (functional, visual, architectural).
+Respond with STRICT JSON only, no markdown:
+{
+  "approved": boolean,
+  "score": 1-10,
+  "report": "one paragraph",
+  "violations": [],
+  "acceptanceCriteria": {
+    "functional": ["criterion 1", "criterion 2"],
+    "visual": ["criterion 1"],
+    "architectural": ["criterion 1"]
+  }
+}`;
     try {
-        const completion = await client.chat.completions.create({
-            model: "gpt-4o-mini",
-            max_tokens: 400,
-            messages: [{ role: "user", content: prompt }],
-        });
-        const raw = completion.choices[0]?.message?.content ?? "{}";
+        const raw = (await callCriticLLM(prompt, apiKey, apiKeyClaude)) ?? "{}";
         const cleaned = raw.replace(/```json|```/g, "").trim();
         const parsed = JSON.parse(cleaned);
         const score = typeof parsed.score === "number" && Number.isFinite(parsed.score) ? parsed.score : 7;
         const approved = parsed.approved === true && score >= 6;
         const report = typeof parsed.report === "string" ? parsed.report : approved ? "APPROVED" : "Not approved.";
         const violations = Array.isArray(parsed.violations) ? parsed.violations : [];
-        return { approved, score, report, violations };
+        const acceptanceCriteria = parsed.acceptanceCriteria &&
+            typeof parsed.acceptanceCriteria === "object" &&
+            Array.isArray(parsed.acceptanceCriteria.functional)
+            ? {
+                functional: parsed.acceptanceCriteria.functional.filter((s) => typeof s === "string"),
+                visual: Array.isArray(parsed.acceptanceCriteria.visual)
+                    ? parsed.acceptanceCriteria.visual.filter((s) => typeof s === "string")
+                    : [],
+                architectural: Array.isArray(parsed.acceptanceCriteria.architectural)
+                    ? parsed.acceptanceCriteria.architectural.filter((s) => typeof s === "string")
+                    : [],
+            }
+            : undefined;
+        return { approved, score, report, violations, acceptanceCriteria };
     }
     catch {
         return {

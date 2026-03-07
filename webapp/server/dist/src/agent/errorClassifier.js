@@ -38,6 +38,14 @@ function classifyFailure(failure, ctx) {
     // run_playwright_trace
     if (failure.tool === "run_playwright_trace" && !failure.passed) {
         const touchedByFailure = failure.errors.some((e) => touched.has(e.filePath));
+        const hasVisual = failure.errors.some((e) => e.code?.includes("[VISUAL]") || e.message.includes("[VISUAL]") || e.message.includes("@visual"));
+        if (hasVisual) {
+            // Visual constraint failures should always go to HITL, never auto-retry.
+            return {
+                type: "playwright_visual_failure",
+                route: "hitl",
+            };
+        }
         return {
             type: touchedByFailure ? "playwright_failure_touched" : "playwright_failure_untouched",
             route: touchedByFailure ? "code_writer" : "hitl",

@@ -18,6 +18,8 @@ export function logAuth(middleware, opts) {
     }
     if (opts.userId)
         parts.push(`user=${opts.userId}`);
+    if (opts.method)
+        parts.push(`method=${opts.method}`);
     if (opts.error)
         parts.push(`error=${opts.error}`);
     if (opts.errorCode)

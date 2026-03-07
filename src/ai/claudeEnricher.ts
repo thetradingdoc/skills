@@ -29,12 +29,16 @@ import {
 import * as toolExec from "./tools";
 import { matchQueryToGraph, formatMatchedNodesForPrompt } from "./graphCommandMatcher";
 import { buildRailContext } from "../agent/rail/context";
+import { estimateTokens, trimHistoryToBudget, trimTextToBudget } from "./contextTrim";
+import { CONTEXT_WINDOW_SAFE } from "../agent/tokenBudget";
 
 export type AskResult = {
   answer: string;
   graphCommand?: GraphCommand;
   proposal?: unknown;
   usedSaveSkill?: boolean;
+  /** Token usage from Claude responses (aggregated across steps). */
+  tokenUsage?: { input: number; output: number };
 };
 
 const VALID_LAYERS: NodeLayer[] = [
@@ -435,6 +439,14 @@ function buildSystemPrompt(graph: ArchGraph): string {
 You reason in layers, understand module boundaries, and use tools to inspect real code before making claims.
 
 When the user asks to build something new, always propose_architecture first before any code is written.
+
+## Response formatting rules
+- Use **bold** for section titles and emphasis, never ## markdown headers
+- Use \`inline code\` for file paths, function names, variable names, and commands
+- Use plain bullet points (—) for lists, not markdown bullets
+- Write in clear prose paragraphs where possible, not just bullet lists
+- Keep tables for structured comparisons only — not for simple lists
+- Lead with the most important insight, then supporting detail
 
 You have a persistent Skill Library under .agent/skills and an index in .agent/skill_index.json.
 - When you create a small, reusable helper script or code-based tool, call save_skill with a clear name, description, language, code, and optional tags.
@@ -993,6 +1005,17 @@ export async function askAboutArchitecture(
       h.role === "user" || h.role === "assistant"
   ) as Anthropic.MessageParam[];
 
+  // Pre-send trim: avoid exceeding model context window (200K; we cap at 180K).
+  let systemEst = estimateTokens(systemPrompt);
+  let contextEst = estimateTokens(contextText);
+  const railEst = railPriorTurns.reduce((s, m) => s + estimateTokens(typeof m.content === "string" ? m.content : JSON.stringify(m.content)), 0);
+  const reserveForOutput = 4000; // Leave room for response
+  const totalEst = systemEst + contextEst + railEst;
+  if (totalEst > CONTEXT_WINDOW_SAFE - reserveForOutput) {
+    const toTrim = totalEst - (CONTEXT_WINDOW_SAFE - reserveForOutput);
+    contextText = trimTextToBudget(contextText, Math.max(0, contextEst - toTrim));
+  }
+
   const messages: Anthropic.MessageParam[] = [
     ...railPriorTurns,
     { role: "user", content: contextText },
@@ -1003,6 +1026,8 @@ export async function askAboutArchitecture(
   let finalGraphCommand: GraphCommand | undefined;
   let proposal: unknown;
   let usedSaveSkill = false;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   const jiraContext: JiraToolContext | undefined =
     jiraConfig || jiraProjectKey
@@ -1027,9 +1052,17 @@ export async function askAboutArchitecture(
         messages,
       });
 
-      const totalTokens =
-        (response.usage?.input_tokens ?? 0) + (response.usage?.output_tokens ?? 0);
+      const inputTokens = response.usage?.input_tokens ?? 0;
+      const outputTokens = response.usage?.output_tokens ?? 0;
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      const totalTokens = inputTokens + outputTokens;
       if (basePath) bumpSessionUsage(basePath, { tokenUsage: totalTokens, llmCallCount: 1 });
+      if (process.env.METRICS_LOG === "1") {
+        console.warn(
+          `[metrics] Claude architect step=${step + 1} input=${inputTokens} output=${outputTokens} total=${totalInputTokens + totalOutputTokens}`
+        );
+      }
 
       emitTrace(
         "llm_call",
@@ -1185,6 +1218,9 @@ export async function askAboutArchitecture(
       ...(finalGraphCommand ? { graphCommand: finalGraphCommand } : {}),
       ...(proposal ? { proposal } : {}),
       ...(usedSaveSkill ? { usedSaveSkill: true } : {}),
+      ...(totalInputTokens > 0 || totalOutputTokens > 0
+        ? { tokenUsage: { input: totalInputTokens, output: totalOutputTokens } }
+        : {}),
     };
   } catch (err) {
     return {
