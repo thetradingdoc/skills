@@ -22,93 +22,17 @@ import type {
   ArchNodeViolationState,
 } from "./types";
 import { NodePopup } from "./NodePopup";
+import { Arch3DView } from "./Arch3DView";
 import { computeDepthLayout } from "./layout/depthLayout";
 import { computeLayerLayout } from "./layout/layerLayout";
+import { NODE_W } from "./layout/canvasConstants";
+import { LAYER_COLORS, LAYER_CFG } from "./layerPalette";
 import { filterEdges, type EdgeFilter } from "./analysis/graphAnalyser";
 
 const DEFAULT_EDGE_FILTER = new Set<EdgeFilter>(["all"]);
 import type { GraphCommand } from "./types";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const NODE_W = 168;
-
-const LAYER_COLORS: Record<
-  string,
-  { top: string; accent: string; dim: string; glow: string }
-> = {
-  Presentation: {
-    top: "#22d3ee",
-    accent: "#0891b2",
-    dim: "#071e24",
-    glow: "rgba(34,211,238,0.18)",
-  },
-  Orchestration: {
-    top: "#c084fc",
-    accent: "#9333ea",
-    dim: "#1a0d24",
-    glow: "rgba(192,132,252,0.18)",
-  },
-  Reasoning: {
-    top: "#f472b6",
-    accent: "#db2777",
-    dim: "#1f0d18",
-    glow: "rgba(244,114,182,0.18)",
-  },
-  "Business Logic": {
-    top: "#a78bfa",
-    accent: "#7c3aed",
-    dim: "#130d1f",
-    glow: "rgba(167,139,250,0.18)",
-  },
-  Memory: {
-    top: "#67e8f9",
-    accent: "#0891b2",
-    dim: "#042f2e",
-    glow: "rgba(103,232,249,0.18)",
-  },
-  Safety: {
-    top: "#fbbf24",
-    accent: "#d97706",
-    dim: "#1c1917",
-    glow: "rgba(251,191,36,0.18)",
-  },
-  "Data Access": {
-    top: "#34d399",
-    accent: "#059669",
-    dim: "#071a12",
-    glow: "rgba(52,211,153,0.18)",
-  },
-  "External Services": {
-    top: "#fb923c",
-    accent: "#c2410c",
-    dim: "#1f0d06",
-    glow: "rgba(251,146,60,0.18)",
-  },
-  Infrastructure: {
-    top: "#60a5fa",
-    accent: "#1d4ed8",
-    dim: "#071020",
-    glow: "rgba(96,165,250,0.18)",
-  },
-  Utilities: {
-    top: "#94a3b8",
-    accent: "#475569",
-    dim: "#0d1117",
-    glow: "rgba(148,163,184,0.12)",
-  },
-  Configuration: {
-    top: "#fbbf24",
-    accent: "#b45309",
-    dim: "#1a1200",
-    glow: "rgba(251,191,36,0.18)",
-  },
-  Uncategorized: {
-    top: "#4b5563",
-    accent: "#374151",
-    dim: "#0d1117",
-    glow: "rgba(75,85,99,0.10)",
-  },
-};
 
 const STATUS_COLOR: Record<string, string> = {
   stable: "#22c55e",
@@ -119,6 +43,15 @@ const STATUS_COLOR: Record<string, string> = {
   unknown: "#1e293b",
 };
 
+const KIND_ICON: Record<string, string> = {
+  agent: "🤖",
+  orchestrator: "🔀",
+  guardrail: "🛡",
+  infra: "⚙️",
+  module: "📦",
+  unknown: "◈",
+};
+
 // ── Custom Node ───────────────────────────────────────────────────────────────
 function ArchNodeComponent({
   data,
@@ -126,9 +59,9 @@ function ArchNodeComponent({
   const node = data;
   const isVirtual = (node as any).isVirtual === true;
   const isVirtualError = (node as any).isVirtualError === true;
-  const colors =
-    LAYER_COLORS[(node.layer ?? "Uncategorized") as string] ??
-    LAYER_COLORS["Uncategorized"];
+  const cfg =
+    LAYER_CFG[(node.layer ?? "Uncategorized") as string] ??
+    LAYER_CFG["Uncategorized"];
   const statusColor =
     STATUS_COLOR[node.status ?? "unknown"] ?? STATUS_COLOR["unknown"];
   const label = node.suggestedLabel ?? node.role ?? node.label;
@@ -140,21 +73,36 @@ function ArchNodeComponent({
   const depth = node.depth ?? -1;
 
   const vs = (node as any).violationState as ArchNodeViolationState | undefined;
+  const linkedJiraIssues = (node as any).linkedJiraIssues as
+    | Array<{ key: string; summary: string; baseUrl: string }>
+    | undefined;
+  const linkedCount = linkedJiraIssues?.length ?? 0;
   const hasCritical = vs?.highestSeverity === "critical";
   const hasHigh = vs?.highestSeverity === "high";
   const hasMedium = vs?.highestSeverity === "medium";
   const hasViolation = !!vs?.violations?.length;
   const primaryJiraKey = vs?.violations.find((v) => v.jiraKey)?.jiraKey;
+  const vKey = (v: { type: string; sourceNodeId: string; targetNodeId?: string }) =>
+    `${v.type}:${v.sourceNodeId}:${v.targetNodeId ?? ""}`;
+  const violationBeingFixedKey = (node as any).violationBeingFixedKey as string | undefined;
+  const isFixing =
+    !!violationBeingFixedKey &&
+    vs?.violations?.some((v) => vKey(v) === violationBeingFixedKey);
+
+  const kind = (node.kind ?? "unknown") as string;
+  const kindIcon = KIND_ICON[kind] ?? KIND_ICON.unknown;
+  const toolCount = node.toolCount ?? 0;
+  const hasRag = !!node.hasRAG;
 
   return (
-    <div style={{ width: NODE_W, position: "relative" }}>
+    <div style={{ width: NODE_W, minWidth: 0, position: "relative" }}>
       {node.isSelected && (
         <div
           style={{
             position: "absolute",
             inset: -12,
             borderRadius: 16,
-            background: colors.glow,
+            background: cfg.glow,
             pointerEvents: "none",
             zIndex: 0,
             filter: "blur(8px)",
@@ -202,12 +150,17 @@ function ArchNodeComponent({
           transform: "translateX(-50%) rotate(45deg)",
           width: 14,
           height: 14,
-          background: statusColor,
+          background: isFixing ? "#1f6feb" : statusColor,
           borderRadius: 2,
           zIndex: 2,
-          boxShadow: `0 0 ${isPulsing ? "10px 3px" : "5px 1px"} ${statusColor}`,
-          animation: isPulsing ? "nodePulse 2s ease infinite" : undefined,
+          boxShadow: isFixing
+            ? "0 0 10px 3px rgba(31,111,235,0.7)"
+            : isPulsing
+              ? `0 0 10px 3px ${statusColor}99`
+              : `0 0 5px 1px ${statusColor}66`,
+          animation: isFixing ? "fixPulse 2s ease infinite" : isPulsing ? "pip 2s ease infinite" : undefined,
         }}
+        title={isFixing ? "Fixing violation…" : undefined}
       />
 
       <div
@@ -219,7 +172,7 @@ function ArchNodeComponent({
             ? isVirtualError
               ? `repeating-linear-gradient(90deg,#f8514966 0,#f8514966 8px,transparent 8px,transparent 16px)`
               : `repeating-linear-gradient(90deg,#a78bfa66 0,#a78bfa66 8px,transparent 8px,transparent 16px)`
-            : `linear-gradient(90deg, ${colors.accent}88, ${colors.top}, ${colors.accent}88)`,
+            : `linear-gradient(90deg, ${cfg.accent}88, ${cfg.color}, ${cfg.accent}88)`,
           borderRadius: "8px 8px 0 0",
         }}
       />
@@ -228,49 +181,110 @@ function ArchNodeComponent({
         style={{
           background: node.isDrift
             ? "linear-gradient(150deg,#1a0606,#150c0c)"
-            : `linear-gradient(150deg,${colors.dim},#0c1220)`,
-          border: hasCritical
-            ? "2px solid #f85149"
-            : hasHigh
-              ? "2px solid #f97316"
-              : hasMedium
-                ? "1px dashed #eab308"
-                : `1px solid ${
-                    node.isSelected
-                      ? colors.top
-                      : node.isDrift
-                        ? "#ef4444"
-                        : `${colors.accent}88`
-                  }`,
+            : `linear-gradient(150deg,${cfg.dim},#0c1220)`,
           borderTop: "none",
+          borderRight: isVirtual
+            ? isVirtualError
+              ? "2px dashed #f85149"
+              : "2px dashed #a78bfa88"
+            : hasCritical
+              ? "2px solid #f85149"
+              : hasHigh
+                ? "2px solid #f97316"
+                : hasMedium
+                  ? "1px dashed #eab308"
+                  : `1px solid ${
+                      node.isSelected
+                        ? cfg.color
+                        : node.isDrift
+                          ? "#ef4444"
+                          : `${cfg.accent}88`
+                    }`,
+          borderBottom: isVirtual
+            ? isVirtualError
+              ? "2px dashed #f85149"
+              : "2px dashed #a78bfa88"
+            : hasCritical
+              ? "2px solid #f85149"
+              : hasHigh
+                ? "2px solid #f97316"
+                : hasMedium
+                  ? "1px dashed #eab308"
+                  : `1px solid ${
+                      node.isSelected
+                        ? cfg.color
+                        : node.isDrift
+                          ? "#ef4444"
+                          : `${cfg.accent}88`
+                    }`,
+          borderLeft: isVirtual
+            ? isVirtualError
+              ? "2px dashed #f85149"
+              : "2px dashed #a78bfa88"
+            : hasCritical
+              ? "2px solid #f85149"
+              : hasHigh
+                ? "2px solid #f97316"
+                : hasMedium
+                  ? "1px dashed #eab308"
+                  : `1px solid ${
+                      node.isSelected
+                        ? cfg.color
+                        : node.isDrift
+                          ? "#ef4444"
+                          : `${cfg.accent}88`
+                    }`,
           borderRadius: "0 0 8px 8px",
           padding: "8px 12px 12px",
           position: "relative",
           zIndex: 1,
-          boxShadow: [
-            `0 3px 0 ${colors.accent}44`,
-            `0 6px 0 ${colors.accent}22`,
-            `0 12px 20px rgba(0,0,0,0.55)`,
-            node.isDrift ? `0 0 0 1px #ef4444` : "",
-            hasCritical ? "0 0 16px rgba(248,81,73,0.45)" : "",
-          ]
-            .filter(Boolean)
-            .join(", "),
+          boxShadow: node.isDrift
+            ? "0 4px 0 #ef444433, 0 7px 0 #ef444418, 0 10px 0 #ef44440a, 0 16px 28px rgba(0,0,0,0.6), 0 0 0 1px #ef4444"
+            : isVirtual
+              ? isVirtualError
+                ? "0 4px 0 #f8514933, 0 8px 20px rgba(0,0,0,0.4)"
+                : "0 4px 0 #a78bfa33, 0 8px 20px rgba(0,0,0,0.4)"
+              : [
+                `0 4px 0 ${cfg.accent}33`,
+                `0 7px 0 ${cfg.accent}18`,
+                `0 10px 0 ${cfg.accent}0a`,
+                `0 16px 28px rgba(0,0,0,0.6)`,
+                hasCritical ? "0 0 16px rgba(248,81,73,0.45)" : "",
+              ]
+                .filter(Boolean)
+                .join(", "),
           animation: node.isDrift ? "driftGlow 2s ease infinite" : undefined,
         }}
       >
         <div
           style={{
-            fontSize: 7,
-            color: colors.top,
-            fontFamily: "monospace",
-            letterSpacing: "0.08em",
-            opacity: 0.85,
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
             marginBottom: 4,
-            textTransform: "uppercase",
           }}
         >
-          {node.layer ?? "Uncategorized"}
+          <span
+            style={{
+              fontSize: 10,
+              lineHeight: 1,
+            }}
+            title={kind}
+          >
+            {kindIcon}
+          </span>
+          <span
+            style={{
+              fontSize: 7,
+              color: cfg.color,
+              fontFamily: "monospace",
+              letterSpacing: "0.08em",
+              opacity: 0.85,
+              textTransform: "uppercase",
+            }}
+          >
+            {node.layer ?? "Uncategorized"}
+          </span>
         </div>
 
         {(node.llmProvider || node.modelVersion) && (
@@ -321,16 +335,68 @@ function ArchNodeComponent({
           </div>
         )}
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
-          <span style={{ fontSize: 8, color: "#334155" }}>
-            {node.files?.length ?? 0} files
-          </span>
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 4,
+            marginTop: 6,
+          }}
+        >
+          {hasRag && (
+            <span
+              style={{
+                fontSize: 7,
+                color: cfg.color,
+                background: cfg.bg,
+                padding: "2px 4px",
+                borderRadius: 3,
+                fontFamily: "monospace",
+              }}
+              title="RAG enabled"
+            >
+              RAG
+            </span>
+          )}
+          {toolCount > 0 && (
+            <span
+              style={{
+                fontSize: 7,
+                color: cfg.color,
+                background: cfg.bg,
+                padding: "2px 4px",
+                borderRadius: 3,
+                fontFamily: "monospace",
+              }}
+              title={`${toolCount} tool${toolCount !== 1 ? "s" : ""}`}
+            >
+              {toolCount}T
+            </span>
+          )}
+          {node.isDrift && (
+            <span
+              style={{
+                fontSize: 7,
+                color: "#ef4444",
+                background: "rgba(239,68,68,0.15)",
+                padding: "2px 4px",
+                borderRadius: 3,
+                fontFamily: "monospace",
+              }}
+              title={node.driftReason ?? "Architecture drift"}
+            >
+              drift
+            </span>
+          )}
           {depth >= 0 && (
             <span
               style={{
-                fontSize: 8,
-                color: colors.top,
-                opacity: 0.8,
+                fontSize: 7,
+                color: cfg.color,
+                background: cfg.bg,
+                padding: "2px 4px",
+                borderRadius: 3,
+                fontFamily: "monospace",
               }}
               title={`Depth: ${depth} hops from entry point`}
             >
@@ -339,23 +405,53 @@ function ArchNodeComponent({
           )}
         </div>
 
-        <div style={{ display: "flex", gap: 5, marginTop: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
+          <span style={{ fontSize: 8, color: "#334155" }}>
+            {Array.isArray(node.files) ? node.files.length : 0} files
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginTop: 5,
+          }}
+        >
           {[
-            { label: "docs", ok: node.health?.hasDocs },
-            { label: "tests", ok: node.health?.hasTests },
-            { label: "context", ok: node.health?.hasContext },
+            { label: "docs", ok: node.health?.hasDocs ?? false },
+            { label: "tests", ok: node.health?.hasTests ?? false },
+            { label: "ctx", ok: node.health?.hasContext ?? false },
           ].map(({ label: l, ok }) => (
             <div
               key={l}
-              title={l}
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: ok ? "#22c55e" : "#1e2d45",
-                boxShadow: ok ? "0 0 4px #22c55e88" : "none",
+                display: "flex",
+                alignItems: "center",
+                gap: 3,
               }}
-            />
+              title={l}
+            >
+              <div
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: ok ? "#22c55e" : "#1e2d45",
+                  boxShadow: ok ? "0 0 4px #22c55e88" : "none",
+                }}
+              />
+              <span
+                style={{
+                  fontSize: 7,
+                  color: ok ? "#22c55e" : "#475569",
+                  fontFamily: "monospace",
+                }}
+              >
+                {l}
+              </span>
+            </div>
           ))}
         </div>
 
@@ -386,7 +482,7 @@ function ArchNodeComponent({
           </div>
         )}
 
-        {hasViolation && (
+        {hasViolation && vs && (
           <div
             style={{
               position: "absolute",
@@ -435,6 +531,26 @@ function ArchNodeComponent({
             {primaryJiraKey}
           </div>
         )}
+        {!primaryJiraKey && linkedCount > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: -12,
+              left: "50%",
+              transform: "translateX(-50%)",
+              background: "#238636",
+              color: "#f9fafb",
+              fontSize: 9,
+              fontWeight: 600,
+              padding: "1px 6px",
+              borderRadius: 4,
+              whiteSpace: "nowrap",
+            }}
+            title={linkedJiraIssues?.map((i) => `${i.key}: ${i.summary}`).join("\n")}
+          >
+            {linkedCount} issue{linkedCount !== 1 ? "s" : ""}
+          </div>
+        )}
 
         <div
           style={{
@@ -443,7 +559,7 @@ function ArchNodeComponent({
             top: 3,
             bottom: -7,
             width: 5,
-            background: `linear-gradient(180deg,${colors.accent}55,transparent)`,
+            background: `linear-gradient(180deg,${cfg.accent}55,transparent)`,
             transform: "skewY(1.5deg)",
             borderRadius: "0 2px 2px 0",
           }}
@@ -455,7 +571,7 @@ function ArchNodeComponent({
             right: 4,
             bottom: -7,
             height: 7,
-            background: `linear-gradient(180deg,${colors.accent}33,transparent)`,
+            background: `linear-gradient(180deg,${cfg.accent}33,transparent)`,
             borderRadius: "0 0 4px 4px",
             transform: "scaleX(0.96)",
           }}
@@ -466,48 +582,52 @@ function ArchNodeComponent({
         type="target"
         position={Position.Top}
         style={{
-          background: colors.top,
-          width: 8,
-          height: 8,
-          border: `2px solid ${colors.dim}`,
+          background: cfg.color,
+          width: 10,
+          height: 10,
+          border: `2px solid ${cfg.dim}`,
           top: 0,
-          zIndex: 3,
+          zIndex: 10,
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.3)",
         }}
       />
       <Handle
         type="source"
         position={Position.Bottom}
         style={{
-          background: colors.top,
-          width: 8,
-          height: 8,
-          border: `2px solid ${colors.dim}`,
+          background: cfg.color,
+          width: 10,
+          height: 10,
+          border: `2px solid ${cfg.dim}`,
           bottom: -14,
-          zIndex: 3,
+          zIndex: 10,
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.3)",
         }}
       />
       <Handle
         type="source"
         position={Position.Right}
         style={{
-          background: colors.top,
-          width: 6,
-          height: 6,
-          border: `2px solid ${colors.dim}`,
-          right: -3,
-          zIndex: 3,
+          background: cfg.color,
+          width: 8,
+          height: 8,
+          border: `2px solid ${cfg.dim}`,
+          right: -4,
+          zIndex: 10,
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.3)",
         }}
       />
       <Handle
         type="target"
         position={Position.Left}
         style={{
-          background: colors.top,
-          width: 6,
-          height: 6,
-          border: `2px solid ${colors.dim}`,
-          left: -3,
-          zIndex: 3,
+          background: cfg.color,
+          width: 8,
+          height: 8,
+          border: `2px solid ${cfg.dim}`,
+          left: -4,
+          zIndex: 10,
+          boxShadow: "0 0 0 2px rgba(0,0,0,0.3)",
         }}
       />
     </div>
@@ -515,6 +635,14 @@ function ArchNodeComponent({
 }
 
 // ── Custom Edge ───────────────────────────────────────────────────────────────
+const EDGE_PALETTE = {
+  drift: { stroke: "#ef4444", glow: "rgba(239,68,68,0.4)" },
+  violation: { stroke: "#f59e0b", glow: "rgba(245,158,11,0.35)" },
+  trace: { stroke: "#c084fc", glow: "rgba(192,132,252,0.25)" },
+  architectural: { stroke: "#60a5fa", glow: "rgba(96,165,250,0.2)" },
+  utility: { stroke: "#94a3b8", glow: "rgba(148,163,184,0.1)" },
+};
+
 function ArchEdgeComponent({
   id,
   sourceX,
@@ -537,29 +665,40 @@ function ArchEdgeComponent({
   const isLayerViolation = data?.isLayerViolation && !isDrift;
   const inTrace = (data as any)?.inTrace as boolean | undefined;
   const importance = data?.importance as "architectural" | "utility" | "config" | undefined;
+  const sourceLayer = (data as any)?.sourceLayer as string | undefined;
+  const layerCfg = sourceLayer && LAYER_CFG[sourceLayer] ? LAYER_CFG[sourceLayer] : null;
   const isArchitectural = importance === "architectural" || isDrift || isLayerViolation;
+
   const stroke = isDrift
-    ? "#ef4444"
+    ? EDGE_PALETTE.drift.stroke
     : isLayerViolation
-      ? "#f59e0b"
-      : isArchitectural
-        ? "#1e3a5f"
-        : "#1e2d45";
+      ? EDGE_PALETTE.violation.stroke
+      : inTrace
+        ? EDGE_PALETTE.trace.stroke
+        : isArchitectural
+          ? layerCfg?.accent ?? EDGE_PALETTE.architectural.stroke
+          : EDGE_PALETTE.utility.stroke;
   const glow = isDrift
-    ? "rgba(239,68,68,0.35)"
+    ? EDGE_PALETTE.drift.glow
     : isLayerViolation
-      ? "rgba(245,158,11,0.3)"
-      : isArchitectural
-        ? "rgba(30,100,200,0.15)"
-        : "rgba(30,50,80,0.06)";
+      ? EDGE_PALETTE.violation.glow
+      : inTrace
+        ? EDGE_PALETTE.trace.glow
+        : isArchitectural
+          ? layerCfg ? `${layerCfg.color}33` : EDGE_PALETTE.architectural.glow
+          : EDGE_PALETTE.utility.glow;
+  const strokeOpacity = isArchitectural || inTrace ? 1 : 0.55;
+
+  const violationStrokeDash = "2 4";
+  const driftStrokeDash = "6 3";
 
   return (
-    <g>
+    <g className={isDrift ? "arch-edge-drift" : undefined}>
       <path
         d={path}
         fill="none"
         stroke={glow}
-        strokeWidth={isDrift ? 9 : isArchitectural ? 6 : 4}
+        strokeWidth={isDrift ? 10 : isLayerViolation ? 8 : inTrace ? 7 : isArchitectural ? 6 : 4}
         strokeLinecap="round"
       />
       <path
@@ -567,29 +706,32 @@ function ArchEdgeComponent({
         d={path}
         fill="none"
         stroke={stroke}
-        strokeWidth={isDrift ? 2 : isArchitectural ? 1.5 : 1}
-        strokeOpacity={isArchitectural ? 1 : 0.5}
-        strokeDasharray={isDrift || isLayerViolation ? "6 3" : undefined}
+        strokeWidth={isDrift ? 2.5 : inTrace ? 2 : isArchitectural ? 1.5 : 1}
+        strokeOpacity={strokeOpacity}
+        strokeDasharray={
+          isDrift ? driftStrokeDash : isLayerViolation ? violationStrokeDash : undefined
+        }
+        strokeLinecap={isLayerViolation ? "round" : "butt"}
         markerEnd={`url(#arrowhead-${isDrift ? "drift" : isLayerViolation ? "violation" : "normal"})`}
       />
       {isDrift && (
-        <circle r={3.5} fill="#ef4444" style={{ filter: "blur(0.5px)" }}>
+        <circle r={3.5} fill="#ef4444" className="arch-edge-drift-dot">
           <animateMotion dur="1.8s" repeatCount="indefinite" path={path} />
         </circle>
       )}
       {isLayerViolation && !isDrift && (
-        <circle r={2.5} fill="#f59e0b" opacity={0.9}>
+        <circle r={2} fill="#f59e0b" opacity={0.95} className="arch-edge-violation-dot">
           <animateMotion dur="2.5s" repeatCount="indefinite" path={path} />
         </circle>
       )}
       {!isDrift && !isLayerViolation && inTrace && (
-        <circle r={2.5} fill="#a78bfa" opacity={0.9}>
+        <circle r={2.5} fill="#c084fc" opacity={0.95} className="arch-edge-trace-dot">
           <animateMotion dur="1.5s" repeatCount="indefinite" path={path} />
         </circle>
       )}
       {!isDrift && !isLayerViolation && !inTrace && (
-        <circle r={2} fill="#3b82f6" opacity={0.6}>
-          <animateMotion dur="3s" repeatCount="indefinite" path={path} />
+        <circle r={1.5} fill="#60a5fa" opacity={0.5}>
+          <animateMotion dur="4s" repeatCount="indefinite" path={path} />
         </circle>
       )}
     </g>
@@ -598,37 +740,61 @@ function ArchEdgeComponent({
 
 function LayerBandComponent({
   data,
-}: NodeProps<{ layer: string; colors: { top: string; dim: string } }>) {
-  const { layer, colors } = data;
+}: NodeProps<{ layer: string; colors: { top: string; accent: string; dim: string }; nodeCount?: number }>) {
+  const { layer, colors, nodeCount = 0 } = data;
   return (
     <div
       style={{
         position: "relative",
         width: "100%",
         height: "100%",
-        background: `linear-gradient(180deg, ${colors.top}08, transparent)`,
-        borderTop: `1px solid ${colors.top}22`,
+        background: `linear-gradient(180deg, ${colors.top}0c 0%, ${colors.top}04 40%, transparent 100%)`,
+        borderTop: `1px solid ${colors.accent}33`,
+        borderBottom: `1px solid ${colors.accent}18`,
+        borderLeft: `1px solid ${colors.accent}18`,
+        borderRight: `1px solid ${colors.accent}18`,
         borderRadius: 8,
         pointerEvents: "none",
+        boxShadow: `inset 4px 0 0 ${colors.accent}55`,
       }}
-      title={layer}
+      title={`${layer} (${nodeCount} node${nodeCount !== 1 ? "s" : ""})`}
     >
       <div
         style={{
           position: "absolute",
           top: 6,
-          left: 10,
-          fontSize: 12,
-          fontWeight: 600,
-          color: colors.top,
-          opacity: 0.6,
-          textShadow: "0 0 2px rgba(0,0,0,0.8), 0 1px 2px rgba(0,0,0,0.6)",
-          fontFamily: "monospace",
-          letterSpacing: "0.1em",
-          textTransform: "uppercase",
+          left: 14,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
         }}
       >
-        {layer}
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: colors.top,
+            opacity: 0.85,
+            textShadow: "0 0 2px rgba(0,0,0,0.8), 0 1px 2px rgba(0,0,0,0.6)",
+            fontFamily: "monospace",
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+          }}
+        >
+          {layer}
+        </span>
+        {nodeCount > 0 && (
+          <span
+            style={{
+              fontSize: 10,
+              color: colors.top,
+              opacity: 0.6,
+              fontFamily: "monospace",
+            }}
+          >
+            {nodeCount}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -675,6 +841,10 @@ interface Props {
   /** Autosave toggle state + handler (from App). */
   autosaveEnabled: boolean;
   onToggleAutosave: (value: boolean) => void;
+  /** Violation key being fixed (Fix Now in progress). Badge shows "fixing" state. */
+  violationBeingFixedKey?: string | null;
+  /** Jira issues linked to nodes via archNodeId label. Map nodeId -> issues for node badges. */
+  issuesByNodeId?: Record<string, Array<{ key: string; summary: string; baseUrl: string }>>;
 }
 
 type LegendHighlight =
@@ -704,6 +874,8 @@ export function ArchCanvas({
   accessToken,
   autosaveEnabled,
   onToggleAutosave,
+  violationBeingFixedKey,
+  issuesByNodeId = {},
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -725,6 +897,7 @@ export function ArchCanvas({
   legendHighlightRef.current = legendHighlight;
   const isAnonymous = !workspaceId && !accessToken;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
 
   useEffect(() => {
     const total = graph.nodes.length + (proposedNodes?.length ?? 0);
@@ -837,11 +1010,14 @@ export function ArchCanvas({
     const bandNodes: Node[] = layerBands.map((band) => {
       const colors =
         LAYER_COLORS[band.layer] ?? LAYER_COLORS["Uncategorized"];
+      const nodeCount = graph.nodes.filter(
+        (n) => (n.layer ?? "Uncategorized") === band.layer
+      ).length;
       return {
         id: band.id,
         type: "band",
         position: { x: band.x, y: band.y },
-        data: { layer: band.layer, colors },
+        data: { layer: band.layer, colors, nodeCount },
         style: {
           width: band.width,
           height: band.height,
@@ -867,7 +1043,16 @@ export function ArchCanvas({
           id: node.id,
           type: "arch",
           position: nodePositions.get(node.id) ?? { x: 0, y: 0 },
-          data: { ...node, isSelected: selectedNode === node.id },
+          data: {
+            ...node,
+            isSelected: selectedNode === node.id,
+            violationBeingFixedKey: violationBeingFixedKey ?? undefined,
+            linkedJiraIssues:
+              issuesByNodeId[node.id] ??
+              issuesByNodeId[node.path] ??
+              issuesByNodeId[(node as { archNodeId?: string }).archNodeId ?? node.id] ??
+              [],
+          },
           style: {
             background: "transparent",
             border: "none",
@@ -912,16 +1097,17 @@ export function ArchCanvas({
           } as unknown as ArchNode & { isSelected: boolean },
           style: {
             background: "transparent",
-            border: isError ? "1px dashed #f85149" : "1px dashed #4b5563",
+            border: "none",
             padding: 0,
             width: NODE_W,
             opacity: 1,
-            transition: "opacity 0.2s ease, border-color 0.2s ease",
+            transition: "opacity 0.2s ease",
           },
         };
       }),
     ];
 
+    const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
     const baseEdges: Edge[] = filtered.edges.map((edge) => {
       const matches = edgeMatches({
         source: edge.source,
@@ -933,6 +1119,8 @@ export function ArchCanvas({
         tracePathNodeIds &&
         tracePathNodeIds.includes(edge.source) &&
         tracePathNodeIds.includes(edge.target);
+      const sourceLayer =
+        (nodeById.get(edge.source)?.layer ?? "Uncategorized") as string;
       return {
         id: edge.id,
         source: edge.source,
@@ -943,6 +1131,7 @@ export function ArchCanvas({
           importance: edge.importance,
           isLayerViolation: edge.isLayerViolation,
           inTrace: !!inTrace,
+          sourceLayer,
         },
         style: {
           opacity: hl ? (matches ? 1 : 0.2) : 1,
@@ -983,11 +1172,13 @@ export function ArchCanvas({
   }, [
     graph,
     selectedNode,
+    violationBeingFixedKey,
     edgeFilter,
     tracePathNodeIds,
     proposedNodes,
     proposedEdges,
     ghostNodeStatus,
+    issuesByNodeId,
     setNodes,
     setEdges,
   ]);
@@ -1111,33 +1302,49 @@ export function ArchCanvas({
         >
           <div
             style={{
-              background: "#161b22",
-              border: "1px solid #30363d",
-              borderRadius: 8,
-              padding: 24,
-              maxWidth: 400,
-              boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+              background: "linear-gradient(150deg, #0c1220, #070d1a)",
+              border: "1px solid #1d4ed866",
+              borderRadius: 12,
+              padding: 0,
+              maxWidth: 420,
+              boxShadow: [
+                "0 4px 0 #1d4ed833",
+                "0 8px 0 #1d4ed818",
+                "0 20px 40px rgba(0,0,0,0.5)",
+              ].join(", "),
               textAlign: "center",
+              overflow: "hidden",
             }}
           >
             <div
               style={{
+                height: 4,
+                background: "linear-gradient(90deg, #1d4ed888, #60a5fa, #1d4ed888)",
+                borderRadius: "12px 12px 0 0",
+              }}
+            />
+            <div style={{ padding: 24 }}>
+            <div
+              style={{
                 marginBottom: 12,
-                color: "#238636",
-                fontSize: 18,
-                fontWeight: 600,
+                color: "#60a5fa",
+                fontSize: 16,
+                fontWeight: 700,
+                fontFamily: "'JetBrains Mono','Fira Code',monospace",
               }}
             >
               Empty workspace
             </div>
             <div
               style={{
-                color: "#e6edf3",
-                fontSize: 14,
+                color: "#94a3b8",
+                fontSize: 13,
                 lineHeight: 1.6,
+                fontFamily: "monospace",
               }}
             >
               Paste a GitHub repo URL in the sidebar to scan it, or use the chat below to ask the AI to design your architecture.
+            </div>
             </div>
           </div>
         </div>
@@ -1145,8 +1352,16 @@ export function ArchCanvas({
 
       <style>{`
         @keyframes nodePulse  { 0%,100%{transform:translateX(-50%) rotate(45deg) scale(1);opacity:1} 50%{transform:translateX(-50%) rotate(45deg) scale(1.35);opacity:0.6} }
-        @keyframes driftGlow  { 0%,100%{box-shadow:0 3px 0 #ef444444,0 6px 0 #ef444422,0 0 0 1px #ef4444} 50%{box-shadow:0 3px 0 #ef444444,0 6px 0 #ef444422,0 0 24px #ef444466,0 0 0 1px #ef4444} }
+        @keyframes pip        { 0%,100%{transform:translateX(-50%) rotate(45deg) scale(1);opacity:1} 50%{transform:translateX(-50%) rotate(45deg) scale(1.2);opacity:0.75} }
+        @keyframes fixPulse   { 0%,100%{transform:translateX(-50%) rotate(45deg) scale(1);box-shadow:0 0 10px 3px rgba(31,111,235,0.7)} 50%{transform:translateX(-50%) rotate(45deg) scale(1.2);box-shadow:0 0 16px 4px rgba(31,111,235,0.85)} }
+        @keyframes driftGlow  { 0%,100%{box-shadow:0 4px 0 #ef444433,0 7px 0 #ef444418,0 10px 0 #ef44440a,0 16px 28px rgba(0,0,0,0.6),0 0 0 1px #ef4444,0 0 24px transparent} 50%{box-shadow:0 4px 0 #ef444433,0 7px 0 #ef444418,0 10px 0 #ef44440a,0 16px 28px rgba(0,0,0,0.6),0 0 0 1px #ef4444,0 0 24px #ef444466} }
+        @keyframes edgeDriftDot { 0%,100%{opacity:1;filter:drop-shadow(0 0 3px rgba(239,68,68,0.8))} 50%{opacity:0.7;filter:drop-shadow(0 0 6px rgba(239,68,68,0.9))} }
+        @keyframes edgeViolationDot { 0%,100%{opacity:0.95} 50%{opacity:0.6} }
+        @keyframes edgeTracePulse { 0%,100%{opacity:0.95} 50%{opacity:0.7} }
         .react-flow__edge path { pointer-events: visibleStroke !important; }
+        .arch-edge-drift-dot { animation: edgeDriftDot 2s ease-in-out infinite; filter: drop-shadow(0 0 3px rgba(239,68,68,0.8)); }
+        .arch-edge-violation-dot { animation: edgeViolationDot 2.5s ease-in-out infinite; }
+        .arch-edge-trace-dot { animation: edgeTracePulse 1.5s ease-in-out infinite; }
       `}</style>
 
       <svg style={{ position: "absolute", width: 0, height: 0 }}>
@@ -1160,7 +1375,7 @@ export function ArchCanvas({
             markerHeight={7}
             orient="auto"
           >
-            <path d="M 0 1 L 9 5 L 0 9 Z" fill="#1e3a5f" />
+            <path d="M 0 1 L 9 5 L 0 9 Z" fill="#60a5fa" />
           </marker>
           <marker
             id="arrowhead-violation"
@@ -1195,14 +1410,15 @@ export function ArchCanvas({
             left: "50%",
             transform: "translateX(-50%)",
             zIndex: 20,
-            background: "rgba(7,13,26,0.85)",
-            border: "1px solid #1e3a5f",
-            borderRadius: 8,
-            padding: "6px 18px",
+            background: "linear-gradient(150deg, #0c1220, #070d1a)",
+            border: "1px solid #1d4ed866",
+            borderRadius: 10,
+            padding: "8px 20px",
             color: "#60a5fa",
             fontSize: 11,
             fontFamily: "monospace",
-            backdropFilter: "blur(8px)",
+            backdropFilter: "blur(12px)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(96,165,250,0.2)",
           }}
         >
           ◌ Mapping connections…
@@ -1220,6 +1436,16 @@ export function ArchCanvas({
         />
       )}
 
+      {viewMode === "3d" ? (
+        <Arch3DView
+          graph={graph}
+          proposedNodes={proposedNodes}
+          selectedNode={selectedNode}
+          onNodeSelect={onNodeSelect}
+          legendHighlight={legendHighlight}
+          tracePathNodeIds={tracePathNodeIds}
+        />
+      ) : (
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1273,6 +1499,58 @@ export function ArchCanvas({
           maskColor="rgba(6,12,26,0.75)"
         />
       </ReactFlow>
+      )}
+
+      <div
+        style={{
+          position: "absolute",
+          top: 16,
+          right: 16,
+          zIndex: 20,
+          display: "flex",
+          gap: 4,
+          background: "rgba(6,12,26,0.92)",
+          border: "1px solid #1e2d45",
+          borderRadius: 8,
+          padding: 4,
+          backdropFilter: "blur(12px)",
+        }}
+      >
+        <button
+          type="button"
+          title="2D view"
+          onClick={() => setViewMode("2d")}
+          style={{
+            padding: "6px 12px",
+            fontSize: 11,
+            fontFamily: "monospace",
+            border: viewMode === "2d" ? "1px solid #60a5fa" : "1px solid transparent",
+            borderRadius: 6,
+            background: viewMode === "2d" ? "#1d4ed833" : "transparent",
+            color: viewMode === "2d" ? "#60a5fa" : "#94a3b8",
+            cursor: "pointer",
+          }}
+        >
+          2D
+        </button>
+        <button
+          type="button"
+          title="3D view"
+          onClick={() => setViewMode("3d")}
+          style={{
+            padding: "6px 12px",
+            fontSize: 11,
+            fontFamily: "monospace",
+            border: viewMode === "3d" ? "1px solid #60a5fa" : "1px solid transparent",
+            borderRadius: 6,
+            background: viewMode === "3d" ? "#1d4ed833" : "transparent",
+            color: viewMode === "3d" ? "#60a5fa" : "#94a3b8",
+            cursor: "pointer",
+          }}
+        >
+          3D
+        </button>
+      </div>
 
       <div
         style={{
@@ -1280,14 +1558,17 @@ export function ArchCanvas({
           bottom: 144,
           left: 16,
           zIndex: 10,
-          background: "rgba(7,13,26,0.9)",
-          border: "1px solid #1e2d45",
+          background: "rgba(6,12,26,0.92)",
+          border: "1px solid #1e3a5f",
           borderRadius: 10,
           padding: "12px 14px",
           backdropFilter: "blur(12px)",
           minWidth: 180,
+          maxWidth: 220,
           maxHeight: "calc(100vh - 180px)",
           overflowY: "auto",
+          overflowX: "hidden",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
         }}
       >
         <div
@@ -1296,6 +1577,7 @@ export function ArchCanvas({
             color: "#94a3b8",
             marginBottom: 10,
             lineHeight: 1.4,
+            fontFamily: "monospace",
           }}
           title="Click any item to highlight it on the graph. Click again to clear."
         >
@@ -1303,11 +1585,11 @@ export function ArchCanvas({
         </div>
 
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase" }}>
+          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase", fontFamily: "monospace" }}>
             Layers
           </div>
           {legendLayers.map(([name, count]) => {
-            const c = LAYER_COLORS[name] ?? LAYER_COLORS["Uncategorized"];
+            const cfg = LAYER_CFG[name] ?? LAYER_CFG["Uncategorized"];
             const active = legendHighlight?.type === "layer" && legendHighlight.layer === name;
             return (
               <div
@@ -1317,23 +1599,19 @@ export function ArchCanvas({
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: "5px 8px",
+                  padding: "6px 8px",
                   marginBottom: 2,
                   borderRadius: 6,
                   cursor: "pointer",
-                  background: active ? `${c.top}22` : "transparent",
-                  border: active ? `1px solid ${c.top}66` : "1px solid transparent",
+                  background: active ? `${cfg.accent}28` : "transparent",
+                  border: active ? `1px solid ${cfg.accent}66` : "1px solid transparent",
                   transition: "background 0.15s, border 0.15s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!active) {
-                    e.currentTarget.style.background = "#1e2d4533";
-                  }
+                  if (!active) e.currentTarget.style.background = `${cfg.accent}14`;
                 }}
                 onMouseLeave={(e) => {
-                  if (!active) {
-                    e.currentTarget.style.background = "transparent";
-                  }
+                  if (!active) e.currentTarget.style.background = "transparent";
                 }}
               >
                 <div
@@ -1341,29 +1619,30 @@ export function ArchCanvas({
                     width: 8,
                     height: 8,
                     borderRadius: 1,
-                    background: c.top,
+                    background: cfg.color,
                     transform: "rotate(45deg)",
                     flexShrink: 0,
+                    boxShadow: active ? `0 0 6px ${cfg.glow}` : undefined,
                   }}
                 />
-                <span style={{ fontSize: 10, color: "#e2e8f0", flex: 1 }}>{name}</span>
-                <span style={{ fontSize: 9, color: "#64748b" }}>{count}</span>
+                <span style={{ fontSize: 10, color: "#e2e8f0", flex: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>{name}</span>
+                <span style={{ fontSize: 9, color: "#64748b", fontFamily: "monospace" }}>{count}</span>
               </div>
             );
           })}
         </div>
 
-        <div style={{ borderTop: "1px solid #1e2d45", paddingTop: 8 }}>
-          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase" }}>
+        <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
+          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase", fontFamily: "monospace" }}>
             By type
           </div>
           {(
             [
-              { id: "ok" as const, label: "Imports", color: "#22c55e" },
-              { id: "violation" as const, label: "Layer violation", color: "#f59e0b" },
-              { id: "drift" as const, label: "Drift", color: "#ef4444" },
+              { id: "ok" as const, label: "Imports", color: "#60a5fa", dashed: false },
+              { id: "violation" as const, label: "Layer violation", color: "#f59e0b", dashed: true },
+              { id: "drift" as const, label: "Drift", color: "#ef4444", dashed: true },
             ] as const
-          ).map(({ id, label, color }) => {
+          ).map(({ id, label, color, dashed }) => {
             const isActive =
               id === "ok"
                 ? legendHighlight?.type === "edge" && legendHighlight.kind === "import"
@@ -1384,16 +1663,16 @@ export function ArchCanvas({
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
-                  padding: "5px 8px",
+                  padding: "6px 8px",
                   marginBottom: 2,
                   borderRadius: 6,
                   cursor: "pointer",
-                  background: isActive ? `${color}22` : "transparent",
+                  background: isActive ? `${color}28` : "transparent",
                   border: isActive ? `1px solid ${color}66` : "1px solid transparent",
                   transition: "background 0.15s, border 0.15s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!isActive) e.currentTarget.style.background = "#1e2d4533";
+                  if (!isActive) e.currentTarget.style.background = `${color}14`;
                 }}
                 onMouseLeave={(e) => {
                   if (!isActive) e.currentTarget.style.background = "transparent";
@@ -1401,16 +1680,14 @@ export function ArchCanvas({
               >
                 <div
                   style={{
-                    width: id === "ok" ? 8 : 20,
-                    height: id === "ok" ? 8 : 2,
-                    background: color,
-                    borderRadius: id === "ok" ? 2 : 1,
-                    transform: id === "ok" ? "rotate(45deg)" : "none",
+                    width: 20,
+                    height: 2,
                     flexShrink: 0,
-                    backgroundImage: id !== "ok" ? `repeating-linear-gradient(90deg,${color} 0,${color} 4px,transparent 4px,transparent 7px)` : undefined,
+                    background: dashed ? `repeating-linear-gradient(90deg, ${color} 0, ${color} 4px, transparent 4px, transparent 8px)` : color,
+                    borderRadius: 1,
                   }}
                 />
-                <span style={{ fontSize: 10, color: "#e2e8f0" }}>{label}</span>
+                <span style={{ fontSize: 10, color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>{label}</span>
               </div>
             );
           })}
@@ -1423,17 +1700,32 @@ export function ArchCanvas({
           top: 16,
           right: 24,
           zIndex: 10,
-          background: "rgba(7,13,26,0.82)",
-          border: "1px solid #1e2d45",
-          borderRadius: 8,
-          padding: "8px 12px",
+          background: "linear-gradient(150deg, #0c1220, #070d1a)",
+          border: "1px solid #1d4ed866",
+          borderRadius: 10,
+          padding: 0,
           display: "flex",
           flexDirection: "column",
-          gap: 6,
-          backdropFilter: "blur(8px)",
+          gap: 0,
+          backdropFilter: "blur(12px)",
+          minWidth: 200,
           maxWidth: 260,
+          overflow: "hidden",
+          boxShadow: [
+            "0 4px 0 #1d4ed833",
+            "0 8px 0 #1d4ed818",
+            "0 16px 32px rgba(0,0,0,0.4)",
+          ].join(", "),
         }}
       >
+        <div
+          style={{
+            height: 4,
+            background: "linear-gradient(90deg, #1d4ed888, #60a5fa, #1d4ed888)",
+            borderRadius: "10px 10px 0 0",
+          }}
+        />
+        <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0, overflow: "hidden" }}>
         <div
           style={{
             display: "flex",
@@ -1442,7 +1734,7 @@ export function ArchCanvas({
             gap: 8,
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#e5e7eb" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>
             {workspaceTitleEditing && onRenameWorkspace ? (
               <input
                 autoFocus
@@ -1468,13 +1760,14 @@ export function ArchCanvas({
                 }}
                 style={{
                   width: "100%",
-                  background: "#1e2d45",
-                  border: "1px solid #334155",
+                  background: "#0c1220",
+                  border: "1px solid #1d4ed866",
                   borderRadius: 4,
-                  color: "#e5e7eb",
+                  color: "#e2e8f0",
                   padding: "2px 6px",
                   fontSize: 12,
                   outline: "none",
+                  fontFamily: "inherit",
                 }}
               />
             ) : (
@@ -1507,7 +1800,7 @@ export function ArchCanvas({
               style={{
                 border: "none",
                 background: "transparent",
-                color: "#f87171",
+                color: "#ef4444",
                 cursor: isDeletingWorkspace ? "wait" : "pointer",
                 padding: 2,
                 fontSize: 12,
@@ -1517,7 +1810,7 @@ export function ArchCanvas({
             </button>
           )}
         </div>
-        <div style={{ fontSize: 10, color: "#94a3b8" }}>
+        <div style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>
           {isGreenfieldOnly
             ? `${proposedNodes?.length ?? 0} proposed nodes`
             : graph.generatedAt
@@ -1549,13 +1842,14 @@ export function ArchCanvas({
             }
             style={{
               fontSize: 10,
-              padding: "4px 8px",
-              background: "#238636",
+              padding: "4px 10px",
+              background: "#059669",
               color: "white",
-              border: "1px solid #238636",
+              border: "1px solid #059669",
               borderRadius: 6,
               cursor: !onSave || saveLoading || !workspaceId ? "not-allowed" : "pointer",
               opacity: !onSave || saveLoading || !workspaceId ? 0.5 : 1,
+              fontFamily: "monospace",
             }}
             onClick={async () => {
               if (!onSave || saveLoading || !workspaceId) return;
@@ -1599,13 +1893,14 @@ export function ArchCanvas({
             }}
             style={{
               fontSize: 10,
-              padding: "4px 8px",
-              background: "#0969da",
+              padding: "4px 10px",
+              background: "#1d4ed8",
               color: "white",
-              border: "1px solid #0969da",
+              border: "1px solid #60a5fa66",
               borderRadius: 6,
               cursor: onShare ? "pointer" : "not-allowed",
               opacity: onShare ? 1 : 0.5,
+              fontFamily: "monospace",
             }}
           >
             {shareLoading ? "…" : "Share"}
@@ -1616,7 +1911,8 @@ export function ArchCanvas({
             style={{
               marginTop: 4,
               fontSize: 10,
-              color: "#f97316",
+              color: "#f59e0b",
+              fontFamily: "monospace",
             }}
           >
             Sign in and scan a repo to save & share this workspace.
@@ -1638,7 +1934,7 @@ export function ArchCanvas({
             type="checkbox"
             checked={autosaveEnabled}
             onChange={(e) => onToggleAutosave(e.target.checked)}
-            style={{ accentColor: "#238636", cursor: "pointer" }}
+            style={{ accentColor: "#22c55e", cursor: "pointer" }}
           />
           Remember workspace on this device
         </label>
@@ -1647,14 +1943,15 @@ export function ArchCanvas({
             style={{
               marginTop: 6,
               fontSize: 10,
-              color: "#58a6ff",
-              border: "1px solid #1e2d45",
+              color: "#60a5fa",
+              border: "1px solid #1d4ed866",
               borderRadius: 6,
               padding: "6px 8px",
-              background: "#020617",
+              background: "linear-gradient(150deg, #071020, #0c1220)",
               display: "flex",
               flexDirection: "column",
               gap: 4,
+              fontFamily: "monospace",
             }}
           >
             <div
@@ -1672,12 +1969,13 @@ export function ArchCanvas({
                 style={{
                   fontSize: 9,
                   padding: "2px 8px",
-                  background: "#111827",
-                  border: "1px solid #1e40af",
+                  background: "#0c1220",
+                  border: "1px solid #1d4ed866",
                   borderRadius: 4,
                   color: "#60a5fa",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
+                  fontFamily: "monospace",
                 }}
               >
                 Open shared view
@@ -1696,12 +1994,13 @@ export function ArchCanvas({
                 style={{
                   flex: 1,
                   fontSize: 9,
-                  background: "#0d1117",
-                  border: "1px solid #1e2d45",
+                  background: "#0c1220",
+                  border: "1px solid #1d4ed866",
                   borderRadius: 4,
                   color: "#94a3b8",
                   padding: "2px 4px",
                   outline: "none",
+                  fontFamily: "monospace",
                 }}
                 onFocus={(e) => e.target.select()}
               />
@@ -1717,12 +2016,13 @@ export function ArchCanvas({
                 style={{
                   fontSize: 9,
                   padding: "2px 6px",
-                  background: "#1e2d45",
-                  border: "none",
+                  background: "#1d4ed844",
+                  border: "1px solid #1d4ed866",
                   borderRadius: 4,
-                  color: "#58a6ff",
+                  color: "#60a5fa",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
+                  fontFamily: "monospace",
                 }}
               >
                 {shareCopied ? "Copied" : "Copy link"}
@@ -1734,12 +2034,13 @@ export function ArchCanvas({
           <div
             style={{
               marginTop: 8,
-              padding: "6px 8px",
+              padding: "8px 10px",
               borderRadius: 6,
-              background: "#1f2937",
-              border: "1px solid #4b5563",
+              background: "linear-gradient(150deg, #1a0a0a, #0c1220)",
+              border: "1px solid #ef444466",
               fontSize: 11,
-              color: "#e5e7eb",
+              color: "#e2e8f0",
+              fontFamily: "monospace",
             }}
           >
             <div style={{ marginBottom: 4 }}>Delete this workspace and all its saved graphs?</div>
@@ -1749,13 +2050,14 @@ export function ArchCanvas({
                 disabled={isDeletingWorkspace}
                 onClick={() => setShowDeleteConfirm(false)}
                 style={{
-                  padding: "2px 6px",
+                  padding: "2px 8px",
                   borderRadius: 4,
-                  border: "1px solid #4b5563",
+                  border: "1px solid #1d4ed866",
                   background: "transparent",
-                  color: "#e5e7eb",
+                  color: "#e2e8f0",
                   fontSize: 11,
                   cursor: isDeletingWorkspace ? "default" : "pointer",
+                  fontFamily: "monospace",
                 }}
               >
                 Cancel
@@ -1768,13 +2070,14 @@ export function ArchCanvas({
                   setShowDeleteConfirm(false);
                 }}
                 style={{
-                  padding: "2px 6px",
+                  padding: "2px 8px",
                   borderRadius: 4,
-                  border: "1px solid #b91c1c",
-                  background: isDeletingWorkspace ? "#7f1d1d" : "#b91c1c",
+                  border: "1px solid #ef4444",
+                  background: isDeletingWorkspace ? "#7f1d1d" : "#ef4444",
                   color: "#f9fafb",
                   fontSize: 11,
                   cursor: isDeletingWorkspace ? "wait" : "pointer",
+                  fontFamily: "monospace",
                 }}
               >
                 {isDeletingWorkspace ? "Deleting…" : "Delete"}
@@ -1782,6 +2085,7 @@ export function ArchCanvas({
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   );

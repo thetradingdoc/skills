@@ -5,6 +5,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import type { ArchRulesV2 } from "./types";
 
 function isPathUnderRoot(projectRoot: string, filePath: string): boolean {
   const root = path.resolve(projectRoot);
@@ -86,8 +87,43 @@ export function getStagingById(id: string): StagingEntry | null {
   return buffer.values().next().value ?? null;
 }
 
+function readArchRules(projectRoot: string): ArchRulesV2 | null {
+  const p = path.join(projectRoot, ".arch-rules.json");
+  if (!fs.existsSync(p)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf-8")) as ArchRulesV2;
+  } catch {
+    return null;
+  }
+}
+
+function countOccurrences(content: string, re: RegExp): number {
+  const m = content.match(re);
+  return m ? m.length : 0;
+}
+
 export function commitStaging(pathsToCommit: string[], projectRoot: string): { success: boolean; error?: string } {
   const root = path.resolve(projectRoot);
+  const rules = readArchRules(projectRoot);
+  const thresholds = rules?.moduleThresholds ?? {};
+  const maxExports = typeof thresholds.maxExportCount === "number" ? thresholds.maxExportCount : Infinity;
+  const maxFanOut = typeof thresholds.maxFanOut === "number" ? thresholds.maxFanOut : Infinity;
+
+  for (const p of pathsToCommit) {
+    const e = buffer.get(p);
+    if (!e) continue;
+    const content = e.content ?? "";
+    // Prevent obvious degradation: explosive exports/imports beyond configured thresholds.
+    const exportCount = countOccurrences(content, /^\s*export\s+/gm);
+    const importCount = countOccurrences(content, /^\s*import\s+/gm);
+    if (exportCount > maxExports) {
+      return { success: false, error: `Degradation check failed: ${p} exports (${exportCount}) exceeds maxExportCount (${maxExports}).` };
+    }
+    if (importCount > maxFanOut) {
+      return { success: false, error: `Degradation check failed: ${p} imports (${importCount}) exceeds maxFanOut (${maxFanOut}).` };
+    }
+  }
+
   for (const p of pathsToCommit) {
     if (!isPathUnderRoot(projectRoot, p)) {
       return { success: false, error: `Path outside project root: ${p}` };

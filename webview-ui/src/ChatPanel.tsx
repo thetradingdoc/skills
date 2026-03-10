@@ -17,7 +17,7 @@ interface ChatPanelProps {
   activeChatId: string;
   onActiveChatChange: (id: string) => void;
   onAddChat: () => void;
-  onSend: (message: string, history: ChatMessage[]) => void;
+  onSend: (message: string, history: ChatMessage[], pdfAttachment?: { name: string; base64: string }) => void;
   selectedNode: string | null;
   loading?: boolean;
   onCriticCreateJira?: (message: ChatMessage) => void;
@@ -36,6 +36,62 @@ export function ChatPanel({
   onCriticCreateTasks,
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
+  const [pdfAttachment, setPdfAttachment] = useState<{ name: string; base64: string } | null>(null);
+  const [docAttachment, setDocAttachment] = useState<{ name: string; extractedText: string } | null>(null);
+  const [pdfDragOver, setPdfDragOver] = useState(false);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  const processPdfFile = useCallback((f: File) => {
+    if (f.size > 25 * 1024 * 1024) {
+      alert("PDF must be under 25MB.");
+      return;
+    }
+    setDocAttachment(null);
+    const r = new FileReader();
+    r.onload = () => {
+      const b64 = typeof r.result === "string" ? r.result.replace(/^data:[^;]+;base64,/, "") : "";
+      if (b64) setPdfAttachment({ name: f.name, base64: b64 });
+    };
+    r.readAsDataURL(f);
+  }, []);
+
+  const processDocFile = useCallback(async (f: File) => {
+    if (f.size > 10 * 1024 * 1024) {
+      alert("Word document must be under 10MB.");
+      return;
+    }
+    setPdfAttachment(null);
+    try {
+      const mammoth = await import("mammoth");
+      const arr = await f.arrayBuffer();
+      const { value } = await mammoth.extractRawText({ arrayBuffer: arr });
+      const text = (value ?? "").trim();
+      if (!text) {
+        alert("Could not extract text from document. The file may be empty or corrupted.");
+        return;
+      }
+      setDocAttachment({ name: f.name, extractedText: text });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Could not read document: ${msg}. Try saving as .docx (Word 2007+ format).`);
+    }
+  }, []);
+
+  const processAttachmentFile = useCallback(
+    (f: File) => {
+      const lower = f.name.toLowerCase();
+      const isPdf = f.type === "application/pdf" || lower.endsWith(".pdf");
+      const isDoc =
+        f.type === "application/msword" ||
+        f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        lower.endsWith(".doc") ||
+        lower.endsWith(".docx");
+      if (isPdf) processPdfFile(f);
+      else if (isDoc) processDocFile(f);
+      else alert("Please attach a PDF or Word document (.doc, .docx).");
+    },
+    [processPdfFile, processDocFile]
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const activeChat = chats.find((c) => c.id === activeChatId) ?? chats[0];
   const history = activeChat?.history ?? [];
@@ -44,14 +100,22 @@ export function ChatPanel({
     const q = input.trim();
     if (!q || loading) return;
     setInput("");
-    onSend(q, history);
+    const pdfToSend = pdfAttachment;
+    const docToSend = docAttachment;
+    if (pdfToSend) setPdfAttachment(null);
+    if (docToSend) setDocAttachment(null);
+    const docPrefix = docToSend
+      ? `[Attached document: ${docToSend.name}]\n\n${docToSend.extractedText.slice(0, 3000)}${docToSend.extractedText.length > 3000 ? "…" : ""}\n\n---\n\n`
+      : "";
+    const fullMessage = docPrefix + q;
+    onSend(fullMessage, history, pdfToSend ?? undefined);
     setTimeout(() => {
       textareaRef.current?.focus();
       if (textareaRef.current) {
         textareaRef.current.style.height = "auto";
       }
     }, 0);
-  }, [input, loading, history, onSend]);
+  }, [input, loading, history, onSend, pdfAttachment, docAttachment]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -248,7 +312,20 @@ export function ChatPanel({
           flexShrink: 0,
         }}
       >
+        <input
+          ref={pdfInputRef}
+          type="file"
+          accept=".pdf,application/pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            processAttachmentFile(f);
+            e.target.value = "";
+          }}
+        />
         <div
+          title="Drop PDF or Word (.doc, .docx) here or click 📎 to attach"
           style={{
             display: "flex",
             alignItems: "flex-end",
@@ -257,8 +334,94 @@ export function ChatPanel({
             border: "1px solid #30363d",
             borderRadius: 8,
             padding: "8px 12px",
+            outline: pdfDragOver ? "2px dashed #238636" : "none",
+            outlineOffset: pdfDragOver ? 2 : 0,
+            transition: "outline 0.15s ease",
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+            if (e.dataTransfer?.types.includes("Files")) setPdfDragOver(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setPdfDragOver(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setPdfDragOver(false);
+            const files = Array.from(e.dataTransfer.files ?? []);
+            const f = files.find(
+              (x) =>
+                x.type === "application/pdf" ||
+                x.name.toLowerCase().endsWith(".pdf") ||
+                x.type === "application/msword" ||
+                x.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+                x.name.toLowerCase().endsWith(".doc") ||
+                x.name.toLowerCase().endsWith(".docx")
+            );
+            if (f) processAttachmentFile(f);
           }}
         >
+          <button
+            type="button"
+            onClick={() => pdfInputRef.current?.click()}
+            title="Attach PDF or Word (.doc, .docx)"
+            style={{
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: pdfAttachment || docAttachment ? "#238636" : "#21262d",
+              color: pdfAttachment || docAttachment ? "white" : "#8b949e",
+              border: "1px solid #30363d",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 14,
+              flexShrink: 0,
+            }}
+          >
+            📎
+          </button>
+          {(pdfAttachment || docAttachment) && (
+            <span
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 11,
+                color: "#8b949e",
+                alignSelf: "center",
+                maxWidth: 140,
+                overflow: "hidden",
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {(pdfAttachment || docAttachment)?.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setPdfAttachment(null);
+                  setDocAttachment(null);
+                }}
+                title="Remove attachment"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#8b949e",
+                  cursor: "pointer",
+                  padding: 2,
+                  fontSize: 12,
+                }}
+              >
+                ×
+              </button>
+            </span>
+          )}
           <textarea
             ref={textareaRef}
             value={input}

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
+import * as crypto from "crypto";
 import { spawnSync } from "child_process";
 
 /** Extract repo name from git remote (e.g. doclittle-platform from github.com/owner/doclittle-platform) */
@@ -74,6 +75,7 @@ import {
   clearTraceContext,
   clearSessionTouchedPaths,
   getSessionTouchedPaths,
+  collectRecentReasoning,
   classifyFailure,
   initStaging,
   getStagingEntries,
@@ -87,6 +89,9 @@ import {
   extractFingerprintFromDescription,
   updateJira,
   checkGates,
+  diffGraph,
+  computeIntentDriftScore,
+  computeModuleSignals,
   runFirstTask,
   runNextTask,
   runTaskAtIndex,
@@ -526,6 +531,12 @@ async function openPanel(context: vscode.ExtensionContext) {
           findings,
           rootPath: resolvedRootPath,
           rail: pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) ?? undefined : undefined,
+          ...(msg.pdfBase64 && typeof msg.pdfBase64 === "string"
+            ? {
+                pdfBase64: msg.pdfBase64,
+                pdfFileName: typeof msg.pdfFileName === "string" ? msg.pdfFileName : "document.pdf",
+              }
+            : {}),
         });
         send({
           type: "aiResponse",
@@ -810,12 +821,132 @@ async function openPanel(context: vscode.ExtensionContext) {
         const session = loadSession(rootPath);
         if (session && pendingPlan) {
           setImmediate(async () => {
+            // Refresh graph snapshot after commit for diff_graph and drift metrics.
+            await buildAndSendGraph(rootPath);
+
+            // diff_graph: detect layer mismatches introduced by commit.
+            if (graph && pendingPlan) {
+              const dg = diffGraph(graph, pendingPlan);
+              if (dg.delta.layerMismatches.length > 0 && pendingPlanRailId) {
+                const msg0 = dg.delta.layerMismatches[0]?.violation ?? "Layer violation detected";
+                updateRailPartial(rootPath, pendingPlanRailId, {
+                  lastCritique: { source: "reviewer", message: msg0, createdAt: Date.now() },
+                } as any);
+                updateRailState(rootPath, pendingPlanRailId, "AWAITING_HITL");
+                persistAndNotifyTasks(rootPath);
+                return;
+              }
+            }
+
+            // Drift metric: hallucination index (planned vs touched nodes).
+            if (pendingPlanRailId && graph) {
+              const rail = getRail(rootPath, pendingPlanRailId);
+              if (rail) {
+                const touchedPaths = getSessionTouchedPaths();
+                const touchedNodeIds = touchedPaths
+                  .flatMap((p) =>
+                    graph!.nodes
+                      .filter((n) => n.path === p || (n as any).files?.some((f: string) => f === p))
+                      .map((n) => n.id)
+                  )
+                  .filter((id, i, arr) => arr.indexOf(id) === i);
+                const hi = computeHallucinationIndex(rail.logicPath, touchedNodeIds);
+                updateRailPartial(rootPath, pendingPlanRailId, { hallucinationIndex: hi });
+                persistAndNotifyTasks(rootPath);
+                if (hi > 0.5) {
+                  // Automatic realign: suspend current rail and propose a new plan scoped to what was actually touched.
+                  updateRailPartial(rootPath, pendingPlanRailId, {
+                    lastCritique: {
+                      source: "reviewer",
+                      message: `Drift detected: hallucination index ${(hi * 100).toFixed(0)}%. Auto-generating a realigned plan.`,
+                      createdAt: Date.now(),
+                    },
+                  } as any);
+                  updateRailState(rootPath, pendingPlanRailId, "SUSPENDED");
+
+                  const realignPlan = buildRealignPlanFromTouched(
+                    pendingPlan?.goal ?? rail.outcome ?? "Realign plan",
+                    touchedPaths
+                  );
+                  const newRail = triggerFromChat({
+                    rootPath,
+                    userMessage: realignPlan.goal,
+                    sessionId: "agent-realign",
+                    archetype: rail.archetype,
+                  });
+                  pendingPlan = realignPlan;
+                  pendingPlanRailId = newRail.id;
+                  updateRailPartial(rootPath, newRail.id, { intentSummary: `${realignPlan.goal} — ${newRail.outcome}` } as any);
+                  updateRailState(rootPath, newRail.id, "AWAITING_APPROVAL");
+                  for (let i = 0; i < realignPlan.tasks.length; i++) {
+                    const t = realignPlan.tasks[i];
+                    const task: Task = {
+                      id: `rail-task-${t.id}`,
+                      railId: newRail.id,
+                      kind: "code_change",
+                      description: t.expectedOutput,
+                      files: [],
+                      autoCapable: true,
+                      status: "pending",
+                      agent: "executor",
+                      logicStep: i + 1,
+                      createdAt: Date.now(),
+                    };
+                    createTask(task);
+                    planTaskToRailTask[t.id] = task.id;
+                  }
+                  persistAndNotifyTasks(rootPath);
+                  send({
+                    type: "agentPlan",
+                    plan: {
+                      goal: realignPlan.goal,
+                      tasks: realignPlan.tasks.map((t) => ({
+                        id: t.id,
+                        module: t.module,
+                        layer: t.layer,
+                        action: t.action,
+                        expectedOutput: t.expectedOutput,
+                      })),
+                      dependencies: realignPlan.dependencies,
+                    },
+                  });
+                  return;
+                }
+              }
+            }
+
+            // Intent drift detection from recent rail reasoning vs intentSummary.
+            if (pendingPlanRailId) {
+              const rail = getRail(rootPath, pendingPlanRailId);
+              if (rail?.intentSummary) {
+                const samples = collectRecentReasoning(pendingPlanRailId, 10).map((r) => r.message);
+                const score = computeIntentDriftScore(rail.intentSummary, samples);
+                updateRailPartial(rootPath, pendingPlanRailId, { intentDriftScore: score });
+                if (score > 0.6) {
+                  updateRailPartial(rootPath, pendingPlanRailId, {
+                    lastCritique: {
+                      source: "reviewer",
+                      message: `Intent drift score ${(score * 100).toFixed(0)}% (plan/outcome vs recent reasoning).`,
+                      createdAt: Date.now(),
+                    },
+                  } as any);
+                  updateRailState(rootPath, pendingPlanRailId, "AWAITING_HITL");
+                  persistAndNotifyTasks(rootPath);
+                  return;
+                }
+              }
+            }
+
             // If we have an associated plan rail, sync changed files into its sandbox and test there.
             let sandboxDir: string | undefined;
             if (pendingPlanRailId) {
               sandboxDir = syncSandboxFromRoot(rootPath, pendingPlanRailId, msg.paths ?? []);
             }
             const workingDir = sandboxDir ?? rootPath;
+            const sandboxHash =
+              sandboxDir && Array.isArray(msg.paths) && msg.paths.length > 0
+                ? computeFilesHash(sandboxDir, msg.paths)
+                : "";
 
             const lint = runLint(rootPath, msg.paths, workingDir);
             const vitest = runVitest(rootPath, undefined, workingDir);
@@ -845,6 +976,13 @@ async function openPanel(context: vscode.ExtensionContext) {
 
               runGateCheck(rootPath);
 
+              const retryLimitCode = vscode.workspace.getConfiguration("archVisualizer").get<number>("retryLimitCode") ?? 3;
+              if (taskId && (session.retryCounts[taskId] ?? 0) >= retryLimitCode) {
+                if (pendingPlanRailId) updateRailState(rootPath, pendingPlanRailId, "AWAITING_HITL");
+                persistAndNotifyTasks(rootPath);
+                return;
+              }
+
               const railForFix = pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) : null;
               const railTaskForFix = taskId ? getTask(planTaskToRailTask[taskId] ?? "") : null;
               const stepFix = railForFix?.logicPath?.[railTaskForFix?.logicStep ?? 0];
@@ -858,7 +996,7 @@ async function openPanel(context: vscode.ExtensionContext) {
                 updateRailPartial(rootPath, pendingPlanRailId, {
                   lastCritique: {
                     source: !lint.passed || !vitest.passed ? "test" : "unknown",
-                    message: errorOutput,
+                    message: sandboxHash ? `${errorOutput}\n\nsandboxHash: ${sandboxHash}` : errorOutput,
                     createdAt: Date.now(),
                   },
                 } as any);
@@ -882,12 +1020,14 @@ async function openPanel(context: vscode.ExtensionContext) {
                 filePath: step?.filePath,
               });
               const railForFixCtx = pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) : null;
+              const modSignals = getModuleSignalsForModule(graph, pendingPlan!.tasks[curIndex]?.module ?? "");
               const fix = await runTaskAtIndex(pendingPlan!, curIndex, rootPath, {
                 apiKey: getAnthropicApiKey() ?? getOpenAiApiKey(),
                 conversationTurns: lastConversationTurns,
                 errorOutput,
                 rail: railForFixCtx ?? undefined,
                 railHistory: lastConversationTurns,
+                moduleSignals: modSignals,
               });
               clearTraceContext();
               if (fix.hasStaging) {
@@ -1001,13 +1141,22 @@ async function openPanel(context: vscode.ExtensionContext) {
                       updateRailState(rootPath, pendingPlanRailId, "SELF_CORRECTING");
                       if (railTaskId) updateTaskStatus(railTaskId, "executing");
                     }
+                    const retryLimitCode = vscode.workspace.getConfiguration("archVisualizer").get<number>("retryLimitCode") ?? 3;
+                    if (taskId && (session.retryCounts[taskId] ?? 0) >= retryLimitCode) {
+                      if (railTaskId) updateTaskStatus(railTaskId, "awaiting_hitl");
+                      updateRailState(rootPath, pendingPlanRailId, "AWAITING_HITL");
+                      persistAndNotifyTasks(rootPath);
+                      return;
+                    }
                     const railForPwFix = pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) : null;
+                    const modSignals = getModuleSignalsForModule(graph, pendingPlan!.tasks[curIndex]?.module ?? "");
                     const fix = await runTaskAtIndex(pendingPlan!, curIndex, rootPath, {
                       apiKey: getAnthropicApiKey() ?? getOpenAiApiKey(),
                       conversationTurns: lastConversationTurns,
                       errorOutput,
                       rail: railForPwFix ?? undefined,
                       railHistory: lastConversationTurns,
+                      moduleSignals: modSignals,
                     });
                     if (fix.hasStaging) {
                       const staging = getStagingEntries();
@@ -1087,11 +1236,14 @@ async function openPanel(context: vscode.ExtensionContext) {
                 logicPathStep: stepNext ? `${stepNext.step}: ${stepNext.layer} - ${stepNext.filePath}` : undefined,
                 filePath: stepNext?.filePath,
               });
+              const nextModule = pendingPlan!.tasks[session.currentTaskIndex]?.module ?? "";
+              const nextSignals = getModuleSignalsForModule(graph, nextModule);
               const next = await runTaskAtIndex(pendingPlan!, session.currentTaskIndex, rootPath, {
                 apiKey: getAnthropicApiKey() ?? getOpenAiApiKey(),
                 conversationTurns: lastConversationTurns,
                 rail: railForNext ?? undefined,
                 railHistory: lastConversationTurns,
+                moduleSignals: nextSignals,
               });
               clearTraceContext();
               if (next.hasStaging) {
@@ -1253,12 +1405,14 @@ async function openPanel(context: vscode.ExtensionContext) {
             logicPathStep: stepRetry ? `${stepRetry.step}: ${stepRetry.layer} - ${stepRetry.filePath}` : undefined,
             filePath: stepRetry?.filePath,
           });
-          const fix = await runTaskAtIndex(pendingPlan, curIndex, rootPath, {
+              const modSignals = getModuleSignalsForModule(graph, pendingPlan.tasks[curIndex]?.module ?? "");
+              const fix = await runTaskAtIndex(pendingPlan, curIndex, rootPath, {
             apiKey: getAnthropicApiKey() ?? getOpenAiApiKey(),
             conversationTurns: lastConversationTurns,
             errorOutput: "User chose Retry — re-running task.",
             rail: railForRetryCtx ?? undefined,
-            railHistory: lastConversationTurns,
+                railHistory: lastConversationTurns,
+                moduleSignals: modSignals,
           });
           if (fix.hasStaging) {
             const staging = getStagingEntries();
@@ -1643,6 +1797,29 @@ function runGateCheck(rootPath: string): GateCondition | null {
   const baseTokenBudget = (config.get("tokenBudgetSession") as number | undefined) ?? 100_000;
   const llmLimit = baseLlmLimit + (session?.extendedLlmLimit ?? 0);
   const tokenBudget = baseTokenBudget + (session?.extendedTokenBudget ?? 0);
+
+  // Stop-vs-continue prompts near limits (warning band at 80%).
+  const tokenUsageNow = railTokenUsage || (session?.tokenUsage ?? 0);
+  const llmCallsNow = railLlmCalls || (session?.llmCallCount ?? 0);
+  if (pendingPlanRailId && tokenBudget > 0 && tokenUsageNow / tokenBudget >= 0.8) {
+    updateRailPartial(rootPath, pendingPlanRailId, {
+      lastCritique: {
+        source: "reviewer",
+        message: `Near token limit (${tokenUsageNow}/${tokenBudget}). Choose: Extend budget or Abort.`,
+        createdAt: Date.now(),
+      },
+    } as any);
+  }
+  if (pendingPlanRailId && llmLimit > 0 && llmCallsNow / llmLimit >= 0.8) {
+    updateRailPartial(rootPath, pendingPlanRailId, {
+      lastCritique: {
+        source: "reviewer",
+        message: `Near LLM call limit (${llmCallsNow}/${llmLimit}). Choose: Extend limit or Abort.`,
+        createdAt: Date.now(),
+      },
+    } as any);
+  }
+
   const ctx = {
     hasPlan: !!pendingPlan,
     planApproved: !!pendingPlan,
@@ -1657,8 +1834,8 @@ function runGateCheck(rootPath: string): GateCondition | null {
     retryLimitCode,
     retryLimitArch,
     retryLimitSession: llmLimit,
-    llmCallCount: railLlmCalls || (session?.llmCallCount ?? 0),
-    tokenUsage: railTokenUsage || (session?.tokenUsage ?? 0),
+    llmCallCount: llmCallsNow,
+    tokenUsage: tokenUsageNow,
     tokenBudget,
     costCapSession: config.get<number>("costCapSession") ?? 0,
     touchedPaths,
@@ -1672,10 +1849,12 @@ function runGateCheck(rootPath: string): GateCondition | null {
     const reason = scopeViolation && scopeViolationPath
       ? `Scope violation: ${scopeViolationPath} not in plan`
       : `Gate: ${gate.gate}`;
+    const rail = pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) : null;
+    const reasoningSummary = rail?.lastCritique?.message || "";
     emitTrace({
       role: "manager",
       type: "error",
-      message: reason,
+      message: reasoningSummary ? `${reason}\n\n${reasoningSummary}` : reason,
       railId: pendingPlanRailId ?? undefined,
       metadata: gate.metadata ?? {},
     });
@@ -1744,6 +1923,64 @@ async function runCheckGatesCommand(): Promise<void> {
 let pendingPlan: AgentPlan | null = null;
 let pendingPlanRailId: string | null = null;
 
+function getModuleSignalsForModule(g: ArchGraph | undefined, modulePath: string) {
+  if (!g) return undefined;
+  const all = computeModuleSignals(g);
+  const norm = modulePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  return (
+    all.find((ms) =>
+      (ms.filePaths ?? []).some((p) => {
+        const fp = p.replace(/\\/g, "/");
+        return fp === norm || fp.startsWith(norm + "/");
+      })
+    ) ?? all.find((ms) => ms.moduleId === norm)
+  );
+}
+function buildRealignPlanFromTouched(goal: string, touchedPaths: string[]): AgentPlan {
+  const modules = Array.from(
+    new Set(
+      touchedPaths
+        .map((p) => p.replace(/\\/g, "/"))
+        .filter(Boolean)
+        .map((p) => {
+          const parts = p.split("/").filter(Boolean);
+          if (parts.length >= 2) return parts.slice(0, 2).join("/");
+          return parts[0] ?? p;
+        })
+    )
+  ).slice(0, 6);
+  const tasks = modules.map((m, i) => ({
+    id: `T${i + 1}`,
+    module: m,
+    layer: "Business Logic" as any,
+    action: "modify" as const,
+    expectedOutput: `${goal} — realign step ${i + 1} (${m})`,
+    successChecks: [{ kind: "staging_write", required: true } as const],
+  }));
+  const dependencies: [string, string][] = [];
+  for (let i = 0; i < tasks.length - 1; i++) dependencies.push([tasks[i].id, tasks[i + 1].id]);
+  return { goal: `${goal} (realigned)`, tasks, dependencies };
+}
+
+function computeFilesHash(root: string, relPaths: string[]): string {
+  const h = crypto.createHash("sha256");
+  const sorted = [...relPaths].map((p) => p.replace(/\\/g, "/")).sort();
+  for (const p of sorted) {
+    h.update(p);
+    h.update("\n");
+    try {
+      const full = path.join(root, p);
+      if (fs.existsSync(full) && fs.statSync(full).isFile()) {
+        h.update(fs.readFileSync(full));
+      }
+    } catch {
+      // ignore
+    }
+    h.update("\n");
+  }
+  return h.digest("hex").slice(0, 16);
+}
+
 type ArchitectureProposal = {
   summary: string;
   nodes: Array<{
@@ -1769,6 +2006,7 @@ function convertDesignToPlan(proposal: ArchitectureProposal): AgentPlan {
     layer: node.layer as any,
     action: "create" as const,
     expectedOutput: node.description || proposal.summary || `Implement ${node.label}`,
+    successChecks: [{ kind: "staging_write", required: true }] as any,
     proposedFiles: (node.files ?? []).map((f) => ({
       name: f.name,
       purpose: f.purpose,
@@ -1802,8 +2040,8 @@ function createMockPlan(goal: string): string {
   const plan = {
     goal,
     tasks: [
-      { id: "T1", module: m1, layer: "Business Logic", action: "create", expectedOutput: `${goal} — step 1` },
-      { id: "T2", module: m2, layer: "Business Logic", action: "modify", expectedOutput: `${goal} — step 2` },
+      { id: "T1", module: m1, layer: "Business Logic", action: "create", expectedOutput: `${goal} — step 1`, successChecks: [{ kind: "staging_write", required: true }] },
+      { id: "T2", module: m2, layer: "Business Logic", action: "modify", expectedOutput: `${goal} — step 2`, successChecks: [{ kind: "staging_write", required: true }] },
     ],
     dependencies: [["T1", "T2"]] as [string, string][],
   };
@@ -1835,6 +2073,7 @@ function buildPlanFromLogicPath(
     layer: s.layer || "Business Logic",
     action: i === 0 ? "create" : "modify",
     expectedOutput: `${goal} — step ${s.step}`,
+    successChecks: [{ kind: "staging_write", required: true }],
   }));
   const dependencies: [string, string][] = [];
   for (let i = 0; i < tasks.length - 1; i++) {
@@ -1857,6 +2096,7 @@ function buildPlanFromTemplate(
       layer: "Business Logic" as const,
       action: i === 0 ? "create" : "modify",
       expectedOutput: t.description || `${goal} — step ${i + 1}`,
+      successChecks: [{ kind: "staging_write", required: true }],
     };
   });
   const dependencies: [string, string][] = [];
@@ -1987,11 +2227,14 @@ async function handleAgentPlanAction(
         });
       }
       const railForFirst = pendingPlanRailId ? getRail(rootPath, pendingPlanRailId) : null;
+      const firstModule = pendingPlan.tasks[0]?.module ?? "";
+      const firstSignals = getModuleSignalsForModule(graph, firstModule);
       const result = await runFirstTask(pendingPlan, rootPath, {
         apiKey: getAnthropicApiKey() ?? getOpenAiApiKey(),
         conversationTurns: lastConversationTurns,
         rail: railForFirst ?? undefined,
         railHistory: lastConversationTurns,
+        moduleSignals: firstSignals,
       });
       if (result.hasStaging) {
         const staging = getStagingEntries();

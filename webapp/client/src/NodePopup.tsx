@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { ArchNode, ArchGraph } from "./types";
+import { LAYER_CFG } from "./layerPalette";
 
 const API_BASE = "/api";
 
@@ -40,10 +41,13 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
   const [evalLoading, setEvalLoading] = useState(false);
   const [memories, setMemories] = useState<Array<{ id?: string; content?: string; memory_type?: string; created_at?: string }>>([]);
   const [memoriesLoading, setMemoriesLoading] = useState(false);
+  const [todoCreating, setTodoCreating] = useState(false);
+  const [todoError, setTodoError] = useState<string | null>(null);
 
   const inbound = graph.edges.filter((e) => e.target === node.id);
   const outbound = graph.edges.filter((e) => e.source === node.id);
   const baseRepo = repoUrl?.replace(/\.git\/?$/, "") ?? "";
+  const cfg = LAYER_CFG[(node.layer ?? "Uncategorized") as string] ?? LAYER_CFG["Uncategorized"];
 
   const fetchFileContent = useCallback(
     async (filePath: string) => {
@@ -156,6 +160,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
 
   return (
     <>
+      <style>{`@keyframes popupIn{from{opacity:0;transform:translate(-50%,-50%) scale(0.96)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}`}</style>
       <div
         style={{
           position: "fixed",
@@ -177,20 +182,32 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
           maxWidth: "95vw",
           height: "min(520px, 90vh)",
           maxHeight: "90vh",
-          background: "#0f172a",
-          border: "1px solid #1e293b",
+          background: `linear-gradient(150deg, ${cfg.dim}, #0c1220)`,
+          border: `1px solid ${cfg.accent}66`,
           borderRadius: 12,
-          boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
+          boxShadow: [
+            `0 4px 0 ${cfg.accent}33`,
+            `0 8px 0 ${cfg.accent}18`,
+            `0 24px 48px rgba(0,0,0,0.5)`,
+          ].join(", "),
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
+          animation: "popupIn 0.18s cubic-bezier(0.34,1.56,0.64,1)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
           style={{
+            height: 4,
+            background: `linear-gradient(90deg, ${cfg.accent}88, ${cfg.color}, ${cfg.accent}88)`,
+            borderRadius: "12px 12px 0 0",
+          }}
+        />
+        <div
+          style={{
             display: "flex",
-            borderBottom: "1px solid #1e293b",
+            borderBottom: `1px solid ${cfg.accent}33`,
             padding: "0 16px",
           }}
         >
@@ -210,7 +227,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                 fontSize: 11,
                 background: "transparent",
                 border: "none",
-                borderBottom: activeTab === tab.id ? "2px solid #58a6ff" : "2px solid transparent",
+                borderBottom: activeTab === tab.id ? `2px solid ${cfg.color}` : "2px solid transparent",
                 color: activeTab === tab.id ? "#e2e8f0" : "#64748b",
                 cursor: "pointer",
               }}
@@ -222,7 +239,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
         <div
           style={{
             padding: "12px 16px",
-            borderBottom: "1px solid #1e293b",
+            borderBottom: `1px solid ${cfg.accent}22`,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
@@ -235,17 +252,64 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
             {node.role && (
               <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>{node.role}</span>
             )}
-            <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2, wordBreak: "break-all" }}>
+            <div style={{ fontSize: 11, color: cfg.color, marginTop: 2, wordBreak: "break-all" }}>
               {node.id}
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {workspaceId && accessToken && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (todoCreating) return;
+                  setTodoError(null);
+                  setTodoCreating(true);
+                  try {
+                    const res = await fetch(
+                      `${API_BASE}/greenfield/nodes/${encodeURIComponent(node.id)}/to-todo`,
+                      {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${accessToken}`,
+                        },
+                        body: JSON.stringify({ workspaceId }),
+                      }
+                    );
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const msg = typeof data.error === "string" ? data.error : "Failed to create todo.";
+                      setTodoError(msg);
+                      return;
+                    }
+                    setTodoError(null);
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    setTodoError(msg);
+                  } finally {
+                    setTodoCreating(false);
+                  }
+                }}
+                style={{
+                  padding: "6px 8px",
+                  fontSize: 11,
+                  borderRadius: 6,
+                  border: "1px solid #4b5563",
+                  background: "#020617",
+                  color: "#e5e7eb",
+                  cursor: todoCreating ? "wait" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {todoCreating ? "Creating…" : "Create todo"}
+              </button>
+            )}
             {baseRepo && (
               <a
                 href={`${baseRepo}/tree/main/${node.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ fontSize: 11, color: "#64748b", textDecoration: "none" }}
+                style={{ fontSize: 11, color: cfg.color, textDecoration: "none" }}
               >
                 Open on GitHub ↗
               </a>
@@ -269,6 +333,20 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
             </button>
           </div>
         </div>
+
+        {todoError && (
+          <div
+            style={{
+              padding: "6px 16px",
+              fontSize: 11,
+              color: "#fecaca",
+              background: "rgba(248,113,113,0.12)",
+              borderBottom: "1px solid rgba(248,113,113,0.4)",
+            }}
+          >
+            {todoError}
+          </div>
+        )}
 
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           {activeTab !== "overview" ? (
@@ -415,7 +493,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
             }}
           >
             <div style={{ padding: 12, overflowY: "auto", flex: 1 }}>
-              {node.files && node.files.length > 0 && (
+              {Array.isArray(node.files) && node.files.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 10, color: "#64748b", marginBottom: 6, fontWeight: 600 }}>
                     Files ({node.files.length}) — click to open
@@ -649,7 +727,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                             href={`${baseRepo}/blob/main/${activeFile}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            style={{ fontSize: 11, color: "#64748b", textDecoration: "none" }}
+                            style={{ fontSize: 11, color: cfg.color, textDecoration: "none" }}
                           >
                             Open on GitHub ↗
                           </a>

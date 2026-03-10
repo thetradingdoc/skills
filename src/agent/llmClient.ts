@@ -7,10 +7,12 @@ import Anthropic from "@anthropic-ai/sdk";
 import { emitTrace } from "./traceLogger";
 import { bumpSessionUsage } from "./sessionPersistence";
 import type { AgentPlan, AgentPlanTask, ProposedFileSpec, Rail } from "./types";
+import type { ModuleSignals } from "./moduleSignals";
 import type { ArchitectureChatHistory } from "../types";
 import { buildRailContext } from "./rail/context";
+import { loadAntiPatterns } from "./rail/manager";
 
-const VALID_TOOLS = new Set(["write_file", "read_file"]);
+const VALID_TOOLS = new Set(["write_file", "read_file", "get_ast"]);
 
 export interface LLMCallContext {
   role: "code_writer" | "arch_planner";
@@ -21,6 +23,16 @@ export interface LLMCallContext {
   conversationTurns?: Array<{ role: "user" | "assistant"; content: string }>;
   fileContent?: string;
   filePath?: string;
+  astSummary?: {
+    path: string;
+    fingerprint: string;
+    importCount: number;
+    exportFunctionCount: number;
+    exportClassCount: number;
+    exportInterfaceCount: number;
+    exportConstCount: number;
+  };
+  moduleSignals?: ModuleSignals;
   errorOutput?: string;
   projectRoot?: string;
   apiKey?: string;
@@ -73,6 +85,17 @@ const CODE_WRITER_TOOLS: Anthropic.Tool[] = [
       required: ["path", "content"],
     },
   },
+  {
+    name: "get_ast",
+    description: "Extract imports/exports fingerprint for a file (project-root-relative path).",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+      },
+      required: ["path"],
+    },
+  },
 ];
 
 function getTaskFromPlan(plan: AgentPlan, taskId: string): AgentPlanTask | undefined {
@@ -85,6 +108,16 @@ function buildUserMessage(ctx: LLMCallContext): string {
     `Task: ${ctx.taskId} — ${ctx.taskModule}`,
     "",
   ];
+  if (ctx.projectRoot && ctx.rail?.archetype) {
+    const anti = loadAntiPatterns(ctx.projectRoot, ctx.rail.archetype);
+    if (anti.length > 0) {
+      lines.push("Anti-patterns to avoid (from prior failed rails):");
+      for (const p of anti.slice(-6)) {
+        lines.push(`- Avoid: ${p.reason}`);
+      }
+      lines.push("");
+    }
+  }
   if (ctx.conversationTurns && ctx.conversationTurns.length > 0) {
     lines.push("Recent conversation (most recent last):");
     for (const t of ctx.conversationTurns.slice(-4)) {
@@ -116,6 +149,30 @@ function buildUserMessage(ctx: LLMCallContext): string {
   if (ctx.filePath && ctx.fileContent !== undefined) {
     lines.push(`File ${ctx.filePath}:`, "```", ctx.fileContent.slice(0, 30000), "```", "");
   }
+  if (ctx.astSummary) {
+    lines.push(
+      "Module signals (from get_ast):",
+      `- fingerprint: ${ctx.astSummary.fingerprint}`,
+      `- imports: ${ctx.astSummary.importCount}`,
+      `- exports: functions=${ctx.astSummary.exportFunctionCount}, classes=${ctx.astSummary.exportClassCount}, interfaces=${ctx.astSummary.exportInterfaceCount}, consts=${ctx.astSummary.exportConstCount}`,
+      ""
+    );
+  }
+  if (ctx.moduleSignals) {
+    const ms = ctx.moduleSignals;
+    lines.push(
+      "Structural module signals:",
+      `- moduleId: ${ms.moduleId}`,
+      `- fan-in: ${ms.fanIn}`,
+      `- fan-out: ${ms.fanOut}`,
+      `- external imports: ${ms.externalImportCount}`,
+      `- export count: ${ms.exportCount}`,
+      `- file count: ${ms.fileCount}`,
+      `- health: ${ms.health}`,
+      ms.healthReasons.length ? `- healthReasons: ${ms.healthReasons.join("; ")}` : "",
+      ""
+    );
+  }
   if (ctx.errorOutput) {
     lines.push("Error output (fix these):", ctx.errorOutput, "");
   }
@@ -123,6 +180,27 @@ function buildUserMessage(ctx: LLMCallContext): string {
     "Use write_file for each file you need to create or update. Use read_file if you need to inspect additional context first."
   );
   return lines.join("\n");
+}
+
+function validateToolInput(
+  tool: string,
+  input: Record<string, unknown>
+): { ok: true } | { ok: false; reason: string } {
+  if (tool === "read_file" || tool === "get_ast") {
+    const p = typeof input.path === "string" ? input.path.trim() : "";
+    if (!p) return { ok: false, reason: `${tool} requires non-empty "path" string` };
+    if (p.length > 500) return { ok: false, reason: `${tool} path too long` };
+    return { ok: true };
+  }
+  if (tool === "write_file") {
+    const p = typeof input.path === "string" ? input.path.trim() : "";
+    const c = typeof input.content === "string" ? input.content : "";
+    if (!p) return { ok: false, reason: "write_file requires non-empty \"path\" string" };
+    if (!c) return { ok: false, reason: "write_file requires non-empty \"content\" string" };
+    if (p.length > 500) return { ok: false, reason: "write_file path too long" };
+    return { ok: true };
+  }
+  return { ok: false, reason: `Unknown tool: ${tool}` };
 }
 
 export async function callLLM(context: LLMCallContext): Promise<LLMCallResult> {
@@ -210,13 +288,25 @@ export async function callLLM(context: LLMCallContext): Promise<LLMCallResult> {
         return { type: "unknown_output", raw: `Model requested unknown tool: ${tool}` };
       }
 
+      const toolInput = (toolUse.input ?? {}) as Record<string, unknown>;
+      const ok = validateToolInput(tool, toolInput);
+      if (!ok.ok) {
+        emitTrace(
+          "error",
+          inputForTrace,
+          { tool, input: toolInput, tokens: totalTokens },
+          `Invalid tool call: ${ok.reason}`
+        );
+        return { type: "unknown_output", raw: `Invalid tool call: ${ok.reason}` };
+      }
+
       emitTrace(
         "llm_call",
         inputForTrace,
-        { tool, input: toolUse.input ?? {}, tokens: totalTokens },
+        { tool, input: toolInput, tokens: totalTokens },
         `LLM → ${tool}`
       );
-      return { type: "tool_call", tool, input: (toolUse.input ?? {}) as Record<string, unknown> };
+      return { type: "tool_call", tool, input: toolInput };
     }
 
     const texts = response.content

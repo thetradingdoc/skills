@@ -17,18 +17,7 @@ import { scanProject } from "../src/analyzer/scanner";
 import { detectDrift } from "../src/analyzer/driftDetector";
 import { enrichGraph } from "../src/ai/enricher-v2";
 import { analyseGraph } from "../src/analysis/graphAnalyser";
-
-/** Inject token into HTTPS GitHub URL for private repo access. */
-function authUrl(url: string): string {
-  const trimmed = url.trim();
-  const token = process.env.GITHUB_TOKEN || process.env.GITHUB_ACCESS_TOKEN;
-  if (!token) return trimmed;
-  // https://github.com/owner/repo or https://github.com/owner/repo.git
-  const match = trimmed.match(/^(https?:\/\/)(github\.com\/[\w.-]+\/[\w.-]+?)(\.git)?\/?$/i);
-  if (!match) return trimmed;
-  const [, scheme, repoPath] = match;
-  return `${scheme}${token}@${repoPath}`;
-}
+import { getClonesDir, authUrl, cloneToStablePath } from "../webapp/server/src/cloneRepo.js";
 
 async function main() {
   const repoUrl = process.argv[2];
@@ -38,16 +27,23 @@ async function main() {
   }
 
   const keepClone = process.argv.includes("--keep");
+  const workspaceIdIdx = process.argv.indexOf("--workspace-id");
+  const workspaceId =
+    workspaceIdIdx >= 0 && process.argv[workspaceIdIdx + 1]
+      ? process.argv[workspaceIdIdx + 1].trim()
+      : null;
 
-  const dir = path.join(tmpdir(), `arch-viz-${randomUUID()}`);
-  fs.mkdirSync(dir, { recursive: true });
-
-  const cloneUrl = authUrl(repoUrl);
+  let dir: string;
+  if (workspaceId) {
+    dir = await cloneToStablePath(repoUrl.trim(), workspaceId);
+  } else {
+    const cloneUrl = authUrl(repoUrl.trim());
+    dir = path.join(tmpdir(), `arch-viz-${randomUUID()}`);
+    fs.mkdirSync(dir, { recursive: true });
+    await simpleGit().clone(cloneUrl, dir, ["--depth", "1"]);
+  }
 
   try {
-    const git = simpleGit();
-    await git.clone(cloneUrl, dir, ["--depth", "1"]);
-
     const absoluteCloneDir = dir;
 
     let graph = await scanProject(absoluteCloneDir);
@@ -74,7 +70,7 @@ async function main() {
 
     console.log(JSON.stringify(out));
   } finally {
-    if (!keepClone && fs.existsSync(dir)) {
+    if (!workspaceId && !keepClone && fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }

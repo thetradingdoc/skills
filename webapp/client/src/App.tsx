@@ -60,6 +60,53 @@ function violationKey(v: CriticViolation): string {
   return `${v.type}:${v.sourceNodeId}:${v.targetNodeId ?? ""}`;
 }
 
+/** Normalize Jira API auth errors to a user-friendly message. */
+function normalizeJiraError(msg: string): string {
+  const lower = msg.toLowerCase();
+  if (
+    /\b(401|403)\b|unauthorized|invalid credentials|authentication failed|token.*invalid|token.*expired|revoked/i.test(lower)
+  ) {
+    return "Jira token invalid — reconnect in the Governance panel.";
+  }
+  return msg;
+}
+
+/** Pure merge of violations into graph nodes, including jiraKey/jiraStatus (p14). */
+function mergeViolationsIntoGraph(graph: ArchGraph, violations: CriticViolation[]): ArchGraph {
+  if (!violations.length) return graph;
+  const storedByKey = new Map(violations.map((v) => [violationKey(v), v]));
+  const relevantForNode = (n: ArchNode) =>
+    violations.filter((v) => v.sourceNodeId === n.id || v.targetNodeId === n.id);
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const existingVs = node.violationState?.violations ?? [];
+      const storedForNode = relevantForNode(node);
+      const mergedVs = [
+        ...existingVs.map((v) => {
+          const s = storedByKey.get(violationKey(v));
+          return s?.jiraKey ? { ...v, jiraKey: s.jiraKey, jiraStatus: s.jiraStatus } : v;
+        }),
+        ...storedForNode.filter(
+          (s) => !existingVs.some((ev) => violationKey(ev) === violationKey(s))
+        ),
+      ];
+      if (mergedVs.length === 0) return node;
+      const highest = mergedVs
+        .map((x) => x.severity)
+        .sort(
+          (a, b) =>
+            (["critical", "high", "medium"] as const).indexOf(a as "critical" | "high" | "medium") -
+            (["critical", "high", "medium"] as const).indexOf(b as "critical" | "high" | "medium")
+        )[0] ?? null;
+      return {
+        ...node,
+        violationState: { violations: mergedVs, highestSeverity: highest },
+      } as ArchNode;
+    }),
+  };
+}
+
 function RememberThisButton({
   content,
   nodeId,
@@ -124,6 +171,7 @@ function VirtualizedRailList({
   items,
   onCardClick,
   onApproveClick,
+  queuePositionByRailId = {},
 }: {
   items: Array<{
     id: string;
@@ -131,11 +179,12 @@ function VirtualizedRailList({
     state?: string;
     archetype?: string;
     logicPath?: string[];
-    lastCritique?: { message?: string; attempt?: number; totalAttempts?: number } | null;
+    lastCritique?: { message?: string; source?: string; attempt?: number; totalAttempts?: number } | null;
     tasks?: Array<{ kind?: string; status?: string }>;
   }>;
   onCardClick: (r: { id: string }) => void;
   onApproveClick?: (r: { id: string }) => void;
+  queuePositionByRailId?: Record<string, string>;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -274,7 +323,7 @@ function VirtualizedRailList({
                       Attempt {r.lastCritique.attempt}/{r.lastCritique.totalAttempts}
                     </span>
                   )}
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <span
                     style={{
                       fontSize: 10,
@@ -287,6 +336,23 @@ function VirtualizedRailList({
                   >
                     {r.state ?? "UNKNOWN"}
                   </span>
+                  {queuePositionByRailId[r.id] && (
+                    <span
+                      style={{
+                        fontSize: 9,
+                        padding: "1px 5px",
+                        borderRadius: 4,
+                        background: queuePositionByRailId[r.id] === "Running"
+                          ? "rgba(56,189,248,0.15)"
+                          : "rgba(234,179,8,0.12)",
+                        color: queuePositionByRailId[r.id] === "Running" ? "#7dd3fc" : "#facc15",
+                        border: "1px solid rgba(100,116,139,0.4)",
+                      }}
+                      title="Queue position"
+                    >
+                      {queuePositionByRailId[r.id]}
+                    </span>
+                  )}
                   {verifTask && (
                     <span
                       style={{
@@ -317,7 +383,33 @@ function VirtualizedRailList({
                     </span>
                   )}
                 </div>
-                {lastMsg && (
+                {((verifTask?.status === "rejected") || ["FAILED", "SELF_CORRECTING"].includes(r.state ?? "")) &&
+                  lastMsg && (
+                  <div
+                    style={{
+                      fontSize: 10,
+                      padding: 6,
+                      borderRadius: 4,
+                      background: "rgba(248,113,113,0.1)",
+                      border: "1px solid rgba(248,113,113,0.35)",
+                      color: "#fecaca",
+                      maxHeight: 64,
+                      overflow: "hidden",
+                      lineHeight: 1.4,
+                    }}
+                    title={lastMsg}
+                  >
+                    {(r.lastCritique as { source?: string })?.source && (
+                      <span style={{ fontWeight: 600, marginRight: 4 }}>
+                        {(r.lastCritique as { source?: string }).source}:
+                      </span>
+                    )}
+                    {lastMsg.slice(0, 120)}
+                    {lastMsg.length > 120 ? "…" : ""}
+                  </div>
+                )}
+                {lastMsg &&
+                  !(verifTask?.status === "rejected" || ["FAILED", "SELF_CORRECTING"].includes(r.state ?? "")) && (
                   <div style={{ fontSize: 11, color: "#9ca3af", maxHeight: 48, overflow: "hidden" }}>
                     {lastMsg.slice(0, 140)}
                     {lastMsg.length > 140 ? "…" : ""}
@@ -703,6 +795,58 @@ export default function App() {
     });
   }, []);
   const [aiQuestion, setAiQuestion] = useState("");
+  const [pdfAttachment, setPdfAttachment] = useState<{ name: string; base64: string } | null>(null);
+  const [docAttachment, setDocAttachment] = useState<{ name: string; extractedText: string } | null>(null);
+  const [pdfDragOver, setPdfDragOver] = useState(false);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
+
+  const processPdfFile = useCallback((f: File) => {
+    if (f.size > 25 * 1024 * 1024) {
+      alert("PDF must be under 25MB.");
+      return;
+    }
+    setDocAttachment(null);
+    const r = new FileReader();
+    r.onload = () => {
+      const b64 = typeof r.result === "string" ? r.result.replace(/^data:[^;]+;base64,/, "") : "";
+      if (b64) setPdfAttachment({ name: f.name, base64: b64 });
+    };
+    r.readAsDataURL(f);
+  }, []);
+
+  const processDocFile = useCallback(async (f: File) => {
+    if (f.size > 10 * 1024 * 1024) {
+      alert("Word document must be under 10MB.");
+      return;
+    }
+    setPdfAttachment(null);
+    try {
+      const mammoth = await import("mammoth");
+      const arr = await f.arrayBuffer();
+      const { value } = await mammoth.extractRawText({ arrayBuffer: arr });
+      const text = (value ?? "").trim();
+      if (!text) {
+        alert("Could not extract text from document. The file may be empty or corrupted.");
+        return;
+      }
+      setDocAttachment({ name: f.name, extractedText: text });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Could not read document: ${msg}. Try saving as .docx (Word 2007+ format).`);
+    }
+  }, []);
+
+  const processAttachmentFile = useCallback(
+    (f: File) => {
+      const lower = f.name.toLowerCase();
+      const isPdf = f.type === "application/pdf" || lower.endsWith(".pdf");
+      const isDoc = f.type === "application/msword" || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".doc") || lower.endsWith(".docx");
+      if (isPdf) processPdfFile(f);
+      else if (isDoc) processDocFile(f);
+      else alert("Please attach a PDF or Word document (.doc, .docx).");
+    },
+    [processPdfFile, processDocFile]
+  );
   const [chatTabs, setChatTabs] = useState([{ id: "1", label: "Chat 1" }]);
   const [activeChatId, setActiveChatId] = useState("1");
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
@@ -736,9 +880,36 @@ export default function App() {
   const [jiraProjects, setJiraProjects] = useState<Array<{ key: string; name: string }>>([]);
   const [jiraProjectsLoading, setJiraProjectsLoading] = useState(false);
   const [jiraConfigSource, setJiraConfigSource] = useState<"db" | null>(null);
+  const [staleMismatches, setStaleMismatches] = useState<
+    Array<{ key: string; summary: string; reason: string; storedModule: string | null }>
+  >([]);
   const [showJiraConnectModal, setShowJiraConnectModal] = useState(false);
   const [showJiraDisconnectConfirm, setShowJiraDisconnectConfirm] = useState(false);
+  const [autoExecuteEnabled, setAutoExecuteEnabled] = useState<boolean>(false);
+  const [autoExecuteSaving, setAutoExecuteSaving] = useState<boolean>(false);
+  const [materializeDiffWarning, setMaterializeDiffWarning] = useState<{
+    message: string;
+    limits?: { maxChangedFiles?: number; maxTotalBytes?: number };
+    actual?: { changedFiles?: number; totalBytes?: number };
+  } | null>(null);
   const [jiraProjectKeyReady, setJiraProjectKeyReady] = useState(false);
+  const issuesByNodeId = useMemo(() => {
+    const archLabelRe = /^archNodeId:(.+)$/;
+    const map: Record<string, Array<{ key: string; summary: string; baseUrl: string }>> = {};
+    for (const i of jiraIssues) {
+      const labels = i.labels ?? [];
+      for (const label of labels) {
+        const m = label.match(archLabelRe);
+        if (m) {
+          const nodeId = m[1];
+          if (!map[nodeId]) map[nodeId] = [];
+          map[nodeId].push({ key: i.key, summary: i.summary, baseUrl: i.baseUrl });
+          break;
+        }
+      }
+    }
+    return map;
+  }, [jiraIssues]);
   const [agentGraphCommand, setAgentGraphCommand] = useState<GraphCommand | null>(null);
   const [virtualNodes, setVirtualNodes] = useState<
     Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }>
@@ -748,6 +919,7 @@ export default function App() {
   >([]);
   const [activeViolations, setActiveViolations] = useState<CriticViolation[]>([]);
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
+  const [violationBeingFixed, setViolationBeingFixed] = useState<string | null>(null);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "memories">("dashboard");
   const [mainViewMode, setMainViewMode] = useState<"graph" | "board">("graph");
@@ -787,6 +959,34 @@ export default function App() {
       }>;
     }>
   >([]);
+  const [todos, setTodos] = useState<
+    Array<{
+      id: string;
+      title: string;
+      description?: string | null;
+      phase?: number | null;
+      status: string;
+      dependsOn?: string[] | null;
+      source?: string | null;
+      railId?: string | null;
+    }>
+  >([]);
+  const [todoCreateOpen, setTodoCreateOpen] = useState(false);
+  const [todoEditId, setTodoEditId] = useState<string | null>(null);
+  const [boardTodosExpanded, setBoardTodosExpanded] = useState(true);
+  const [boardTodoPhaseFilter, setBoardTodoPhaseFilter] = useState<"all" | number>("all");
+  const [todoPhaseFilter, setTodoPhaseFilter] = useState<"all" | number>("all");
+  const [todoError, setTodoError] = useState<string | null>(null);
+  const [todoImportOpen, setTodoImportOpen] = useState(false);
+  const [todoImportMarkdown, setTodoImportMarkdown] = useState("");
+  const [todoImportPreview, setTodoImportPreview] = useState<{
+    total: number;
+    phases: Array<{ phase: number | null; count: number }>;
+  } | null>(null);
+  const [todoImportLoading, setTodoImportLoading] = useState(false);
+  const [todoCreateTitle, setTodoCreateTitle] = useState("");
+  const [todoCreatePhase, setTodoCreatePhase] = useState<number | "">("");
+  const [todoCreateLoading, setTodoCreateLoading] = useState(false);
   const BOARD_FILTERS_KEY = "boardFilters";
   const readBoardFilters = () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -837,7 +1037,12 @@ export default function App() {
       ])
   );
   const [railsPerColumn, setRailsPerColumn] = useState<number>(50);
-  const [railDropError, setRailDropError] = useState<string | null>(null);
+  const [railDropError, setRailDropError] = useState<{
+    message: string;
+    code?: string;
+    details?: string;
+    retryable?: boolean;
+  } | null>(null);
   const [dashboardLastSeenViolations, setDashboardLastSeenViolations] = useState(0);
   const [showThinkingPanel, setShowThinkingPanel] = useState<boolean>(false);
   const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([]);
@@ -876,6 +1081,11 @@ export default function App() {
   const [selectedRailDetail, setSelectedRailDetail] = useState<any | null>(null);
   const [selectedRailSandboxPaths, setSelectedRailSandboxPaths] = useState<string[] | null>(null);
   const [selectedRailSandboxLoading, setSelectedRailSandboxLoading] = useState(false);
+  const [selectedRailDiffs, setSelectedRailDiffs] = useState<
+    Array<{ path: string; before?: string; after?: string }> | null
+  >(null);
+  const [selectedRailDiffsLoading, setSelectedRailDiffsLoading] = useState(false);
+  const [railImpactNodeIds, setRailImpactNodeIds] = useState<string[] | null>(null);
   const [lastMaterializedSnapshot, setLastMaterializedSnapshot] = useState<{
     targetRoot: string;
     created: string[];
@@ -945,6 +1155,7 @@ export default function App() {
   const graphRef = useRef<typeof graph>(graph);
   const skipNextJiraFetchRef = useRef(false);
   const trackViolationRef = useRef<(v: CriticViolation) => void>(() => {});
+  const fixPromptRef = useRef<string | null>(null);
   const workspaceDropUpRef = useRef<HTMLDivElement | null>(null);
   const tasksPollAbortRef = useRef<Map<string, boolean>>(new Map());
   const activeChatIdRef = useRef<string>(activeChatId);
@@ -966,8 +1177,12 @@ export default function App() {
     if (!selectedRailId || !wsId || !accessToken) {
       setSelectedRailDetail(null);
       setSelectedRailSandboxPaths(null);
+      setSelectedRailDiffs(null);
+      setRailImpactNodeIds(null);
       return;
     }
+    setSelectedRailDiffs(null);
+    setRailImpactNodeIds(null);
     let cancelled = false;
     (async () => {
       try {
@@ -990,93 +1205,286 @@ export default function App() {
   }, [selectedRailId, mainViewMode, railWorkspaceFilter, activeWorkspaceId, accessToken]);
 
   const effectiveRailsWorkspaceId = railWorkspaceFilter ?? activeWorkspaceId;
+
+  useEffect(() => {
+    if (!selectedRailDetail || !graph || !accessToken) return;
+    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+    if (!wsId) return;
+    let cancelled = false;
+    fetch(
+      `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/impact?workspaceId=${encodeURIComponent(wsId)}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+      .then((r) => r.json().catch(() => ({})))
+      .then((data) => {
+        if (cancelled || !data.changedFiles) return;
+        const baseIds = Array.isArray(data.baselineNodeIds) ? data.baselineNodeIds : [];
+        const changedFiles = Array.isArray(data.changedFiles) ? data.changedFiles : [];
+        const fileIds = new Set<string>();
+        for (const node of graph.nodes) {
+          for (const f of node.files ?? []) {
+            if (changedFiles.some((cf: string) => f.includes(cf) || cf.includes(f)))
+              fileIds.add(node.id);
+          }
+        }
+        setRailImpactNodeIds([...new Set([...baseIds, ...fileIds])]);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        const base = selectedRailDetail.baselineNodeIds ?? [];
+        const logic = (selectedRailDetail.logicPath ?? []).map((s: any) => s?.nodeId).filter(Boolean);
+        setRailImpactNodeIds([...new Set([...base, ...logic])]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRailDetail?.id, graph, accessToken, mainViewMode, effectiveRailsWorkspaceId, activeWorkspaceId]);
+
+  const mapRailsFromApi = useCallback((items: any[]) =>
+    items.map((r: any) => ({
+      id: String(r.id),
+      outcome: typeof r.outcome === "string" ? r.outcome : undefined,
+      state: typeof r.state === "string" ? r.state : undefined,
+      archetype: typeof r.archetype === "string" ? r.archetype : undefined,
+      logicPath: Array.isArray(r.logicPath)
+        ? r.logicPath
+            .map((s: any) =>
+              s && typeof s.layer === "string" && typeof s.nodeId === "string"
+                ? `${s.layer}:${s.nodeId}`
+                : null
+            )
+            .filter((x: string | null): x is string => x != null)
+        : undefined,
+      sessionId: typeof r.sessionId === "string" ? r.sessionId : undefined,
+      updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : undefined,
+      createdAt: typeof r.createdAt === "number" ? r.createdAt : undefined,
+      lastCritique:
+        r.lastCritique && typeof r.lastCritique === "object"
+          ? {
+              source: String(r.lastCritique.source ?? ""),
+              message: String(r.lastCritique.message ?? ""),
+              failureType: typeof r.lastCritique.failureType === "string" ? r.lastCritique.failureType : undefined,
+              createdAt: Number(r.lastCritique.createdAt ?? Date.now()),
+              attempt: typeof r.lastCritique.attempt === "number" ? r.lastCritique.attempt : undefined,
+              totalAttempts: typeof r.lastCritique.totalAttempts === "number" ? r.lastCritique.totalAttempts : undefined,
+              criticScore: typeof r.lastCritique.criticScore === "number" ? r.lastCritique.criticScore : undefined,
+            }
+          : null,
+      hallucinationIndex: typeof r.hallucinationIndex === "number" ? r.hallucinationIndex : null,
+      acceptanceCriteria:
+        r.acceptanceCriteria && typeof r.acceptanceCriteria === "object"
+          ? {
+              functional: Array.isArray(r.acceptanceCriteria.functional)
+                ? r.acceptanceCriteria.functional.filter((x: any) => typeof x === "string")
+                : [],
+              visual: Array.isArray(r.acceptanceCriteria.visual)
+                ? r.acceptanceCriteria.visual.filter((x: any) => typeof x === "string")
+                : [],
+              architectural: Array.isArray(r.acceptanceCriteria.architectural)
+                ? r.acceptanceCriteria.architectural.filter((x: any) => typeof x === "string")
+                : [],
+            }
+          : null,
+      tasks: Array.isArray(r.tasks)
+        ? r.tasks.map((t: any) => ({
+            id: String(t.id),
+            kind: typeof t.kind === "string" ? t.kind : undefined,
+            description: typeof t.description === "string" ? t.description : undefined,
+            status: typeof t.status === "string" ? t.status : undefined,
+            createdAt: typeof t.createdAt === "number" ? t.createdAt : undefined,
+          }))
+        : [],
+    })),
+  []);
+
   useEffect(() => {
     if (mainViewMode !== "board") return;
     if (!effectiveRailsWorkspaceId || !accessToken) return;
     let cancelled = false;
-    (async () => {
+    const fetchRails = async () => {
       try {
-        const res = await fetch(`${API_BASE}/rails?workspaceId=${encodeURIComponent(effectiveRailsWorkspaceId)}`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
+        const res = await fetch(
+          `${API_BASE}/rails?workspaceId=${encodeURIComponent(effectiveRailsWorkspaceId)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
         const data = await res.json().catch(() => ({}));
         if (!res.ok || cancelled) return;
         const items = Array.isArray(data.rails) ? data.rails : [];
-        setRails(
-          items.map((r: any) => ({
-            id: String(r.id),
-            outcome: typeof r.outcome === "string" ? r.outcome : undefined,
-            state: typeof r.state === "string" ? r.state : undefined,
-            archetype: typeof r.archetype === "string" ? r.archetype : undefined,
-            logicPath: Array.isArray(r.logicPath)
-              ? r.logicPath
-                  .map((s: any) =>
-                    s && typeof s.layer === "string" && typeof s.nodeId === "string"
-                      ? `${s.layer}:${s.nodeId}`
-                      : null
-                  )
-                  .filter((x: string | null): x is string => x != null)
-              : undefined,
-            sessionId: typeof r.sessionId === "string" ? r.sessionId : undefined,
-            updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : undefined,
-            createdAt: typeof r.createdAt === "number" ? r.createdAt : undefined,
-            lastCritique:
-              r.lastCritique && typeof r.lastCritique === "object"
-                ? {
-                    source: String(r.lastCritique.source ?? ""),
-                    message: String(r.lastCritique.message ?? ""),
-                    failureType:
-                      typeof r.lastCritique.failureType === "string" ? r.lastCritique.failureType : undefined,
-                    createdAt: Number(r.lastCritique.createdAt ?? Date.now()),
-                    attempt:
-                      typeof r.lastCritique.attempt === "number" ? r.lastCritique.attempt : undefined,
-                    totalAttempts:
-                      typeof r.lastCritique.totalAttempts === "number"
-                        ? r.lastCritique.totalAttempts
-                        : undefined,
-                    criticScore:
-                      typeof r.lastCritique.criticScore === "number"
-                        ? r.lastCritique.criticScore
-                        : undefined,
+        setRails(mapRailsFromApi(items));
+      } catch {
+        if (!cancelled) {
+          // non-fatal; board can be empty
+        }
+      }
+    };
+    fetchRails();
+    let sseAbort: AbortController | null = null;
+    let sseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+    const MAX_RETRY_DELAY = 30000;
+    const BASE_RETRY_DELAY = 1000;
+    const connectSSE = (retryDelay = BASE_RETRY_DELAY) => {
+      if (!effectiveRailsWorkspaceId || !accessToken || cancelled) return;
+      sseAbort = new AbortController();
+      fetch(`${API_BASE}/rails/events?workspaceId=${encodeURIComponent(effectiveRailsWorkspaceId)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: sseAbort.signal,
+      })
+        .then((res) => {
+          if (cancelled || !res.ok || !res.body) return;
+          retryCount = 0;
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          const pump = (): Promise<void> =>
+            reader.read().then(({ done, value }) => {
+              if (cancelled) return;
+              if (done) {
+                const delay = Math.min(retryDelay * Math.pow(2, retryCount), MAX_RETRY_DELAY);
+                const jitter = delay * 0.2 * (Math.random() - 0.5);
+                sseReconnectTimer = setTimeout(() => {
+                  retryCount++;
+                  connectSSE(BASE_RETRY_DELAY);
+                }, Math.max(500, delay + jitter));
+                return;
+              }
+              buf += decoder.decode(value, { stream: true });
+              const lines = buf.split("\n");
+              buf = lines.pop() ?? "";
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  try {
+                    const payload = JSON.parse(line.slice(6).trim());
+                    if (payload?.type === "rail_state" || payload?.type === "rail_execute_complete") fetchRails();
+                  } catch {
+                    /* ignore */
                   }
-                : null,
-            hallucinationIndex:
-              typeof r.hallucinationIndex === "number" ? r.hallucinationIndex : null,
-            acceptanceCriteria:
-              r.acceptanceCriteria && typeof r.acceptanceCriteria === "object"
-                ? {
-                    functional: Array.isArray(r.acceptanceCriteria.functional)
-                      ? r.acceptanceCriteria.functional.filter((x: any) => typeof x === "string")
-                      : [],
-                    visual: Array.isArray(r.acceptanceCriteria.visual)
-                      ? r.acceptanceCriteria.visual.filter((x: any) => typeof x === "string")
-                      : [],
-                    architectural: Array.isArray(r.acceptanceCriteria.architectural)
-                      ? r.acceptanceCriteria.architectural.filter((x: any) => typeof x === "string")
-                      : [],
-                  }
-                : null,
-            tasks: Array.isArray(r.tasks)
-              ? r.tasks.map((t: any) => ({
-                  id: String(t.id),
-                  kind: typeof t.kind === "string" ? t.kind : undefined,
-                  description: typeof t.description === "string" ? t.description : undefined,
-                  status: typeof t.status === "string" ? t.status : undefined,
-                  createdAt: typeof t.createdAt === "number" ? t.createdAt : undefined,
-                }))
-              : [],
+                }
+              }
+              return pump();
+            });
+          return pump();
+        })
+        .catch(() => {
+          if (cancelled) return;
+          const delay = Math.min(retryDelay * Math.pow(2, retryCount), MAX_RETRY_DELAY);
+          const jitter = delay * 0.2 * (Math.random() - 0.5);
+          retryCount++;
+          sseReconnectTimer = setTimeout(() => connectSSE(BASE_RETRY_DELAY), Math.max(500, delay + jitter));
+        });
+    };
+    if (effectiveRailsWorkspaceId && accessToken) connectSSE();
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible" && effectiveRailsWorkspaceId && accessToken && !cancelled) {
+        if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+        retryCount = 0;
+        sseAbort?.abort();
+        connectSSE(BASE_RETRY_DELAY);
+      }
+    };
+    const handleOnline = () => {
+      if (effectiveRailsWorkspaceId && accessToken && !cancelled) {
+        if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+        retryCount = 0;
+        sseAbort?.abort();
+        connectSSE(BASE_RETRY_DELAY);
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("online", handleOnline);
+    const id = window.setInterval(fetchRails, 8000);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("online", handleOnline);
+      window.clearInterval(id);
+      sseAbort?.abort();
+      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+    };
+  }, [mainViewMode, effectiveRailsWorkspaceId, accessToken, mapRailsFromApi]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState !== "visible") return;
+      if (mainViewMode !== "board") return;
+      if (!effectiveRailsWorkspaceId || !accessToken) return;
+      fetch(
+        `${API_BASE}/rails?workspaceId=${encodeURIComponent(effectiveRailsWorkspaceId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      )
+        .then((res) => res.json().catch(() => ({})))
+        .then((data) => {
+          const items = Array.isArray((data as any).rails) ? (data as any).rails : [];
+          setRails((prev) => (items.length === 0 ? prev : mapRailsFromApi(items)));
+        })
+        .catch(() => {
+          // ignore
+        });
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => {
+      document.removeEventListener("visibilitychange", handler);
+    };
+  }, [mainViewMode, effectiveRailsWorkspaceId, accessToken, mapRailsFromApi]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId || !accessToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/todos?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || cancelled) {
+          const msg = typeof data.error === "string" ? data.error : "Failed to load todos.";
+          if (!cancelled) setTodoError(msg);
+          return;
+        }
+        const rows = Array.isArray(data.todos) ? data.todos : [];
+        setTodos(
+          rows.map((t: any) => ({
+            id: String(t.id),
+            title: String(t.title ?? ""),
+            description: t.description ?? null,
+            phase:
+              typeof t.phase === "number"
+                ? t.phase
+                : typeof t.phase === "string"
+                  ? Number(t.phase) || null
+                  : null,
+            status: String(t.status ?? "pending"),
+            dependsOn: Array.isArray(t.depends_on)
+              ? t.depends_on.map((x: any) => String(x))
+              : null,
+            source: typeof t.source === "string" ? t.source : null,
+            railId: typeof t.rail_id === "string" ? t.rail_id : null,
           }))
         );
-      } catch {
-        // ignore
+        setTodoError(null);
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setTodoError(msg);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [mainViewMode, effectiveRailsWorkspaceId, accessToken]);
+  }, [activeWorkspaceId, accessToken]);
 
   useEffect(() => {
     setRailWorkspaceFilter(null);
@@ -1127,6 +1535,37 @@ export default function App() {
       return true;
     });
   }, [rails, railSearch, railStateFilter, railArchetypeFilter, railOnlyWithFailures]);
+
+  const executingRailsCount = useMemo(
+    () => rails.filter((r) => r.state === "EXECUTING").length,
+    [rails]
+  );
+  const activeRailsCount = useMemo(
+    () =>
+      rails.filter(
+        (r) =>
+          r.state &&
+          !["ARCHIVED", "FAILED", "SUSPENDED"].includes(r.state)
+      ).length,
+    [rails]
+  );
+
+  const queuePositionByRailId = useMemo(() => {
+    const active = rails
+      .filter((r) => r.state && !["ARCHIVED", "FAILED", "SUSPENDED"].includes(r.state))
+      .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
+    const execCount = active.filter((r) => r.state === "EXECUTING").length;
+    const map: Record<string, string> = {};
+    let queuePos = 0;
+    for (const r of active) {
+      if (r.state === "EXECUTING") map[r.id] = "Running";
+      else {
+        queuePos += 1;
+        map[r.id] = queuePos === 1 ? "Next" : `#${queuePos}`;
+      }
+    }
+    return map;
+  }, [rails]);
 
   useEffect(() => {
     if (!isGreenfieldMode) return;
@@ -1425,11 +1864,14 @@ export default function App() {
     }
   }, [activeWorkspaceId, accessToken, isDeletingWorkspace]);
 
-  const fetchPersistedViolations = useCallback(
-    async (workspaceId: string, tokenOverride?: string) => {
+  /** Fetches violations from API; no setState. Use mergeViolationsIntoGraph + setGraph/setActiveViolations at call site. */
+  const fetchViolationsRaw = useCallback(
+    async (
+      workspaceId: string,
+      tokenOverride?: string
+    ): Promise<{ violations: CriticViolation[]; error: string | null }> => {
       const token = tokenOverride ?? accessToken;
-      if (!token) return;
-      setViolationsRestoreError(null);
+      if (!token) return { violations: [], error: null };
       try {
         const res = await fetch(`${API_BASE}/violations?workspaceId=${workspaceId}`, {
           headers: { Authorization: `Bearer ${token}` },
@@ -1438,62 +1880,14 @@ export default function App() {
         if (!res.ok) {
           const msg = data.error ?? `Failed to load violations (${res.status})`;
           console.warn("[violations] Restore failed:", msg);
-          setViolationsRestoreError(msg);
-          return;
+          return { violations: [], error: msg };
         }
         const stored = (data.violations ?? []) as CriticViolation[];
-        if (!stored.length) return;
-        const key = (v: CriticViolation) =>
-          `${v.type}:${v.sourceNodeId}:${v.targetNodeId ?? ""}`;
-        const storedByKey = new Map(stored.map((v) => [key(v), v]));
-        setActiveViolations((prev) => {
-          const existingKeys = new Set(prev.map(key));
-          const fresh = stored.filter((v) => !existingKeys.has(key(v)));
-          const merged = prev.map((v) => {
-            const s = storedByKey.get(key(v));
-            return s?.jiraKey ? { ...v, jiraKey: s.jiraKey, jiraStatus: s.jiraStatus } : v;
-          });
-          return [...merged, ...fresh];
-        });
-        setGraph((prev) => {
-          if (!prev) return prev;
-          const relevantForNode = (n: ArchNode) =>
-            stored.filter(
-              (v) => v.sourceNodeId === n.id || v.targetNodeId === n.id
-            );
-          return {
-            ...prev,
-            nodes: prev.nodes.map((node) => {
-              const existingVs = node.violationState?.violations ?? [];
-              const storedForNode = relevantForNode(node);
-              const mergedVs = [
-                ...existingVs.map((v) => {
-                  const s = storedByKey.get(key(v));
-                  return s?.jiraKey ? { ...v, jiraKey: s.jiraKey, jiraStatus: s.jiraStatus } : v;
-                }),
-                ...storedForNode.filter(
-                  (s) => !existingVs.some((ev) => key(ev) === key(s))
-                ),
-              ];
-              if (mergedVs.length === 0) return node;
-              const highest = mergedVs
-                .map((x) => x.severity)
-                .sort(
-                  (a, b) =>
-                    (["critical", "high", "medium"] as const).indexOf(a as "critical" | "high" | "medium") -
-                    (["critical", "high", "medium"] as const).indexOf(b as "critical" | "high" | "medium")
-                )[0] ?? null;
-              return {
-                ...node,
-                violationState: { violations: mergedVs, highestSeverity: highest },
-              } as ArchNode;
-            }),
-          };
-        });
+        return { violations: stored, error: null };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn("[violations] Restore failed:", msg);
-        setViolationsRestoreError(msg);
+        return { violations: [], error: msg };
       }
     },
     [accessToken]
@@ -1534,15 +1928,20 @@ export default function App() {
         const loadedGraph = data.graph as ArchGraph;
         const repo = (data.repoUrl ?? "") as string;
         if (loadedGraph && typeof loadedGraph === "object" && Array.isArray(loadedGraph.nodes) && Array.isArray(loadedGraph.edges)) {
-          setGraph(analyseGraph(loadedGraph));
+          const analysedGraph = analyseGraph(loadedGraph);
+          const { violations, error: violationsError } = await fetchViolationsRaw(workspaceId, token);
+          setViolationsRestoreError(violationsError);
+          const mergedGraph = mergeViolationsIntoGraph(analysedGraph, violations);
+          setGraph(mergedGraph);
+          setActiveViolations(violations);
           setRepoUrl(repo);
           setActiveWorkspaceId(workspaceId);
           const jiraKey = data.jiraProjectKey as string | null | undefined;
           setJiraProjectKey(jiraKey ?? (repo ? deriveProjectKey(repo) : null));
           setJiraProjectKeyReady(true);
+          setAutoExecuteEnabled(Boolean(data.autoExecuteEnabled));
           setShowWorkspaceDropUp(false);
           setError(null);
-          await fetchPersistedViolations(workspaceId, token);
           // Restore saved chat context for this workspace
           try {
             const saved = localStorage.getItem(`chat:${workspaceId}`);
@@ -1570,7 +1969,7 @@ export default function App() {
         setLoadingWorkspaceId(null);
       }
     },
-    [accessToken, fetchPersistedViolations]
+    [accessToken, fetchViolationsRaw]
   );
 
   useEffect(() => {
@@ -2003,7 +2402,7 @@ export default function App() {
         setLoading("");
       }
     },
-    [accessToken, activeWorkspaceId, supabase]
+    [accessToken, activeWorkspaceId, supabase, autosaveEnabled]
   );
 
   const handleScan = useCallback(() => {
@@ -2033,7 +2432,7 @@ export default function App() {
 
   const handleAsk = useCallback(
     async (overrideQuestion?: string) => {
-      const q = (overrideQuestion ?? aiQuestion.trim()).trim();
+      const q = (overrideQuestion ?? fixPromptRef.current ?? aiQuestion.trim()).trim();
       if (!q || !graph) return;
 
       const inFlight = backgroundTasksRef.current.some(
@@ -2072,12 +2471,20 @@ export default function App() {
 
       setChatLoading(true);
       if (!overrideQuestion) setAiQuestion("");
+      const pdfToSend = pdfAttachment;
+      const docToSend = docAttachment;
+      if (pdfToSend) setPdfAttachment(null);
+      if (docToSend) setDocAttachment(null);
+      const docPrefix = docToSend
+        ? `[Attached document: ${docToSend.name}]\n\n${docToSend.extractedText.slice(0, 3000)}${docToSend.extractedText.length > 3000 ? "…" : ""}\n\n---\n\n`
+        : "";
+      const fullQuestion = docPrefix + q;
       const currentHistory = chatSessionsRef.current[activeChatIdRef.current] ?? [];
-      const historyForRequest = [...currentHistory, { role: "user" as const, content: q }];
+      const historyForRequest = [...currentHistory, { role: "user" as const, content: fullQuestion }];
       const cid = activeChatIdRef.current;
       setChatSessions((s) => ({
         ...s,
-        [cid]: [...(s[cid] ?? []), { role: "user", content: q }],
+        [cid]: [...(s[cid] ?? []), { role: "user", content: fullQuestion }],
       }));
 
       const history = historyForRequest;
@@ -2138,6 +2545,27 @@ export default function App() {
       }
 
         const answer = data.answer ?? "No response.";
+        if (Array.isArray((data as any).todos) && (data as any).todos.length > 0) {
+          const newTodos = (data as any).todos as any[];
+          setTodos((prev) => {
+            const byId = new Map(prev.map((t) => [t.id, t]));
+            const merged = [...prev];
+            for (const t of newTodos) {
+              if (!t || !t.id || byId.has(t.id)) continue;
+              merged.push(t);
+              byId.set(t.id, t);
+            }
+            return merged;
+          });
+        }
+        if (Array.isArray((data as any).rails) && (data as any).rails.length > 0) {
+          const rs = (data as any).rails as Array<{ id?: string }>;
+          const firstId = rs.find((r) => typeof r.id === "string")?.id as string | undefined;
+          if (firstId) {
+            setMainViewMode("board");
+            setSelectedRailId(firstId);
+          }
+        }
         const acceptanceCriteria =
           data.acceptanceCriteria &&
           typeof data.acceptanceCriteria === "object" &&
@@ -2236,12 +2664,14 @@ export default function App() {
         setTokenWarning(null);
       }
 
+      const rs = Array.isArray((data as any).rails) ? (data as any).rails as Array<{ id?: string }> : [];
+      const railIds = rs.filter((r) => typeof r.id === "string").map((r) => ({ id: r.id! }));
       const cidInner = activeChatIdRef.current;
       setChatSessions((prev) => {
         const currentInner = prev[cidInner] ?? [];
-        const updated: Array<{ role: "user" | "assistant"; content: string }> = [
+        const updated: Array<{ role: "user" | "assistant"; content: string; rails?: { id: string }[] }> = [
           ...currentInner,
-          { role: "assistant", content: answer },
+          { role: "assistant", content: answer, ...(railIds.length > 0 ? { rails: railIds } : {}) },
           ...(criticReport
             ? [{ role: "assistant" as const, content: `Critic: ${criticReport}` }]
             : []),
@@ -2289,7 +2719,7 @@ export default function App() {
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
-            question: q,
+            question: fullQuestion,
             graph,
             nodeId: selectedNode ?? undefined,
             history,
@@ -2298,6 +2728,7 @@ export default function App() {
             ...(graph.nodes.length === 0 && greenfieldSessionId
               ? { greenfieldSessionId }
               : {}),
+            ...(pdfToSend ? { pdfBase64: pdfToSend.base64, pdfFileName: pdfToSend.name } : {}),
           }),
         });
 
@@ -2328,6 +2759,10 @@ export default function App() {
 
         const remoteTaskId = typeof data.taskId === "string" ? data.taskId : null;
         if (!remoteTaskId) {
+          if (res.ok && typeof data.answer === "string") {
+            applyChatResult(data);
+            return;
+          }
           throw new Error("Server did not return a taskId for async chat.");
         }
 
@@ -2427,10 +2862,22 @@ export default function App() {
           ],
         }));
       } finally {
+        fixPromptRef.current = null;
         setChatLoading(false);
       }
     },
-    [aiQuestion, graph, selectedNode, accessToken, jiraConfigured, activeWorkspaceId]
+    [
+      aiQuestion,
+      graph,
+      selectedNode,
+      accessToken,
+      jiraConfigured,
+      activeWorkspaceId,
+      greenfieldSessionId,
+      activeThreadId,
+      pdfAttachment,
+      docAttachment,
+    ]
   );
 
   const addChatTab = useCallback(async () => {
@@ -2571,6 +3018,7 @@ export default function App() {
         if (projectKeyOverride) params.set("projectKey", projectKeyOverride);
         if (filterByRepo ?? jiraFilterByRepo) params.set("filterByRepo", "true");
         else params.set("filterByRepo", "false");
+        if (activeWorkspaceId) params.set("includeStaleDetection", "true");
         const res = await fetch(`${API_BASE}/jira-issues?${params}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
@@ -2586,9 +3034,12 @@ export default function App() {
         setJiraConfigured(true);
         setJiraIssues(data.issues ?? []);
         setJiraRepoName(data.repoName);
+        setStaleMismatches(data.staleMismatches ?? []);
       } catch (err) {
-        setJiraError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setJiraError(normalizeJiraError(msg));
         setJiraIssues([]);
+        setStaleMismatches([]);
       } finally {
         setJiraLoading(false);
       }
@@ -2621,7 +3072,8 @@ export default function App() {
         if (!res.ok) throw new Error(data.error || res.statusText);
       } catch (err) {
         setJiraIssues(prevIssues);
-        setJiraError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setJiraError(normalizeJiraError(msg));
       }
     },
     [accessToken, jiraIssues]
@@ -2641,6 +3093,7 @@ export default function App() {
       setJiraProjectKey(null);
       setJiraConfigSource(null);
       setJiraIssues([]);
+      setStaleMismatches([]);
       setJiraError(null);
     } catch (err) {
       setJiraError(err instanceof Error ? err.message : String(err));
@@ -2665,6 +3118,7 @@ export default function App() {
             skipNextJiraFetchRef.current = true;
             setJiraProjectKey(key);
             setEditingJiraProjectKey(false);
+            // Fetch with new key explicitly to avoid race with state update
             await fetchJiraTests(undefined, key);
           }
         })
@@ -2700,6 +3154,33 @@ export default function App() {
       .catch(() => {});
   }, [activeWorkspaceId, accessToken]);
 
+  const toggleAutoExecute = useCallback(() => {
+    if (!activeWorkspaceId || !accessToken || autoExecuteSaving) return;
+    const next = !autoExecuteEnabled;
+    setAutoExecuteSaving(true);
+    fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/auto-execute`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ enabled: next }),
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          // Best-effort: surface error in console; UI remains unchanged.
+          const data = await r.json().catch(() => ({}));
+          console.warn("Failed to update auto-execute flag:", data?.error ?? r.statusText);
+          return;
+        }
+        setAutoExecuteEnabled(next);
+      })
+      .catch((err) => {
+        console.warn("Failed to update auto-execute flag:", err);
+      })
+      .finally(() => setAutoExecuteSaving(false));
+  }, [activeWorkspaceId, accessToken, autoExecuteEnabled, autoExecuteSaving]);
+
   useEffect(() => {
     if (!accessToken) {
       setJiraConfigured(null);
@@ -2711,10 +3192,13 @@ export default function App() {
         const res = await fetch(`${API_BASE}/jira-status`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
-        const data = (await res.json().catch(() => ({}))) as { configured?: boolean; source?: "db" | "env" };
+        const data = (await res.json().catch(() => ({}))) as { configured?: boolean; source?: "db" | "env"; error?: string; code?: string };
         if (!cancelled) {
           setJiraConfigured(!!data?.configured);
           setJiraConfigSource(data?.configured && data?.source === "db" ? "db" : null);
+          if (data?.code === "jira_decrypt_failed" && data?.error) {
+            setJiraError(data.error);
+          }
         }
       } catch {
         if (!cancelled) {
@@ -3123,12 +3607,24 @@ export default function App() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ rootPath, railId }),
+        body: JSON.stringify({ rootPath, railId, force: materializeDiffWarning != null }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (data && data.code === "MATERIALIZE_DIFF_TOO_LARGE") {
+          setMaterializeDiffWarning({
+            message:
+              typeof data.error === "string"
+                ? data.error
+                : "This change set is large. Please double-check before approving.",
+            limits: data.limits,
+            actual: data.actual,
+          });
+          return;
+        }
         throw new Error(data.error || res.statusText);
       }
+      setMaterializeDiffWarning(null);
       setPendingRailApproval(null);
       setVirtualNodes([]);
       setVirtualEdges([]);
@@ -3172,17 +3668,107 @@ export default function App() {
     }
   }, [pendingRailApproval, accessToken, activeWorkspaceId, activeChatId]);
 
-  const handleFixViolation = useCallback((v: CriticViolation) => {
-    const fixPrompt =
-      `Fix this architecture violation:\n\n` +
-      `Type: ${v.type}\n` +
-      `Severity: ${v.severity}\n` +
-      `Source: ${v.sourceNodeId}${v.targetNodeId ? ` → ${v.targetNodeId}` : ""}\n\n` +
-      `What was found: ${v.description}\n\n` +
-      `Suggested fix: ${v.suggestedFix}\n\n` +
-      `Propose a concrete refactor plan and list the exact files you would change.`;
-    setAiQuestion(fixPrompt);
-  }, []);
+  const [violationRailStatus, setViolationRailStatus] = useState<Record<string, { railId: string; state: string }>>({});
+
+  useEffect(() => {
+    const vWithRail = activeViolations.filter((v) => (v as any).railId);
+    if (vWithRail.length === 0) return;
+    setViolationRailStatus((prev) => {
+      const next = { ...prev };
+      for (const v of vWithRail) {
+        const rid = (v as any).railId as string;
+        const k = violationKey(v);
+        if (rid && (!next[k] || next[k].railId !== rid))
+          next[k] = { railId: rid, state: "CREATED" };
+      }
+      return next;
+    });
+  }, [activeViolations]);
+
+  useEffect(() => {
+    setViolationRailStatus((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [vKey, entry] of Object.entries(prev)) {
+        const rail = rails.find((r) => r.id === entry.railId);
+        if (rail && rail.state && rail.state !== entry.state) {
+          next[vKey] = { ...entry, state: rail.state };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [rails]);
+
+  const handleFixViolation = useCallback(
+    (v: CriticViolation) => {
+      const vKey = violationKey(v);
+      const fixPrompt = `Fix the ${v.type.replace(/_/g, " ")}: ${v.description ?? v.suggestedFix ?? `${v.sourceNodeId} → ${v.targetNodeId ?? "?"}`}`;
+      fixPromptRef.current = fixPrompt;
+      setViolationBeingFixed(vKey);
+      (async () => {
+        try {
+          if (!accessToken || !activeWorkspaceId) return;
+          const res = await fetch(`${API_BASE}/rails/from-violation`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({ workspaceId: activeWorkspaceId, violation: v }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setViolationBeingFixed(null);
+            return;
+          }
+          const railId = data.railId;
+          if (!railId) {
+            setViolationBeingFixed(null);
+            return;
+          }
+          setViolationRailStatus((prev) => ({ ...prev, [vKey]: { railId, state: "PRE_PLANNING" } }));
+          setRails((prev) => [
+            ...prev,
+            {
+              id: railId,
+              outcome: v.description ?? "Fix violation",
+              state: "PRE_PLANNING",
+              archetype: "analysis-chat",
+              logicPath: [],
+              tasks: [],
+              updatedAt: Date.now(),
+              createdAt: Date.now(),
+            } as any,
+          ]);
+          setSidebarTab("dashboard");
+          setMainViewMode("board");
+          setSelectedRailId(railId);
+          const execRes = await fetch(
+            `${API_BASE}/rails/${encodeURIComponent(railId)}/execute?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+            {
+              method: "POST",
+              headers: { Authorization: `Bearer ${accessToken}` },
+            }
+          );
+          const execData = await execRes.json().catch(() => ({}));
+          if (execRes.ok) {
+            setViolationRailStatus((prev) => ({
+              ...prev,
+              [vKey]: { railId, state: "EXECUTING" },
+            }));
+            setRails((prev) =>
+              prev.map((r) => (r.id === railId ? { ...r, state: "EXECUTING" } : r))
+            );
+          }
+        } finally {
+          fixPromptRef.current = null;
+          setViolationBeingFixed(null);
+        }
+      })();
+    },
+    [accessToken, activeWorkspaceId]
+  );
 
   const handleDismissViolation = useCallback(
     (v: CriticViolation) => {
@@ -3286,7 +3872,10 @@ export default function App() {
 
         const key = data.key as string | undefined;
         const jiraStatus = "To Do";
-        if (!key) return;
+        if (!key) {
+          setJiraError("Failed to create Jira ticket: no issue key returned.");
+          return;
+        }
 
         setActiveViolations((prev) =>
           prev.map((existing) =>
@@ -3324,7 +3913,7 @@ export default function App() {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (jiraConfigured === true) {
-          setJiraError(`Failed to create Jira ticket: ${msg}`);
+          setJiraError(`Failed to create Jira ticket: ${normalizeJiraError(msg)}`);
         }
       }
     },
@@ -5416,6 +6005,370 @@ export default function App() {
           </div>
           )}
 
+          <div
+            style={{
+              marginTop: 16,
+              paddingTop: 12,
+              borderTop: "1px solid #30363d",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 6,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "#e5e7eb",
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                }}
+              >
+                Execution todos
+              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!accessToken || !activeWorkspaceId) return;
+                    try {
+                      setTodoError(null);
+                      const res = await fetch(`${API_BASE}/todos/auto-execute-ready`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${accessToken}`,
+                        },
+                        body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+                      });
+                      const data = await res.json().catch(() => ({}));
+                      if (!res.ok) {
+                        const msg =
+                          typeof data.error === "string"
+                            ? data.error
+                            : "Auto-execute failed.";
+                        setTodoError(msg);
+                        return;
+                      }
+                      const msg =
+                        typeof data.message === "string"
+                          ? data.message
+                          : data.startedRails && Array.isArray(data.startedRails)
+                            ? `Queued ${data.startedRails.length} tasks for execution.`
+                            : "Auto-execution triggered.";
+                      setTodoError(msg);
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      setTodoError(msg);
+                    }
+                  }}
+                  style={{
+                    padding: "2px 6px",
+                    fontSize: 10,
+                    borderRadius: 6,
+                    border: "1px solid #4b5563",
+                    background: "#0f172a",
+                    color: "#e5e7eb",
+                    cursor: "pointer",
+                  }}
+                >
+                  Auto-implement ready
+                </button>
+                <select
+                  value={todoPhaseFilter}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setTodoPhaseFilter(v === "all" ? "all" : Number(v));
+                  }}
+                  style={{
+                    fontSize: 10,
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                    border: "1px solid #374151",
+                    background: "#020617",
+                    color: "#9ca3af",
+                  }}
+                >
+                  <option value="all">All phases</option>
+                  {Array.from(
+                    new Set(
+                      todos
+                        .map((t) => t.phase)
+                        .filter((p): p is number => typeof p === "number")
+                    )
+                  )
+                    .sort((a, b) => a - b)
+                    .map((p) => (
+                      <option key={p} value={p}>
+                        Phase {p}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTodoImportMarkdown("");
+                    setTodoImportPreview(null);
+                    setTodoError(null);
+                    setTodoImportOpen(true);
+                  }}
+                  style={{
+                    padding: "2px 6px",
+                    fontSize: 10,
+                    borderRadius: 6,
+                    border: "1px solid #4b5563",
+                    background: "#0f172a",
+                    color: "#e5e7eb",
+                    cursor: "pointer",
+                  }}
+                >
+                  Import DocLittle
+                </button>
+              </div>
+            </div>
+            {todoError && (
+              <div
+                style={{
+                  marginBottom: 6,
+                  padding: 6,
+                  borderRadius: 6,
+                  background: "rgba(248,113,113,0.12)",
+                  border: "1px solid rgba(248,113,113,0.4)",
+                  fontSize: 10,
+                  color: "#fecaca",
+                }}
+              >
+                {todoError}
+              </div>
+            )}
+            {todos.length === 0 ? (
+              <div style={{ fontSize: 11, color: "#6b7280" }}>
+                No execution todos yet. Import DocLittle markdown or create tasks from greenfield.
+              </div>
+            ) : (
+              <div
+                style={{
+                  maxHeight: 220,
+                  overflowY: "auto",
+                  paddingRight: 2,
+                  fontSize: 11,
+                  color: "#e5e7eb",
+                }}
+              >
+                {todos
+                  .filter((t) =>
+                    todoPhaseFilter === "all" ? true : t.phase === todoPhaseFilter
+                  )
+                  .map((t) => {
+                    const deps = t.dependsOn ?? [];
+                    const byId = new Map(todos.map((x) => [x.id, x]));
+                    const hasBlockingDep = deps.some((id) => {
+                      const dep = byId.get(id);
+                      return dep && dep.status !== "completed";
+                    });
+                    const isReady =
+                      t.status === "pending" && (!deps.length || !hasBlockingDep);
+                    return (
+                      <div
+                        key={t.id}
+                        style={{
+                          padding: "6px 0",
+                          borderBottom: "1px solid #111827",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 2,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 10,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              border: "1px solid #374151",
+                              background:
+                                t.status === "completed"
+                                  ? "rgba(34,197,94,0.15)"
+                                  : t.status === "in_progress"
+                                    ? "rgba(59,130,246,0.15)"
+                                    : "rgba(15,23,42,1)",
+                              color:
+                                t.status === "completed"
+                                  ? "#4ade80"
+                                  : t.status === "in_progress"
+                                    ? "#bfdbfe"
+                                    : "#9ca3af",
+                            }}
+                          >
+                            {t.status}
+                          </span>
+                          {typeof t.phase === "number" && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                background: "#111827",
+                                color: "#9ca3af",
+                              }}
+                            >
+                              Phase {t.phase}
+                            </span>
+                          )}
+                          {isReady && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                padding: "2px 6px",
+                                borderRadius: 4,
+                                background: "rgba(34,197,94,0.18)",
+                                color: "#4ade80",
+                              }}
+                            >
+                              Ready
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "#e5e7eb",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {t.title}
+                            </div>
+                            {t.description && (
+                              <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                                {t.description}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button
+                              type="button"
+                              style={{
+                                padding: "2px 4px",
+                                fontSize: 9,
+                                borderRadius: 4,
+                                border: "1px solid #4b5563",
+                                background: "#020617",
+                                color: "#e5e7eb",
+                                cursor: "pointer",
+                              }}
+                              onClick={async () => {
+                                if (!accessToken || !activeWorkspaceId) return;
+                                const nextTitle = window.prompt("Edit title", t.title);
+                                if (!nextTitle) return;
+                                const nextDescription = window.prompt(
+                                  "Edit description (optional)",
+                                  t.description ?? ""
+                                );
+                                try {
+                                  const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
+                                    method: "PATCH",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                      Authorization: `Bearer ${accessToken}`,
+                                    },
+                                    body: JSON.stringify({
+                                      title: nextTitle,
+                                      description: nextDescription ?? "",
+                                    }),
+                                  });
+                                  const data = await res.json().catch(() => ({}));
+                                  if (!res.ok) {
+                                    const msg = typeof data.error === "string" ? data.error : "Update failed.";
+                                    setTodoError(msg);
+                                    return;
+                                  }
+                                  setTodos((prev) =>
+                                    prev.map((x) =>
+                                      x.id === t.id
+                                        ? {
+                                            ...x,
+                                            title: nextTitle,
+                                            description: nextDescription ?? null,
+                                          }
+                                        : x
+                                    )
+                                  );
+                                  setTodoError(null);
+                                } catch (err) {
+                                  const msg = err instanceof Error ? err.message : String(err);
+                                  setTodoError(msg);
+                                }
+                              }}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              style={{
+                                padding: "2px 4px",
+                                fontSize: 9,
+                                borderRadius: 4,
+                                border: "1px solid #7f1d1d",
+                                background: "#450a0a",
+                                color: "#fecaca",
+                                cursor: "pointer",
+                              }}
+                              onClick={async () => {
+                                if (!accessToken || !activeWorkspaceId) return;
+                                if (!window.confirm("Delete this todo?")) return;
+                                try {
+                                  const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
+                                    method: "DELETE",
+                                    headers: {
+                                      Authorization: `Bearer ${accessToken}`,
+                                    },
+                                  });
+                                  if (!res.ok && res.status !== 204) {
+                                    const data = await res.json().catch(() => ({}));
+                                    const msg = typeof data.error === "string" ? data.error : "Delete failed.";
+                                    setTodoError(msg);
+                                    return;
+                                  }
+                                  setTodos((prev) => prev.filter((x) => x.id !== t.id));
+                                  setTodoError(null);
+                                } catch (err) {
+                                  const msg = err instanceof Error ? err.message : String(err);
+                                  setTodoError(msg);
+                                }
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                        {deps.length > 0 && (
+                          <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                            Depends on {deps.length} todo
+                            {deps.length !== 1 ? "s" : ""} —{" "}
+                            {hasBlockingDep ? "blocked" : "all completed"}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+
           {/* Edges */}
           <div
             style={{
@@ -5560,9 +6513,28 @@ export default function App() {
                 Could not restore violations: {violationsRestoreError}
               </div>
             )}
-            {activeViolations.length === 0 ? (
+            {jiraError && activeViolations.length > 0 && jiraProjectKeyReady && (
+              <div
+                style={{
+                  padding: "6px 12px",
+                  margin: "0 12px 8px",
+                  background: "rgba(248,81,73,0.12)",
+                  border: "1px solid rgba(248,81,73,0.3)",
+                  borderRadius: 6,
+                  fontSize: 10,
+                  color: "#f87171",
+                }}
+              >
+                {jiraError}
+              </div>
+            )}
+            {activeViolations.length === 0 && !violationsRestoreError ? (
               <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
                 No active violations. Ask the agent about your architecture to find issues.
+              </div>
+            ) : activeViolations.length === 0 && violationsRestoreError ? (
+              <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
+                Violations could not be loaded. Try refreshing the workspace.
               </div>
             ) : !violationsCollapsed && (
                 <div
@@ -5688,27 +6660,54 @@ export default function App() {
                           {v.description}
                         </div>
                         {!v.jiraKey && (
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleFixViolation(v);
-                              }}
-                              style={{
-                                flex: 1,
-                                padding: "5px 0",
-                                fontSize: 10,
-                                background: "#238636",
-                                color: "white",
-                                border: "none",
-                                borderRadius: 4,
-                                cursor: "pointer",
-                                letterSpacing: "0.08em",
-                                textTransform: "uppercase",
-                              }}
-                            >
-                              ✦ Fix now
-                            </button>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {violationRailStatus[violationKey(v)] ? (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSidebarTab("dashboard");
+                                  setMainViewMode("board");
+                                  setSelectedRailId(violationRailStatus[violationKey(v)].railId);
+                                }}
+                                style={{
+                                  flex: 1,
+                                  padding: "5px 0",
+                                  fontSize: 10,
+                                  background: "#1e3a5f",
+                                  color: "#58a6ff",
+                                  border: "1px solid #2563eb",
+                                  borderRadius: 4,
+                                  cursor: "pointer",
+                                  letterSpacing: "0.08em",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                Rail: {violationRailStatus[violationKey(v)].state} · View
+                              </button>
+                            ) : (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleFixViolation(v);
+                                }}
+                                disabled={violationBeingFixed === violationKey(v)}
+                                style={{
+                                  flex: 1,
+                                  padding: "5px 0",
+                                  fontSize: 10,
+                                  background: violationBeingFixed === violationKey(v) ? "#388934" : "#238636",
+                                  color: "white",
+                                  border: "none",
+                                  borderRadius: 4,
+                                  cursor: violationBeingFixed === violationKey(v) ? "wait" : "pointer",
+                                  opacity: violationBeingFixed === violationKey(v) ? 0.9 : 1,
+                                  letterSpacing: "0.08em",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                {violationBeingFixed === violationKey(v) ? "Creating rail…" : "✦ Fix now"}
+                              </button>
+                            )}
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -5722,9 +6721,9 @@ export default function App() {
                               disabled={jiraConfigured !== true}
                               title={
                                 jiraConfigured !== true
-                                  ? "Connect Jira and select a project to link architecture violations to issues"
+                                  ? "Connect Jira to track violations"
                                   : !jiraProjectKey && activeWorkspaceId
-                                    ? "Select a project key above to track in Jira"
+                                    ? "Select project above"
                                     : "Track in Jira"
                               }
                               style={{
@@ -5783,16 +6782,21 @@ export default function App() {
               )}
               {jiraConfigured === true && activeWorkspaceId && (
                 <div style={{ marginTop: 6, fontSize: 10 }}>
-                  <div style={{ color: "#7d8590", marginBottom: 4 }}>Project key</div>
+                  <div style={{ color: "#7d8590", marginBottom: 4 }}>Project</div>
                   {editingJiraProjectKey ? (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {jiraProjectsLoading ? (
                         <div style={{ color: "#7d8590", fontSize: 11 }}>Loading projects…</div>
                       ) : jiraProjects.length > 0 ? (
                         <select
-                          value={jiraProjects.some((p) => p.key === jiraProjectKeyDraft) ? jiraProjectKeyDraft : ""}
+                          value={jiraProjectKeyDraft === "__clear__" ? "" : (jiraProjects.some((p) => p.key === jiraProjectKeyDraft) ? jiraProjectKeyDraft : "")}
                           onChange={(e) => {
                             const v = e.target.value;
+                            if (v === "__clear__") {
+                              clearProjectKey();
+                              setEditingJiraProjectKey(false);
+                              return;
+                            }
                             setJiraProjectKeyDraft(v);
                           }}
                           style={{
@@ -5806,6 +6810,7 @@ export default function App() {
                           }}
                         >
                           <option value="">Select a project</option>
+                          <option value="__clear__">— Clear project —</option>
                           {jiraProjects.map((p) => (
                             <option key={p.key} value={p.key}>
                               {p.key} — {p.name}
@@ -5922,6 +6927,56 @@ export default function App() {
                 </div>
               )}
             </div>
+            {jiraConfigured === true && activeWorkspaceId && !jiraProjectKey && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 10,
+                  color: "#d29922",
+                  maxWidth: 420,
+                }}
+              >
+                No project set. Select one to scope Jira searches.
+              </div>
+            )}
+            {activeWorkspaceId && (
+              <div
+                style={{
+                  marginTop: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                  flexWrap: "wrap",
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 420 }}>
+                  <div style={{ fontSize: 11, color: "#e6edf3" }}>Auto-implement ready todos</div>
+                  <div style={{ fontSize: 10, color: "#7d8590" }}>
+                    When enabled, this workspace can start auto-executing dependency-ready todos from chat or
+                    the board. Auto-execution is still subject to safety limits.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleAutoExecute}
+                  disabled={autoExecuteSaving}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    height: 22,
+                    background: autoExecuteEnabled ? "#238636" : "#21262d",
+                    color: autoExecuteEnabled ? "white" : "#7d8590",
+                    border: `1px solid ${autoExecuteEnabled ? "#238636" : "#30363d"}`,
+                    borderRadius: 999,
+                    cursor: autoExecuteSaving ? "wait" : "pointer",
+                    minWidth: 80,
+                  }}
+                >
+                  {autoExecuteEnabled ? "Enabled" : "Disabled"}
+                </button>
+              </div>
+            )}
             {jiraConfigured !== true ? (
               <button
                 onClick={() => setShowJiraConnectModal(true)}
@@ -5985,6 +7040,64 @@ export default function App() {
               </div>
             )}
           </div>
+          {staleMismatches.length > 0 && jiraConfigured === true && (
+            <div
+              style={{
+                marginBottom: 8,
+                padding: "8px 10px",
+                background: "rgba(210, 153, 34, 0.1)",
+                border: "1px solid rgba(210, 153, 34, 0.4)",
+                borderRadius: 6,
+                fontSize: 11,
+              }}
+            >
+              <div style={{ color: "#d29922", fontWeight: 600, marginBottom: 6 }}>
+                {staleMismatches.length} issue{staleMismatches.length !== 1 ? "s" : ""} may be stale
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {staleMismatches.map((m) => {
+                  const baseUrl =
+                    jiraIssues.find((i) => i.key === m.key)?.baseUrl ??
+                    jiraIssues[0]?.baseUrl;
+                  return (
+                    <div
+                      key={m.key}
+                      style={{
+                        padding: "4px 6px",
+                        background: "#0d1117",
+                        borderRadius: 4,
+                        borderLeft: "2px solid #d29922",
+                      }}
+                    >
+                      {baseUrl ? (
+                        <a
+                          href={`${baseUrl}/browse/${m.key}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: "#58a6ff", textDecoration: "none", fontWeight: 500 }}
+                        >
+                          {m.key}
+                        </a>
+                      ) : (
+                        <span style={{ color: "#e6edf3", fontWeight: 500 }}>{m.key}</span>
+                      )}
+                      <span style={{ color: "#7d8590", marginLeft: 4 }}>— {m.summary}</span>
+                      <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
+                        {m.reason === "orphaned"
+                          ? "Module deleted"
+                          : m.reason === "changed"
+                            ? "Module fingerprint changed"
+                            : m.reason}
+                        {m.storedModule && (
+                          <span style={{ marginLeft: 4 }}>({m.storedModule})</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           {jiraError && (
             jiraError === "No project selected" ? (
               <div
@@ -6015,7 +7128,7 @@ export default function App() {
               <div style={{ fontSize: 11, color: "#f85149", marginBottom: 8 }}>{jiraError}</div>
             )
           )}
-          <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11 }}>
+          <div style={{ maxHeight: 400, overflowY: "auto", fontSize: 11 }}>
             {jiraIssues.length === 0 && !jiraLoading && !jiraError && (
               <div
                 style={{
@@ -6058,10 +7171,23 @@ export default function App() {
                     <span
                       style={{
                         fontSize: 9,
-                        padding: "1px 4px",
-                        borderRadius: 2,
-                        background: "#1e2d4544",
-                        color: "#94a3b8",
+                        padding: "2px 6px",
+                        borderRadius: 4,
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        background:
+                          /high|critical|highest|high/i.test(j.priority)
+                            ? "#f8514922"
+                            : /medium|medium/i.test(j.priority)
+                              ? "#eab30822"
+                              : "#1e2d4544",
+                        color:
+                          /high|critical|highest|high/i.test(j.priority)
+                            ? "#f85149"
+                            : /medium|medium/i.test(j.priority)
+                              ? "#eab308"
+                              : "#94a3b8",
                         flexShrink: 0,
                       }}
                     >
@@ -6299,7 +7425,126 @@ export default function App() {
                         {vn.archNodeId ?? vn.id} · {vn.layer ?? "Uncategorized"}
                       </div>
                     </div>
-                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap" }}>
+                      {accessToken && activeWorkspaceId && greenfieldSessionId && (
+                        <>
+                          <button
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(
+                                  `${API_BASE}/greenfield/nodes/${encodeURIComponent(vn.id)}/to-todo`,
+                                  {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                      Authorization: `Bearer ${accessToken}`,
+                                    },
+                                    body: JSON.stringify({
+                                      sessionId: greenfieldSessionId,
+                                      workspaceId: activeWorkspaceId,
+                                    }),
+                                  }
+                                );
+                                const data = await res.json().catch(() => ({}));
+                                if (!res.ok) {
+                                  setTodoError(typeof data.error === "string" ? data.error : "Create todo failed.");
+                                  return;
+                                }
+                                const t = data.todo;
+                                if (t?.id) {
+                                  setTodos((prev) => [
+                                    ...prev,
+                                    {
+                                      id: String(t.id),
+                                      title: String(t.title ?? vn.label),
+                                      description: t.description ?? null,
+                                      phase: null,
+                                      status: "pending",
+                                      dependsOn: null,
+                                      source: "greenfield",
+                                      railId: null,
+                                    },
+                                  ]);
+                                  setTodoError(null);
+                                }
+                              } catch (err) {
+                                setTodoError(err instanceof Error ? err.message : "Create todo failed.");
+                              }
+                            }}
+                            style={{
+                              padding: "3px 8px",
+                              fontSize: 10,
+                              background: "#1e3a5f",
+                              color: "#58a6ff",
+                              border: "1px solid #30363d",
+                              borderRadius: 4,
+                              cursor: "pointer",
+                            }}
+                            title="Add as execution todo"
+                          >
+                            Todo
+                          </button>
+                          <button
+                            onClick={async () => {
+                              try {
+                                const res = await fetch(
+                                  `${API_BASE}/greenfield/nodes/${encodeURIComponent(vn.id)}/to-rail`,
+                                  {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                      Authorization: `Bearer ${accessToken}`,
+                                    },
+                                    body: JSON.stringify({
+                                      sessionId: greenfieldSessionId,
+                                      workspaceId: activeWorkspaceId,
+                                    }),
+                                  }
+                                );
+                                const data = await res.json().catch(() => ({}));
+                                if (!res.ok) {
+                                  setTodoError(typeof data.error === "string" ? data.error : "Create & run failed.");
+                                  return;
+                                }
+                                const railId = data.railId;
+                                const todoId = data.todoId;
+                                if (railId) {
+                                  setTodos((prev) => [
+                                    ...prev,
+                                    {
+                                      id: String(todoId ?? railId),
+                                      title: vn.label,
+                                      description: null,
+                                      phase: null,
+                                      status: "pending",
+                                      dependsOn: null,
+                                      source: "greenfield",
+                                      railId,
+                                    },
+                                  ]);
+                                  setMainViewMode("board");
+                                  setSelectedRailId(railId);
+                                }
+                                setTodoError(null);
+                              } catch (err) {
+                                setTodoError(err instanceof Error ? err.message : "Create & run failed.");
+                              }
+                            }}
+                            style={{
+                              padding: "3px 8px",
+                              fontSize: 10,
+                              background: "#238636",
+                              color: "white",
+                              border: "1px solid #238636",
+                              borderRadius: 4,
+                              cursor: "pointer",
+                            }}
+                            title="Create todo and start rail"
+                          >
+                            Run
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={() => {
                           setEditingVirtualNodeId(vn.id);
@@ -6736,7 +7981,7 @@ export default function App() {
                         <div
                           key={t.id}
                           onClick={() => {
-                            setActiveTaskId(t.id);
+                            setActiveTaskId((cur) => (cur === t.id ? null : t.id));
                             setBackgroundTasks((prev) =>
                               prev.map((x) =>
                                 x.id === t.id ? { ...x, reviewed: true } : x
@@ -6753,7 +7998,7 @@ export default function App() {
                             background: isAttention ? "rgba(245,158,11,0.08)" : "transparent",
                             cursor: "pointer",
                           }}
-                          title="Click to view task details"
+                          title="Click to expand or collapse task details"
                         >
                           <span
                             style={{
@@ -7516,6 +8761,34 @@ export default function App() {
                 </div>
                 <ReactMarkdown
                   components={{
+                    a({ href, children, ...props }) {
+                      const railIdMatch = typeof href === "string" && href.match(/^#rail:(.+)$/);
+                      if (railIdMatch) {
+                        const railId = railIdMatch[1];
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMainViewMode("board");
+                              setSelectedRailId(railId);
+                            }}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              padding: 0,
+                              margin: 0,
+                              font: "inherit",
+                              color: "#58a6ff",
+                              cursor: "pointer",
+                              textDecoration: "underline",
+                            }}
+                          >
+                            {children}
+                          </button>
+                        );
+                      }
+                      return <a href={href} {...props}>{children}</a>;
+                    },
                     code({ node, className, children, ...props }) {
                       const match = /language-(\w+)/.exec(className || "");
                       const isBlock =
@@ -7574,8 +8847,90 @@ export default function App() {
                     },
                   }}
                 >
-                  {m.content}
+                  {String(m.content ?? "").replace(
+                    /(rail-[a-zA-Z0-9-]+)/g,
+                    (match) => `[${match}](#rail:${match})`
+                  )}
                 </ReactMarkdown>
+                {isAssistant && (() => {
+                  const raw = m as { rails?: { id: string }[] };
+                  const msgRails = Array.isArray(raw?.rails) ? raw.rails : [];
+                  if (msgRails.length === 0) return null;
+                  const seen = new Set<string>();
+                  const sessionOrder: string[] = [];
+                  for (const msg of chatHistory) {
+                    const rs = (msg as { rails?: { id: string }[] }).rails;
+                    if (Array.isArray(rs)) {
+                      for (const { id } of rs) {
+                        if (id && !seen.has(id)) {
+                          seen.add(id);
+                          sessionOrder.push(id);
+                        }
+                      }
+                    }
+                  }
+                  return (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8, alignItems: "center" }}>
+                    {msgRails.map((r) => {
+                      const railNum = sessionOrder.indexOf(r.id) + 1;
+                      return (
+                        <span key={r.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMainViewMode("board");
+                              setSelectedRailId(r.id);
+                            }}
+                            style={{
+                              fontSize: 11,
+                              padding: "4px 10px",
+                              borderRadius: 6,
+                              border: "1px solid #30363d",
+                              background: "#21262d",
+                              color: "#58a6ff",
+                              cursor: "pointer",
+                            }}
+                          >
+                            View rail {r.id.slice(0, 12)}…
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAsk(`retry rail ${railNum}`)}
+                            disabled={chatLoading}
+                            style={{
+                              fontSize: 11,
+                              padding: "4px 8px",
+                              borderRadius: 6,
+                              border: "1px solid #238636",
+                              background: "rgba(34,197,94,0.15)",
+                              color: "#4ade80",
+                              cursor: chatLoading ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            Retry
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAsk(`cancel rail ${railNum}`)}
+                            disabled={chatLoading}
+                            style={{
+                              fontSize: 11,
+                              padding: "4px 8px",
+                              borderRadius: 6,
+                              border: "1px solid #f85149",
+                              background: "rgba(248,81,73,0.1)",
+                              color: "#f87171",
+                              cursor: chatLoading ? "not-allowed" : "pointer",
+                            }}
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                  );
+                })()}
               </div>
               );
             })}
@@ -7744,7 +9099,114 @@ export default function App() {
               flexShrink: 0,
             }}
           >
-            <div style={{ flex: 1, display: "flex", gap: 6, alignItems: "flex-end" }}>
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept=".pdf,application/pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                processAttachmentFile(f);
+                e.target.value = "";
+              }}
+            />
+            <div
+              title="Drop PDF or Word (.doc, .docx) here or click 📎 to attach"
+              style={{
+                flex: 1,
+                display: "flex",
+                gap: 6,
+                alignItems: "flex-end",
+                borderRadius: 8,
+                outline: pdfDragOver ? "2px dashed #238636" : "none",
+                outlineOffset: pdfDragOver ? 2 : 0,
+                transition: "outline 0.15s ease",
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+                if (e.dataTransfer?.types.includes("Files")) setPdfDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setPdfDragOver(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setPdfDragOver(false);
+                const files = Array.from(e.dataTransfer.files ?? []);
+                const f = files.find(
+                  (x) =>
+                    x.type === "application/pdf" ||
+                    x.name.toLowerCase().endsWith(".pdf") ||
+                    x.type === "application/msword" ||
+                    x.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+                    x.name.toLowerCase().endsWith(".doc") ||
+                    x.name.toLowerCase().endsWith(".docx")
+                );
+                if (f) processAttachmentFile(f);
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => pdfInputRef.current?.click()}
+                title="Attach PDF or Word (.doc, .docx)"
+                style={{
+                  width: 36,
+                  height: 36,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: pdfAttachment || docAttachment ? "#238636" : "#21262d",
+                  color: pdfAttachment || docAttachment ? "white" : "#8b949e",
+                  border: "1px solid #30363d",
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 14,
+                  flexShrink: 0,
+                }}
+              >
+                📎
+              </button>
+              {(pdfAttachment || docAttachment) && (
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: 11,
+                    color: "#8b949e",
+                    alignSelf: "center",
+                    maxWidth: 140,
+                    overflow: "hidden",
+                  }}
+                >
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {(pdfAttachment || docAttachment)?.name}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPdfAttachment(null);
+                      setDocAttachment(null);
+                    }}
+                    title="Remove attachment"
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: "#8b949e",
+                      cursor: "pointer",
+                      padding: 2,
+                      fontSize: 12,
+                    }}
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
               <textarea
                 ref={chatInputRef}
                 value={aiQuestion}
@@ -8224,6 +9686,477 @@ export default function App() {
         </div>
       )}
 
+      {todoImportOpen && activeWorkspaceId && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 90,
+          }}
+          onClick={() => !todoImportLoading && setTodoImportOpen(false)}
+        >
+          <div
+            style={{
+              background: "#020617",
+              borderRadius: 10,
+              border: "1px solid #30363d",
+              padding: 16,
+              maxWidth: 600,
+              width: "90%",
+              maxHeight: "80vh",
+              overflow: "auto",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>Import DocLittle todos</div>
+              <button
+                type="button"
+                onClick={() => !todoImportLoading && setTodoImportOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontSize: 16,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ fontSize: 11, color: "#9ca3af", marginBottom: 8 }}>
+              Paste or upload DocLittle-style markdown with <code>## Phase N</code> headings and checklist items.
+              Use preview to inspect detected phases before importing into this workspace.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <label
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 11,
+                  borderRadius: 6,
+                  border: "1px solid #374151",
+                  background: "#161b22",
+                  color: "#e5e7eb",
+                  cursor: "pointer",
+                }}
+              >
+                Upload file
+                <input
+                  type="file"
+                  accept=".md,.markdown,text/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    const r = new FileReader();
+                    r.onload = () => {
+                      const t = typeof r.result === "string" ? r.result : "";
+                      setTodoImportMarkdown(t);
+                      setTodoImportPreview(null);
+                    };
+                    r.readAsText(f);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
+            <textarea
+              value={todoImportMarkdown}
+              onChange={(e) => setTodoImportMarkdown(e.target.value)}
+              rows={10}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                borderRadius: 6,
+                border: "1px solid #374151",
+                background: "#020617",
+                color: "#e5e7eb",
+                fontSize: 12,
+                padding: 8,
+                marginBottom: 8,
+                fontFamily: "monospace",
+              }}
+              placeholder="- [ ] Example todo
+## Phase 0
+- [ ] Set up project
+## Phase 1
+- [ ] Implement API"
+            />
+            {todoImportPreview && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: 8,
+                  borderRadius: 6,
+                  background: "#020617",
+                  border: "1px solid #1f2937",
+                  fontSize: 11,
+                  color: "#e5e7eb",
+                }}
+              >
+                <div style={{ marginBottom: 4 }}>
+                  Detected <strong>{todoImportPreview.total}</strong> todos across phases:
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 16 }}>
+                  {todoImportPreview.phases.map((p) => (
+                    <li key={String(p.phase ?? "none")}>
+                      Phase {p.phase ?? "none"}: {p.count}
+                    </li>
+                  ))}
+                </ul>
+                {Array.isArray((todoImportPreview as any).items) &&
+                  (todoImportPreview as any).items.length > 0 && (
+                    <div style={{ marginTop: 8, maxHeight: 120, overflowY: "auto" }}>
+                      <div style={{ color: "#9ca3af", marginBottom: 4 }}>Preview:</div>
+                      {(todoImportPreview as any).items
+                        .slice(0, 15)
+                        .map((item: { title: string; phase?: number | null }, i: number) => (
+                          <div key={i} style={{ padding: "2px 0", fontSize: 10 }}>
+                            {item.phase != null ? `P${item.phase} ` : ""}
+                            {item.title}
+                          </div>
+                        ))}
+                      {(todoImportPreview as any).items.length > 15 && (
+                        <div style={{ color: "#6b7280", fontSize: 10 }}>
+                          +{(todoImportPreview as any).items.length - 15} more
+                        </div>
+                      )}
+                    </div>
+                  )}
+              </div>
+            )}
+            {todoError && (
+              <div
+                style={{
+                  marginBottom: 8,
+                  padding: 6,
+                  borderRadius: 6,
+                  background: "rgba(248,113,113,0.12)",
+                  border: "1px solid rgba(248,113,113,0.4)",
+                  fontSize: 11,
+                  color: "#fecaca",
+                }}
+              >
+                {todoError}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                disabled={todoImportLoading || !todoImportMarkdown.trim()}
+                onClick={async () => {
+                  if (!accessToken || !activeWorkspaceId) return;
+                  setTodoImportLoading(true);
+                  try {
+                    const res = await fetch(`${API_BASE}/todos/import/preview`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                      body: JSON.stringify({
+                        workspaceId: activeWorkspaceId,
+                        markdown: todoImportMarkdown,
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const msg = typeof data.error === "string" ? data.error : "Preview failed.";
+                      setTodoError(msg);
+                      return;
+                    }
+                    setTodoImportPreview({
+                      total: typeof data.total === "number" ? data.total : 0,
+                      phases: Array.isArray(data.phases)
+                        ? data.phases.map((p: any) => ({
+                            phase:
+                              typeof p.phase === "number"
+                                ? p.phase
+                                : typeof p.phase === "string"
+                                  ? Number(p.phase) || null
+                                  : null,
+                            count: typeof p.count === "number" ? p.count : 0,
+                          }))
+                        : [],
+                    });
+                    setTodoError(null);
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    setTodoError(msg);
+                  } finally {
+                    setTodoImportLoading(false);
+                  }
+                }}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #4b5563",
+                  background: "#020617",
+                  color: "#e5e7eb",
+                  cursor: todoImportLoading ? "wait" : "pointer",
+                }}
+              >
+                Preview
+              </button>
+              <button
+                type="button"
+                disabled={todoImportLoading || !todoImportMarkdown.trim()}
+                onClick={async () => {
+                  if (!accessToken || !activeWorkspaceId) return;
+                  setTodoImportLoading(true);
+                  try {
+                    const res = await fetch(`${API_BASE}/todos/import/confirm`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                      body: JSON.stringify({
+                        workspaceId: activeWorkspaceId,
+                        markdown: todoImportMarkdown,
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const msg = typeof data.error === "string" ? data.error : "Import failed.";
+                      setTodoError(msg);
+                      return;
+                    }
+                    if (Array.isArray(data.imported)) {
+                      setTodos((prev) => [
+                        ...prev,
+                        ...data.imported.map((t: any) => ({
+                          id: String(t.id),
+                          title: String(t.title ?? ""),
+                          description: t.description ?? null,
+                          phase:
+                            typeof t.phase === "number"
+                              ? t.phase
+                              : typeof t.phase === "string"
+                                ? Number(t.phase) || null
+                                : null,
+                          status: String(t.status ?? "pending"),
+                          dependsOn: Array.isArray(t.depends_on)
+                            ? t.depends_on.map((x: any) => String(x))
+                            : null,
+                          source: typeof t.source === "string" ? t.source : null,
+                        })),
+                      ]);
+                    }
+                    setTodoImportMarkdown("");
+                    setTodoImportPreview(null);
+                    setTodoError(null);
+                    setTodoImportOpen(false);
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    setTodoError(msg);
+                  } finally {
+                    setTodoImportLoading(false);
+                  }
+                }}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #22c55e",
+                  background: "#16a34a",
+                  color: "white",
+                  cursor: todoImportLoading ? "wait" : "pointer",
+                }}
+              >
+                Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {todoCreateOpen && activeWorkspaceId && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 90,
+          }}
+          onClick={() => !todoCreateLoading && (setTodoCreateOpen(false), setTodoCreateTitle(""), setTodoCreatePhase(""))}
+        >
+          <div
+            style={{
+              background: "#020617",
+              borderRadius: 10,
+              border: "1px solid #30363d",
+              padding: 16,
+              maxWidth: 400,
+              width: "90%",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>Create todo</div>
+              <button
+                type="button"
+                onClick={() => !todoCreateLoading && (setTodoCreateOpen(false), setTodoCreateTitle(""), setTodoCreatePhase(""))}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontSize: 16,
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: "block", fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>Title</label>
+              <input
+                value={todoCreateTitle}
+                onChange={(e) => setTodoCreateTitle(e.target.value)}
+                placeholder="Todo title"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 8,
+                  borderRadius: 6,
+                  border: "1px solid #374151",
+                  background: "#020617",
+                  color: "#e5e7eb",
+                  fontSize: 12,
+                }}
+              />
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: "block", fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>Phase (optional)</label>
+              <input
+                type="number"
+                min={0}
+                value={todoCreatePhase}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setTodoCreatePhase(v === "" ? "" : parseInt(v, 10) || 0);
+                }}
+                placeholder="0"
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: 8,
+                  borderRadius: 6,
+                  border: "1px solid #374151",
+                  background: "#020617",
+                  color: "#e5e7eb",
+                  fontSize: 12,
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => !todoCreateLoading && (setTodoCreateOpen(false), setTodoCreateTitle(""), setTodoCreatePhase(""))}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #4b5563",
+                  background: "#0f172a",
+                  color: "#e5e7eb",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={todoCreateLoading || !todoCreateTitle.trim()}
+                onClick={async () => {
+                  if (!accessToken || !activeWorkspaceId || !todoCreateTitle.trim()) return;
+                  setTodoCreateLoading(true);
+                  setTodoError(null);
+                  try {
+                    const res = await fetch(`${API_BASE}/todos`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${accessToken}`,
+                      },
+                      body: JSON.stringify({
+                        workspaceId: activeWorkspaceId,
+                        title: todoCreateTitle.trim(),
+                        phase: todoCreatePhase === "" ? null : Number(todoCreatePhase),
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      setTodoError(typeof data.error === "string" ? data.error : "Create failed.");
+                      return;
+                    }
+                    const t = data.todo;
+                    if (t && t.id) {
+                      setTodos((prev) => [
+                        ...prev,
+                        {
+                          id: String(t.id),
+                          title: String(t.title ?? ""),
+                          description: t.description ?? null,
+                          phase: typeof t.phase === "number" ? t.phase : null,
+                          status: String(t.status ?? "pending"),
+                          dependsOn: Array.isArray(t.depends_on) ? t.depends_on.map((x: any) => String(x)) : null,
+                          source: typeof t.source === "string" ? t.source : null,
+                          railId: typeof t.rail_id === "string" ? t.rail_id : null,
+                        },
+                      ]);
+                    }
+                    setTodoCreateOpen(false);
+                    setTodoCreateTitle("");
+                    setTodoCreatePhase("");
+                  } catch (err) {
+                    setTodoError(err instanceof Error ? err.message : "Create failed.");
+                  } finally {
+                    setTodoCreateLoading(false);
+                  }
+                }}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  borderRadius: 6,
+                  border: "1px solid #22c55e",
+                  background: "#16a34a",
+                  color: "white",
+                  cursor: todoCreateLoading ? "wait" : "pointer",
+                }}
+              >
+                {todoCreateLoading ? "Creating…" : "Create"}
+              </button>
+            </div>
+            {todoError && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: 6,
+                  borderRadius: 6,
+                  background: "rgba(248,113,113,0.12)",
+                  border: "1px solid rgba(248,113,113,0.4)",
+                  fontSize: 11,
+                  color: "#fecaca",
+                }}
+              >
+                {todoError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {pendingRailApproval && (
         <div
           style={{
@@ -8258,6 +10191,46 @@ export default function App() {
             <div style={{ marginBottom: 16, fontSize: 12, color: "#7d8590" }}>
               Target: <span style={{ fontFamily: "monospace", color: "#94a3b8" }}>{pendingRailApproval.rootPath}</span>
             </div>
+            {materializeDiffWarning && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  background: "rgba(248,81,73,0.08)",
+                  border: "1px solid rgba(248,81,73,0.4)",
+                  fontSize: 11,
+                  color: "#f85149",
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>Large change warning</div>
+                <div style={{ marginBottom: 4 }}>
+                  {materializeDiffWarning.message}
+                </div>
+                {(materializeDiffWarning.actual?.changedFiles != null ||
+                  materializeDiffWarning.actual?.totalBytes != null) && (
+                  <div style={{ color: "#e6edf3" }}>
+                    {materializeDiffWarning.actual?.changedFiles != null && (
+                      <span>
+                        Files changed: {materializeDiffWarning.actual.changedFiles}
+                        {materializeDiffWarning.limits?.maxChangedFiles != null
+                          ? ` (limit ${materializeDiffWarning.limits.maxChangedFiles})`
+                          : ""}
+                      </span>
+                    )}
+                    {materializeDiffWarning.actual?.totalBytes != null && (
+                      <span>
+                        {materializeDiffWarning.actual?.changedFiles != null ? " · " : ""}
+                        Approx. bytes: {materializeDiffWarning.actual.totalBytes.toLocaleString()}
+                        {materializeDiffWarning.limits?.maxTotalBytes != null
+                          ? ` (limit ${materializeDiffWarning.limits.maxTotalBytes.toLocaleString()})`
+                          : ""}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
                 onClick={() => setPendingRailApproval(null)}
@@ -8333,6 +10306,7 @@ export default function App() {
           ))}
         </div>
         {mainViewMode === "graph" && (
+        <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
         <ArchCanvas
           graph={graph!}
           selectedNode={selectedNode}
@@ -8341,11 +10315,13 @@ export default function App() {
           onNodeSelect={setSelectedNode}
           edgeFilter={activeFilters}
           agentGraphCommand={
-            mainViewMode === "graph" &&
-            selectedRailDetail &&
-            (selectedRailDetail.baselineNodeIds?.length ||
-              (Array.isArray(selectedRailDetail.logicPath) &&
-                selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string")))
+            mainViewMode === "graph" && railImpactNodeIds && railImpactNodeIds.length > 0
+              ? { action: "highlight_nodes" as const, nodeIds: railImpactNodeIds }
+              : mainViewMode === "graph" &&
+                selectedRailDetail &&
+                (selectedRailDetail.baselineNodeIds?.length ||
+                  (Array.isArray(selectedRailDetail.logicPath) &&
+                    selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string")))
               ? {
                   action: "highlight_nodes" as const,
                   nodeIds:
@@ -8373,7 +10349,29 @@ export default function App() {
           accessToken={accessToken}
           autosaveEnabled={autosaveEnabled}
           onToggleAutosave={setAutosaveEnabled}
+          violationBeingFixedKey={violationBeingFixed}
+          issuesByNodeId={issuesByNodeId}
         />
+        {railImpactNodeIds && railImpactNodeIds.length > 0 && selectedRailDetail && (
+          <div
+            style={{
+              position: "absolute",
+              top: 12,
+              left: 12,
+              padding: "6px 12px",
+              borderRadius: 8,
+              background: "rgba(30,58,95,0.95)",
+              border: "1px solid #2563eb",
+              color: "#7dd3fc",
+              fontSize: 11,
+              fontWeight: 600,
+              zIndex: 10,
+            }}
+          >
+            Impact: {railImpactNodeIds.length} node{railImpactNodeIds.length !== 1 ? "s" : ""}
+          </div>
+        )}
+        </div>
         )}
         {mainViewMode === "board" && (
           <div
@@ -8387,8 +10385,62 @@ export default function App() {
             }}
           >
             <div style={{ padding: "16px 16px 12px", flexShrink: 0 }}>
-              <div style={{ fontSize: 11, color: "#7d8590", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-                Board
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#7d8590",
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                  }}
+                >
+                  Board
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "#9ca3af",
+                    fontFamily: "monospace",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <span>
+                    rails: {rails.length}
+                  </span>
+                  <span
+                    style={{
+                      padding: "1px 6px",
+                      borderRadius: 999,
+                      border: "1px solid #374151",
+                      background: executingRailsCount > 0 ? "rgba(56,189,248,0.12)" : "rgba(15,23,42,1)",
+                      color: executingRailsCount > 0 ? "#7dd3fc" : "#9ca3af",
+                    }}
+                    title="Concurrent agent executions in this workspace"
+                  >
+                    running: {executingRailsCount}
+                  </span>
+                  <span
+                    style={{
+                      padding: "1px 6px",
+                      borderRadius: 999,
+                      border: "1px solid #374151",
+                      background: activeRailsCount > executingRailsCount ? "rgba(234,179,8,0.12)" : "rgba(15,23,42,1)",
+                      color: activeRailsCount > executingRailsCount ? "#facc15" : "#9ca3af",
+                    }}
+                    title="Non-terminal rails waiting for a free execution slot or verification"
+                  >
+                    queue: {Math.max(0, activeRailsCount - executingRailsCount)}
+                  </span>
+                </div>
               </div>
             </div>
             <div
@@ -8495,12 +10547,13 @@ export default function App() {
                       color: "#fecaca",
                       fontSize: 12,
                       display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
+                      flexDirection: "column",
+                      gap: 4,
                     }}
                   >
-                    <span>{railDropError}</span>
-                    <button
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>{railDropError.message}</span>
+                      <button
                       type="button"
                       onClick={() => setRailDropError(null)}
                       style={{
@@ -8514,8 +10567,395 @@ export default function App() {
                     >
                       ×
                     </button>
+                    </div>
+                    {(railDropError.code || railDropError.details) && (
+                      <div style={{ fontSize: 11, color: "#fca5a5", opacity: 0.9 }}>
+                        {[railDropError.code, railDropError.details].filter(Boolean).join(" · ")}
+                      </div>
+                    )}
+                    {railDropError.retryable && (
+                      <div style={{ fontSize: 11, color: "#86efac" }}>You can retry by dragging again.</div>
+                    )}
                   </div>
                 )}
+            {activeWorkspaceId && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  border: "1px solid #21262d",
+                  borderRadius: 8,
+                  background: "#0d1117",
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "8px 12px",
+                    borderBottom: boardTodosExpanded ? "1px solid #21262d" : "none",
+                    cursor: "pointer",
+                  }}
+                  onClick={() => setBoardTodosExpanded((e) => !e)}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "#e6edf3" }}>
+                      Todos ({todos.length})
+                    </span>
+                    <select
+                      value={boardTodoPhaseFilter === "all" ? "all" : boardTodoPhaseFilter}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        const v = e.target.value;
+                        setBoardTodoPhaseFilter(v === "all" ? "all" : Number(v));
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{
+                        padding: "2px 6px",
+                        fontSize: 10,
+                        borderRadius: 4,
+                        border: "1px solid #30363d",
+                        background: "#0d1117",
+                        color: "#9ca3af",
+                      }}
+                    >
+                      <option value="all">All phases</option>
+                      {Array.from(
+                        new Set(
+                          todos
+                            .map((t) => (typeof t.phase === "number" ? t.phase : null))
+                            .filter((p): p is number => p !== null)
+                        )
+                      )
+                        .sort((a, b) => a - b)
+                        .map((p) => (
+                          <option key={p} value={p}>
+                            Phase {p}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTodoImportMarkdown("");
+                        setTodoImportPreview(null);
+                        setTodoError(null);
+                        setTodoImportOpen(true);
+                      }}
+                      style={{
+                        padding: "2px 8px",
+                        fontSize: 10,
+                        borderRadius: 4,
+                        border: "1px solid #4b5563",
+                        background: "#21262d",
+                        color: "#e6edf3",
+                        cursor: "pointer",
+                      }}
+                    >
+                      Import
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setTodoError(null);
+                        setTodoCreateTitle("");
+                        setTodoCreatePhase("");
+                        setTodoCreateOpen(true);
+                      }}
+                      style={{
+                        padding: "2px 8px",
+                        fontSize: 10,
+                        borderRadius: 4,
+                        border: "1px solid #238636",
+                        background: "#238636",
+                        color: "white",
+                        cursor: "pointer",
+                      }}
+                    >
+                      + Create
+                    </button>
+                    <span style={{ fontSize: 10, color: "#6b7280" }}>
+                      {boardTodosExpanded ? "▼" : "▶"}
+                    </span>
+                  </div>
+                </div>
+                {boardTodosExpanded && (
+                  <div style={{ maxHeight: 180, overflowY: "auto", padding: 8 }}>
+                    {todos.length === 0 ? (
+                      <div style={{ fontSize: 11, color: "#6b7280", fontStyle: "italic" }}>
+                        No todos. Create one or import from DocLittle.
+                      </div>
+                    ) : (
+                      (() => {
+                        const filtered =
+                          boardTodoPhaseFilter === "all"
+                            ? todos
+                            : todos.filter((t) => t.phase === boardTodoPhaseFilter);
+                        if (filtered.length === 0) {
+                          return (
+                            <div style={{ fontSize: 11, color: "#6b7280", fontStyle: "italic" }}>
+                              No todos in Phase {boardTodoPhaseFilter}.
+                            </div>
+                          );
+                        }
+                        return Array.from(
+                          new Set(
+                            filtered
+                              .map((t) => (typeof t.phase === "number" ? t.phase : null))
+                              .filter((p): p is number => p !== null)
+                          )
+                        )
+                          .sort((a, b) => a - b)
+                          .concat([NaN])
+                          .map((phase) => {
+                            const phaseTodos = filtered.filter((t) =>
+                              Number.isNaN(phase) ? typeof t.phase !== "number" : t.phase === phase
+                            );
+                          if (phaseTodos.length === 0) return null;
+                          const byId = new Map(todos.map((x) => [x.id, x]));
+                          return (
+                            <div key={Number.isNaN(phase) ? "none" : phase} style={{ marginBottom: 10 }}>
+                              {!Number.isNaN(phase) && (
+                                <div
+                                  style={{
+                                    fontSize: 10,
+                                    color: "#9ca3af",
+                                    marginBottom: 4,
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  Phase {phase}
+                                </div>
+                              )}
+                              {phaseTodos.map((t) => {
+                                const deps = t.dependsOn ?? [];
+                                const hasBlockingDep = deps.some((id) => {
+                                  const dep = byId.get(id);
+                                  return dep && dep.status !== "completed";
+                                });
+                                const isReady =
+                                  t.status === "pending" && (!deps.length || !hasBlockingDep);
+                                const isEditing = todoEditId === t.id;
+                                return (
+                                  <div
+                                    id={`todo-${t.id}`}
+                                    key={t.id}
+                                    style={{
+                                      padding: "6px 8px",
+                                      marginBottom: 4,
+                                      borderRadius: 6,
+                                      border: "1px solid #21262d",
+                                      background: hasBlockingDep ? "#0d1117" : "#161b22",
+                                    }}
+                                  >
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                      {isEditing ? (
+                                        <input
+                                          autoFocus
+                                          defaultValue={t.title}
+                                          onBlur={(e) => {
+                                            const v = e.target.value.trim();
+                                            if (v && v !== t.title && accessToken && activeWorkspaceId) {
+                                              fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
+                                                method: "PATCH",
+                                                headers: {
+                                                  "Content-Type": "application/json",
+                                                  Authorization: `Bearer ${accessToken}`,
+                                                },
+                                                body: JSON.stringify({ title: v }),
+                                              })
+                                                .then((r) => r.json())
+                                                .then((data) => {
+                                                  if (!data.error)
+                                                    setTodos((prev) =>
+                                                      prev.map((x) =>
+                                                        x.id === t.id ? { ...x, title: v } : x
+                                                      )
+                                                    );
+                                                })
+                                                .catch(() => {});
+                                            }
+                                            setTodoEditId(null);
+                                          }}
+                                          onKeyDown={(e) => {
+                                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                                            if (e.key === "Escape") setTodoEditId(null);
+                                          }}
+                                          style={{
+                                            flex: 1,
+                                            padding: 4,
+                                            fontSize: 11,
+                                            background: "#010409",
+                                            border: "1px solid #30363d",
+                                            color: "#e6edf3",
+                                            borderRadius: 4,
+                                          }}
+                                        />
+                                      ) : (
+                                        <div
+                                          style={{
+                                            flex: 1,
+                                            fontSize: 11,
+                                            color: "#e6edf3",
+                                            cursor: "pointer",
+                                          }}
+                                          onClick={() => setTodoEditId(t.id)}
+                                        >
+                                          {t.title}
+                                        </div>
+                                      )}
+                                      <span
+                                        style={{
+                                          fontSize: 9,
+                                          padding: "2px 4px",
+                                          borderRadius: 4,
+                                          background:
+                                            t.status === "completed"
+                                              ? "rgba(34,197,94,0.2)"
+                                              : isReady
+                                                ? "rgba(34,197,94,0.15)"
+                                                : "rgba(100,116,139,0.2)",
+                                          color:
+                                            t.status === "completed"
+                                              ? "#4ade80"
+                                              : isReady
+                                                ? "#86efac"
+                                                : "#94a3b8",
+                                        }}
+                                      >
+                                        {t.status === "completed" ? "Done" : isReady ? "Ready" : "Blocked"}
+                                      </span>
+                                      {t.railId ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setSelectedRailId(t.railId!);
+                                          }}
+                                          style={{
+                                            padding: "2px 6px",
+                                            fontSize: 9,
+                                            borderRadius: 4,
+                                            border: "1px solid #4b5563",
+                                            background: "#1e3a5f",
+                                            color: "#58a6ff",
+                                            cursor: "pointer",
+                                          }}
+                                        >
+                                          Rail
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          disabled={!isReady || !accessToken}
+                                          onClick={async () => {
+                                            if (!accessToken || !activeWorkspaceId) return;
+                                            try {
+                                              const res = await fetch(
+                                                `${API_BASE}/todos/${encodeURIComponent(t.id)}/to-rail`,
+                                                {
+                                                  method: "POST",
+                                                  headers: {
+                                                    "Content-Type": "application/json",
+                                                    Authorization: `Bearer ${accessToken}`,
+                                                  },
+                                                }
+                                              );
+                                              const data = await res.json().catch(() => ({}));
+                                              if (res.ok && data.railId) {
+                                                setTodos((prev) =>
+                                                  prev.map((x) =>
+                                                    x.id === t.id ? { ...x, railId: data.railId } : x
+                                                  )
+                                                );
+                                                setSelectedRailId(data.railId);
+                                              }
+                                            } catch {
+                                              /* ignore */
+                                            }
+                                          }}
+                                          style={{
+                                            padding: "2px 6px",
+                                            fontSize: 9,
+                                            borderRadius: 4,
+                                            border: "1px solid #238636",
+                                            background: "#238636",
+                                            color: "white",
+                                            cursor: isReady ? "pointer" : "not-allowed",
+                                          }}
+                                        >
+                                          To rail
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          if (!accessToken || !window.confirm("Delete?")) return;
+                                          try {
+                                            const res = await fetch(
+                                              `${API_BASE}/todos/${encodeURIComponent(t.id)}`,
+                                              { method: "DELETE", headers: { Authorization: `Bearer ${accessToken}` } }
+                                            );
+                                            if (res.ok || res.status === 204)
+                                              setTodos((prev) => prev.filter((x) => x.id !== t.id));
+                                          } catch {
+                                            /* ignore */
+                                          }
+                                        }}
+                                        style={{
+                                          padding: "2px 4px",
+                                          fontSize: 9,
+                                          borderRadius: 4,
+                                          border: "1px solid #7f1d1d",
+                                          background: "transparent",
+                                          color: "#f87171",
+                                          cursor: "pointer",
+                                        }}
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                    {deps.length > 0 && (
+                                      <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 4 }}>
+                                        Depends on: {deps.map((id) => {
+                                          const d = byId.get(id);
+                                          return d ? (
+                                            <span
+                                              key={id}
+                                              onClick={() => {
+                                                const el = document.getElementById(`todo-${id}`);
+                                                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                              }}
+                                              style={{
+                                                cursor: "pointer",
+                                                color: d.status === "completed" ? "#4ade80" : "#f59e0b",
+                                                marginRight: 4,
+                                                textDecoration: "underline",
+                                              }}
+                                            >
+                                              {d.title.slice(0, 20)}{d.title.length > 20 ? "…" : ""}
+                                            </span>
+                                          ) : null;
+                                        })}
+                                        {hasBlockingDep ? " — blocked" : " — ready"}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        });
+                      })() )
+                    }
+                  </div>
+                )}
+              </div>
+            )}
             <div
               style={{
                 display: "flex",
@@ -8529,23 +10969,24 @@ export default function App() {
             >
                 {(
                   [
-                  { key: "PRE_PLANNING", label: "Pre-planning" },
-                  { key: "PLANNING", label: "Planning" },
-                  { key: "AWAITING_APPROVAL", label: "Awaiting approval" },
-                  { key: "EXECUTING", label: "Executing" },
-                  { key: "VERIFYING", label: "Verifying" },
-                  { key: "SELF_CORRECTING", label: "Self-correcting" },
-                  { key: "MATERIALIZING", label: "Materializing" },
-                  { key: "ARCHIVED", label: "Archived" },
-                  { key: "FAILED", label: "Failed" },
-                  { key: "SUSPENDED", label: "Suspended" },
-                ] as const
+                    { key: "PRE_PLANNING", label: "Pre-planning" },
+                    { key: "PLANNING", label: "Planning" },
+                    { key: "AWAITING_APPROVAL", label: "Awaiting approval" },
+                    { key: "EXECUTING", label: "Executing" },
+                    { key: "AWAITING_HITL", label: "Awaiting HITL" },
+                    { key: "VERIFYING", label: "Verifying" },
+                    { key: "SELF_CORRECTING", label: "Self-correcting" },
+                    { key: "MATERIALIZING", label: "Materializing" },
+                    { key: "ARCHIVED", label: "Archived" },
+                    { key: "FAILED", label: "Failed" },
+                    { key: "SUSPENDED", label: "Suspended" },
+                  ] as const
                 ).map((col, colIndex) => {
                   const columnAll = filteredRails.filter((r) => r.state === col.key);
                   const items = columnAll.slice(0, railsPerColumn);
-                  const isEmpty = items.length === 0;
                   const isFirstColumn = colIndex === 0;
                   const showOnboarding = isFirstColumn && rails.length === 0;
+                  const isTerminal = ["MATERIALIZING", "ARCHIVED", "FAILED"].includes(col.key);
                   return (
                     <div
                       key={col.key}
@@ -8553,13 +10994,14 @@ export default function App() {
                         minWidth: 280,
                         width: 280,
                         flexShrink: 0,
-                        background: "#161b22",
+                        background: isTerminal ? "#0f1419" : "#161b22",
                         borderRadius: 12,
-                        border: "1px solid #21262d",
+                        border: isTerminal ? "1px solid #30363d" : "1px solid #21262d",
                         padding: 12,
                         display: "flex",
                         flexDirection: "column",
                         boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                        opacity: isTerminal ? 0.92 : 1,
                       }}
                       onDragOver={(e) => {
                         e.preventDefault();
@@ -8583,18 +11025,25 @@ export default function App() {
                           );
                           const data = await res.json().catch(() => ({}));
                           if (!res.ok) {
-                            const msg = typeof data.error === "string" ? data.error : `Invalid transition. ${col.key} may not be allowed.`;
-                            setRailDropError(msg);
-                            setTimeout(() => setRailDropError(null), 6000);
+                            const payload = data as { error?: string; code?: string; details?: string; retryable?: boolean };
+                            setRailDropError({
+                              message: typeof payload.error === "string" ? payload.error : `Invalid transition.`,
+                              code: payload.code,
+                              details: payload.details,
+                              retryable: payload.retryable,
+                            });
+                            setTimeout(() => setRailDropError(null), 8000);
                             return;
                           }
                           setRails((prev) =>
                             prev.map((r) => (r.id === railId ? { ...r, state: data.state ?? col.key } : r))
                           );
                         } catch (err) {
-                          const msg = err instanceof Error ? err.message : "Failed to move rail.";
-                          setRailDropError(msg);
-                          setTimeout(() => setRailDropError(null), 6000);
+                          setRailDropError({
+                            message: err instanceof Error ? err.message : "Failed to move rail.",
+                            retryable: true,
+                          });
+                          setTimeout(() => setRailDropError(null), 8000);
                         }
                       }}
                     >
@@ -8612,6 +11061,11 @@ export default function App() {
                         <span style={{ fontSize: 11, color: "#6b7280", fontFamily: "monospace" }}>
                           {columnAll.length}
                           {columnAll.length > railsPerColumn ? ` (${items.length})` : ""}
+                          {col.key === "EXECUTING" && columnAll.length > 0 && (
+                            <span style={{ marginLeft: 6, color: "#58a6ff" }}>
+                              · Queue {columnAll.length}
+                            </span>
+                          )}
                         </span>
                       </div>
                       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
@@ -8650,6 +11104,7 @@ export default function App() {
                           <VirtualizedRailList
                             items={items}
                             onCardClick={(r) => setSelectedRailId(r.id)}
+                            queuePositionByRailId={queuePositionByRailId}
                             onApproveClick={
                               graph?.projectRoot
                                 ? (r) => {
@@ -8706,6 +11161,8 @@ export default function App() {
             setSelectedRailId(null);
             setSelectedRailDetail(null);
             setSelectedRailSandboxPaths(null);
+            setSelectedRailDiffs(null);
+            setRailImpactNodeIds(null);
           }}
         >
           <div
@@ -8738,6 +11195,8 @@ export default function App() {
                   setSelectedRailId(null);
                   setSelectedRailDetail(null);
                   setSelectedRailSandboxPaths(null);
+                  setSelectedRailDiffs(null);
+                  setRailImpactNodeIds(null);
                 }}
                 style={{
                   background: "transparent",
@@ -8750,6 +11209,53 @@ export default function App() {
                 ×
               </button>
             </div>
+            {graph && (
+              <button
+                type="button"
+                onClick={async () => {
+                  const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                  if (!accessToken || !wsId || !selectedRailDetail) return;
+                  setMainViewMode("graph");
+                  try {
+                    const r = await fetch(
+                      `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/impact?workspaceId=${encodeURIComponent(wsId)}`,
+                      { headers: { Authorization: `Bearer ${accessToken}` } }
+                    );
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok) return;
+                    const baseIds = Array.isArray(data.baselineNodeIds) ? data.baselineNodeIds : [];
+                    const changedFiles = Array.isArray(data.changedFiles) ? data.changedFiles : [];
+                    const fileIds = new Set<string>();
+                    for (const node of graph.nodes) {
+                      for (const f of node.files ?? []) {
+                        if (changedFiles.some((cf: string) => f.includes(cf) || cf.includes(f)))
+                          fileIds.add(node.id);
+                      }
+                    }
+                    setRailImpactNodeIds([...new Set([...baseIds, ...fileIds])]);
+                  } catch {
+                    setRailImpactNodeIds(
+                      selectedRailDetail.baselineNodeIds ??
+                        (selectedRailDetail.logicPath ?? [])
+                          .map((s: any) => (s?.nodeId ? s.nodeId : null))
+                          .filter(Boolean)
+                    );
+                  }
+                }}
+                style={{
+                  marginBottom: 12,
+                  padding: "6px 12px",
+                  fontSize: 11,
+                  background: "#1e3a5f",
+                  color: "#58a6ff",
+                  border: "1px solid #2563eb",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                }}
+              >
+                Show on graph
+              </button>
+            )}
             <div style={{ fontSize: 12, color: "#9ca3af", marginBottom: 12 }}>
               <div style={{ marginBottom: 4 }}>
                 <strong>ID:</strong>{" "}
@@ -8813,24 +11319,105 @@ export default function App() {
                         )}
                       {t.description && <div>{t.description}</div>}
                       {t.kind === "verification" && t.evidence && t.status === "rejected" && (
-                        <details style={{ marginTop: 4 }}>
-                          <summary style={{ cursor: "pointer", color: "#f87171" }}>Playwright failure details</summary>
-                          <pre
-                            style={{
-                              marginTop: 4,
-                              padding: 8,
-                              background: "#1c1917",
-                              borderRadius: 6,
-                              fontSize: 10,
-                              overflow: "auto",
-                              maxHeight: 200,
-                              whiteSpace: "pre-wrap",
-                              wordBreak: "break-word",
-                            }}
-                          >
-                            {typeof t.evidence === "string" ? t.evidence : JSON.stringify(t.evidence, null, 2)}
-                          </pre>
-                        </details>
+                        (() => {
+                          let parsed: { lint?: { passed?: boolean }; vitest?: { passed?: boolean; summary?: { total?: number; passed?: number; failed?: number }; failures?: Array<{ testName?: string; filePath?: string; error?: string }> }; playwright?: unknown } | null = null;
+                          try {
+                            parsed = typeof t.evidence === "string" ? JSON.parse(t.evidence) : t.evidence;
+                          } catch { /* ignore */ }
+                          const vitest = parsed?.vitest;
+                          const hasVitest = vitest && typeof vitest === "object";
+                          const vitestFailures = (hasVitest && Array.isArray(vitest!.failures)) ? vitest!.failures : [];
+                          const lastSource = selectedRailDetail.lastCritique?.source;
+                          const isPlaywright = lastSource === "playwright";
+                          return (
+                            <details key={`ev-${t.id}`} style={{ marginTop: 4 }}>
+                              <summary style={{ cursor: "pointer", color: "#f87171" }}>
+                                {isPlaywright ? "Playwright" : "Verification"} failure details
+                                {hasVitest ? ` · Vitest: ${vitest!.passed ? "Passed" : `${vitestFailures.length} failed`}` : ""}
+                              </summary>
+                              {hasVitest && (
+                                <div
+                                  style={{
+                                    marginTop: 8,
+                                    padding: 8,
+                                    background: "#1c1917",
+                                    borderRadius: 6,
+                                    fontSize: 10,
+                                    border: "1px solid #374151",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      marginBottom: 6,
+                                      fontWeight: 600,
+                                      color: vitest!.passed ? "#4ade80" : "#f87171",
+                                    }}
+                                  >
+                                    Vitest: {vitest!.passed ? "Passed" : "Failed"}
+                                    {vitest!.summary && (
+                                      <span style={{ marginLeft: 8, fontWeight: 400, color: "#9ca3af" }}>
+                                        {vitest!.summary.passed ?? 0}/{vitest!.summary.total ?? 0} passed
+                                        {(vitest!.summary.failed ?? 0) > 0 && ` · ${vitest!.summary.failed} failed`}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                                    {(vitestFailures).map((f: any, i: number) => (
+                                      <div
+                                        key={i}
+                                        style={{
+                                          padding: 6,
+                                          marginBottom: 4,
+                                          background: "#0f1419",
+                                          borderRadius: 4,
+                                          borderLeft: "3px solid #f87171",
+                                        }}
+                                      >
+                                        <div style={{ fontWeight: 600, color: "#fecaca" }}>
+                                          {f.testName ?? f.filePath ?? "Test"}
+                                        </div>
+                                        {f.filePath && (
+                                          <div style={{ fontSize: 9, color: "#6b7280" }}>{f.filePath}</div>
+                                        )}
+                                        {f.error && (
+                                          <pre
+                                            style={{
+                                              marginTop: 4,
+                                              whiteSpace: "pre-wrap",
+                                              wordBreak: "break-word",
+                                              fontSize: 9,
+                                              color: "#fecaca",
+                                            }}
+                                          >
+                                            {String(f.error).slice(0, 800)}
+                                            {String(f.error).length > 800 ? "…" : ""}
+                                          </pre>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {isPlaywright && selectedRailDetail.lastCritique?.message && (
+                                <div
+                                  style={{
+                                    marginTop: hasVitest ? 8 : 4,
+                                    padding: 8,
+                                    background: "#1c1917",
+                                    borderRadius: 6,
+                                    fontSize: 10,
+                                    overflow: "auto",
+                                    maxHeight: 200,
+                                    whiteSpace: "pre-wrap",
+                                    wordBreak: "break-word",
+                                  }}
+                                >
+                                  {selectedRailDetail.lastCritique.message}
+                                </div>
+                              )}
+                            </details>
+                          );
+                        })()
                       )}
                     </li>
                   ))}
@@ -8870,6 +11457,34 @@ export default function App() {
                 )}
               </div>
             )}
+            {Array.isArray(selectedRailDetail.attemptHistory) &&
+              selectedRailDetail.attemptHistory.length > 0 && (
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#e6edf3", marginBottom: 4 }}>
+                    Attempt history
+                  </div>
+                  <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 11 }}>
+                    {selectedRailDetail.attemptHistory
+                      .slice()
+                      .reverse()
+                      .map((h: any, idx: number) => (
+                        <li
+                          key={idx}
+                          style={{
+                            padding: "4px 0",
+                            borderBottom: "1px solid #111827",
+                            color: "#9ca3af",
+                          }}
+                        >
+                          <div style={{ fontSize: 10, color: "#6b7280" }}>
+                            {h.timestamp ? new Date(h.timestamp).toLocaleString() : "Attempt"}
+                          </div>
+                          <div>{h.summary}</div>
+                        </li>
+                      ))}
+                  </ul>
+                </div>
+              )}
             {["SELF_CORRECTING", "FAILED"].includes(selectedRailDetail.state) && (
               <div style={{ marginBottom: 12 }}>
                 <button
@@ -8928,8 +11543,84 @@ export default function App() {
                 )}
               </div>
             )}
+            {["VERIFYING", "SELF_CORRECTING", "MATERIALIZING", "ARCHIVED"].includes(
+              selectedRailDetail.state
+            ) && (
+              <div style={{ marginBottom: 12 }}>
+                <button
+                  type="button"
+                  disabled={selectedRailDiffsLoading}
+                  onClick={async () => {
+                    if (selectedRailDiffs !== null) return;
+                    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                    if (!accessToken || !wsId) return;
+                    setSelectedRailDiffsLoading(true);
+                    try {
+                      const r = await fetch(
+                        `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/diff?workspaceId=${encodeURIComponent(wsId)}`,
+                        { headers: { Authorization: `Bearer ${accessToken}` } }
+                      );
+                      const data = await r.json().catch(() => ({}));
+                      if (r.ok && Array.isArray(data.files)) setSelectedRailDiffs(data.files);
+                    } finally {
+                      setSelectedRailDiffsLoading(false);
+                    }
+                  }}
+                  style={{
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    background: "#1e3a5f",
+                    color: "#58a6ff",
+                    border: "1px solid #2563eb",
+                    borderRadius: 6,
+                    cursor: selectedRailDiffsLoading ? "wait" : "pointer",
+                  }}
+                >
+                  {selectedRailDiffsLoading ? "Loading…" : selectedRailDiffs ? "Diffs loaded" : "View diffs"}
+                </button>
+                {selectedRailDiffs && selectedRailDiffs.length > 0 && (
+                  <div
+                    style={{
+                      marginTop: 8,
+                      maxHeight: 280,
+                      overflowY: "auto",
+                      border: "1px solid #21262d",
+                      borderRadius: 6,
+                    }}
+                  >
+                    {selectedRailDiffs.map((f, i) => (
+                      <details key={i} style={{ borderBottom: "1px solid #21262d" }}>
+                        <summary style={{ padding: "6px 8px", cursor: "pointer", fontSize: 11 }}>
+                          {f.path}
+                        </summary>
+                        <div style={{ padding: 8, fontSize: 10, fontFamily: "monospace" }}>
+                          {f.before !== undefined && (
+                            <div style={{ marginBottom: 8 }}>
+                              <div style={{ color: "#f87171", marginBottom: 4 }}>Before</div>
+                              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                {f.before.slice(0, 2000)}
+                                {(f.before?.length ?? 0) > 2000 ? "…" : ""}
+                              </pre>
+                            </div>
+                          )}
+                          {f.after !== undefined && (
+                            <div>
+                              <div style={{ color: "#4ade80", marginBottom: 4 }}>After</div>
+                              <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                                {f.after.slice(0, 2000)}
+                                {(f.after?.length ?? 0) > 2000 ? "…" : ""}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              {selectedRailDetail.state === "SUSPENDED" && (
+              {(selectedRailDetail.state === "SUSPENDED" || selectedRailDetail.state === "AWAITING_HITL") && (
                 <button
                   type="button"
                   onClick={async () => {
@@ -9013,6 +11704,50 @@ export default function App() {
                   Suspend
                 </button>
               )}
+              {selectedRailDetail.state === "ARCHIVED" && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const wsId = mainViewMode === "board" ? effectiveRailsWorkspaceId : activeWorkspaceId;
+                    if (!accessToken || !wsId) return;
+                    if (!window.confirm("Rollback materialized changes for this rail?")) return;
+                    try {
+                      const r = await fetch(
+                        `${API_BASE}/rails/${encodeURIComponent(selectedRailDetail.id)}/rollback?workspaceId=${encodeURIComponent(wsId)}`,
+                        {
+                          method: "POST",
+                          headers: {
+                            Authorization: `Bearer ${accessToken}`,
+                          },
+                        }
+                      );
+                      const data = await r.json().catch(() => ({}));
+                      if (!r.ok) {
+                        const msg = typeof data.error === "string" ? data.error : "Rollback failed.";
+                        setError(msg);
+                        return;
+                      }
+                      setSelectedRailId(null);
+                      setSelectedRailDetail(null);
+                      setSelectedRailSandboxPaths(null);
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      setError(msg);
+                    }
+                  }}
+                  style={{
+                    padding: "6px 12px",
+                    background: "#450a0a",
+                    color: "#fecaca",
+                    border: "1px solid #7f1d1d",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                >
+                  Rollback materialization
+                </button>
+              )}
               {graph &&
                 (selectedRailDetail.baselineNodeIds?.length ||
                   (Array.isArray(selectedRailDetail.logicPath) &&
@@ -9045,6 +11780,58 @@ export default function App() {
                   Jump to graph
                 </button>
               )}
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!accessToken || !activeWorkspaceId || !selectedRailDetail) return;
+                  try {
+                    const res = await fetch(
+                      `${API_BASE}/rails/${encodeURIComponent(
+                        selectedRailDetail.id
+                      )}/trace?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+                      {
+                        headers: {
+                          Authorization: `Bearer ${accessToken}`,
+                        },
+                      }
+                    );
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const msg =
+                        typeof data.error === "string"
+                          ? data.error
+                          : "Failed to download trace.";
+                      alert(msg);
+                      return;
+                    }
+                    const blob = new Blob([JSON.stringify(data, null, 2)], {
+                      type: "application/json",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `rail-${selectedRailDetail.id}-trace.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                  } catch (err) {
+                    const msg = err instanceof Error ? err.message : String(err);
+                    alert(msg);
+                  }
+                }}
+                style={{
+                  padding: "6px 12px",
+                  background: "#020617",
+                  color: "#e5e7eb",
+                  border: "1px solid #4b5563",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Download trace
+              </button>
               {selectedRailDetail.archetype === "analysis-chat" &&
                 ["PRE_PLANNING", "PLANNING", "AWAITING_APPROVAL"].includes(selectedRailDetail.state) &&
                 (selectedRailDetail.tasks ?? []).some((t: { kind?: string }) => t.kind === "code_change") && (

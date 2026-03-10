@@ -90,6 +90,12 @@ export interface Rail {
   version: number;
   outcome: string;
   trigger: RailTrigger;
+  /** Owning workspace for this rail (Supabase workspaces.id). */
+  workspaceId?: string | null;
+  /** Repo URL associated with this rail's workspace (graphs.repo_url). */
+  repoUrl?: string | null;
+  /** Optional linked violation id when rail was spawned from a governance event. */
+  violationId?: string | null;
   archetype?: string;
   logicPath: LogicPathStep[];
   state: RailState;
@@ -123,6 +129,11 @@ export interface Rail {
   telemetry?: RailTelemetry;
   hallucinationIndex?: number;
   hallucinationAcknowledgedAt?: number;
+  /** Compact history of verification / execution attempts for debugging. */
+  attemptHistory?: Array<{
+    timestamp: number;
+    summary: string;
+  }>;
   /** Last critique or failure summary for SELF_CORRECTING / HITL flows. */
   lastCritique?: {
     source: "reviewer" | "executor" | "playwright" | "lint" | "test" | "visual" | "unknown";
@@ -233,12 +244,20 @@ export interface ProposedFileSpec {
   todos: string[];
 }
 
+export type SuccessCheck =
+  | { kind: "staging_write"; required: true }
+  | { kind: "lint"; required: true; paths?: string[] }
+  | { kind: "vitest"; required: true; pattern?: string }
+  | { kind: "playwright"; required: true; specs: string[]; baseUrl?: string };
+
 export interface AgentPlanTask {
   id: string;
   module: string;
   layer: NodeLayer;
   action: "create" | "modify" | "refactor";
   expectedOutput: string;
+  /** Machine-checkable success conditions for this task. */
+  successChecks?: SuccessCheck[];
   /**
    * Full file specs from the Architect's design proposal.
    * Includes name, purpose, and implementation todos per file.

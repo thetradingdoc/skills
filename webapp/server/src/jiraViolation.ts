@@ -3,8 +3,12 @@ import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { createIssue, getIssue } from "../../../src/jira/client.js";
-import { markViolationTracked, buildViolationFingerprint } from "./violationStore.js";
-import { getUserJiraConfig } from "./jiraConfig.js";
+import {
+  markViolationTracked,
+  buildViolationFingerprint,
+  upsertViolations,
+} from "./violationStore.js";
+import { getUserJiraConfig, JiraDecryptError } from "./jiraConfig.js";
 import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
 
 const router = Router();
@@ -45,7 +49,19 @@ async function getWorkspaceProjectKey(workspaceId: string | null): Promise<strin
 }
 
 router.post("/jira-violation", requireUser, async (req, res) => {
-  const config = await getUserJiraConfig(req.user!.id);
+  let config;
+  try {
+    config = await getUserJiraConfig(req.user!.id);
+  } catch (e) {
+    if (e instanceof JiraDecryptError) {
+      res.status(400).json({
+        error: e.message,
+        code: "jira_decrypt_failed",
+      });
+      return;
+    }
+    throw e;
+  }
   if (!config) {
     res.status(400).json({
       error: "Jira is not connected. Use the Governance panel to connect your Jira account in the web app.",
@@ -131,6 +147,29 @@ router.post("/jira-violation", requireUser, async (req, res) => {
     vTargetNodeId = violation.targetNodeId;
     vDescription = violation.description;
     vSuggestedFix = violation.suggestedFix;
+    // Upsert so we have a row to mark tracked (chat-origin violations may not exist yet).
+    if (workspaceId && supabaseAdmin) {
+      const raw = {
+        type: vType,
+        severity: vSeverity,
+        sourceNodeId: vSourceNodeId,
+        targetNodeId: vTargetNodeId,
+        description: vDescription,
+        suggestedFix: vSuggestedFix,
+      };
+      const upserted = await upsertViolations(supabaseAdmin, {
+        workspaceId,
+        violations: [raw],
+        rulesVersion: ARCH_RULESET_VERSION,
+      });
+      const match = upserted.find(
+        (r) =>
+          r.source_node_id === vSourceNodeId &&
+          r.target_node_id === (vTargetNodeId ?? null) &&
+          r.type === vType
+      );
+      if (match?.id) storedId = match.id;
+    }
   } else {
     res.status(400).json({ error: "violationId or violation is required" });
     return;

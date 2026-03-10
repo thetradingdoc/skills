@@ -11,7 +11,7 @@ import * as path from "path";
 import { loadSkillIndex, incrementUsage } from "../agent/skillStore";
 import { recordSkillUsage, saveSkillPerformance } from "../agent/rail/telemetry";
 import type { JiraConfig } from "../jira/client";
-import { createIssue, getJiraConfig, searchIssues } from "../jira/client";
+import { createIssue, searchIssues } from "../jira/client";
 
 const ALLOWED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".mjs", ".cjs"]);
 const READ_FILE_MAX_CHARS = 3000;
@@ -52,6 +52,10 @@ export function executeReadFile(rootPath: string, filePath: string): { result?: 
   const root = path.resolve(rootPath);
   if (!isUnderRoot(root, path.resolve(absPath))) {
     return { error: "Path outside project root" };
+  }
+  const base = path.basename(absPath);
+  if (base === ".env" || (base.startsWith(".env.") && !base.endsWith(".example") && !base.endsWith(".sample"))) {
+    return { error: "Environment files (.env*) are not readable" };
   }
   try {
     if (!fs.existsSync(absPath)) {
@@ -121,6 +125,10 @@ export function executeRunCommand(
   command: string
 ): { result?: string; exitCode?: number; error?: string } {
   const trimmed = command.trim();
+  const root = path.resolve(rootPath);
+  if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+    return { error: "Invalid project root" };
+  }
   const allowed = RUN_COMMAND_ALLOWLIST.some(
     (prefix) => trimmed === prefix || trimmed.startsWith(prefix)
   );
@@ -167,6 +175,14 @@ export function executeRunSkill(
   const absPath = path.isAbsolute(relPath)
     ? relPath
     : path.join(skillsRoot, relPath);
+
+  // Hard root lock: skills must live under <root>/.agent/skills
+  const skillsDir = path.join(rootPath, ".agent", "skills");
+  const absNorm = path.resolve(absPath);
+  const skillsNorm = path.resolve(skillsDir);
+  if (!absNorm.startsWith(skillsNorm + path.sep) && absNorm !== skillsNorm) {
+    return { error: "Skill path is outside .agent/skills (blocked)" };
+  }
 
   if (!fs.existsSync(absPath)) {
     return { error: `Skill file not found on disk: ${absPath}` };
@@ -331,14 +347,20 @@ export async function executeJiraCreateTicket(
   },
   overrides?: JiraToolOverrides
 ): Promise<{ result?: string; error?: string }> {
-  const config = overrides?.config ?? getJiraConfig();
+  // Per-user/workspace config only; no env fallback
+  const config = overrides?.config;
   if (!config) {
     return {
       error:
-        "Jira not configured. Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in environment.",
+        "Jira not configured. Connect Jira in the Governance panel (web app).",
     };
   }
-  const projectKey = (input.projectKey?.trim() || overrides?.projectKey || "").trim();
+  const projectKey = (
+    input.projectKey?.trim() ||
+    overrides?.projectKey ||
+    (config as { project?: string | null }).project?.trim() ||
+    ""
+  ).trim();
   if (!projectKey) {
     return {
       error:
@@ -387,11 +409,11 @@ export async function executeJiraSearchByArchNodeId(
   maxResults = 10,
   overrides?: JiraToolOverrides
 ): Promise<{ result?: string; error?: string }> {
-  const config = overrides?.config ?? getJiraConfig();
+  const config = overrides?.config;
   if (!config) {
     return {
       error:
-        "Jira not configured. Connect Jira in the web app or set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in environment.",
+        "Jira not configured. Connect Jira in the Governance panel to enable searches.",
     };
   }
   if (!ARCH_NODE_ID_SAFE.test(archNodeId)) {
@@ -400,7 +422,7 @@ export async function executeJiraSearchByArchNodeId(
         "archNodeId contains invalid characters. Use only letters, numbers, dash, underscore, slash, dot.",
     };
   }
-  const projectKey = (overrides?.projectKey ?? "").trim();
+  const projectKey = (overrides?.projectKey ?? (config as { project?: string | null }).project?.trim() ?? "").trim();
   const label = `archNodeId:${archNodeId}`;
   const jqlBase = projectKey
     ? `project = ${projectKey} AND labels = '${label.replace(/'/g, "''")}'`

@@ -368,7 +368,14 @@ export type WebToExtMessage =
   | { type: "ready" }
   | { type: "refresh" }
   | { type: "nodeClick"; nodeId: string }
-  | { type: "askAI"; question: string; nodeId?: string; history?: { role: "user" | "assistant"; content: string }[] }
+  | {
+      type: "askAI";
+      question: string;
+      nodeId?: string;
+      history?: { role: "user" | "assistant"; content: string }[];
+      pdfBase64?: string;
+      pdfFileName?: string;
+    }
   | { type: "writeContext"; nodeId: string; layer?: string; description?: string; role?: string }
   | { type: "generateRules" }
   | { type: "writeRules"; raw: string }

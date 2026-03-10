@@ -152,8 +152,9 @@ export function completeMaterializeAndArchive(rootPath: string, railId: RailId):
 
   // p8: HITL lock — block MATERIALIZING when hallucination > 0.5 until human acknowledges drift.
   const hi = rail.hallucinationIndex;
+  const intent = rail.intentDriftScore;
   const acknowledged = !!rail.hallucinationAcknowledgedAt;
-  if (hi != null && hi > 0.5 && !acknowledged) {
+  if ((hi != null && hi > 0.5 && !acknowledged) || (intent != null && intent > 0.6 && !acknowledged)) {
     return null;
   }
 

@@ -1,8 +1,11 @@
 import { Router } from "express";
-import { searchIssues, addLabel, listProjects, type JiraIssue } from "../../../src/jira/client.js";
+import { searchIssues, addLabel, listProjects, getIssue, type JiraIssue } from "../../../src/jira/client.js";
+import { detectStaleJira, extractFingerprintFromDescription } from "../../../src/agent/staleJiraDetector.js";
+import type { ArchGraph } from "../../../src/types.js";
 import { requireUser } from "./middleware/requireUser.js";
-import { getUserJiraConfig, getUserJiraConfigWithSource } from "./jiraConfig.js";
+import { getUserJiraConfig, getUserJiraConfigWithSource, JiraDecryptError } from "./jiraConfig.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { markViolationResolvedFromJira } from "./violationStore.js";
 import { isValidProjectKey } from "./utils/deriveProjectKey.js";
 
 const router = Router();
@@ -20,10 +23,49 @@ router.get("/jira-status", requireUser, async (req, res) => {
       project: result.config.project ?? undefined,
       source: result.source,
     });
-  } catch {
+  } catch (e) {
+    if (e instanceof JiraDecryptError) {
+      res.status(400).json({
+        configured: false,
+        error: "jira_decrypt_failed",
+        message: e.message,
+      });
+      return;
+    }
     res.json({ configured: false });
   }
 });
+
+function isJiraOpen(status: string): boolean {
+  return !/done|resolved|closed|complete/i.test(status);
+}
+
+/** Sync violation policy_state from Jira: if a tracked ticket is resolved/closed, mark violation resolved. */
+async function syncViolationsFromJiraStatus(
+  workspaceId: string,
+  config: { baseUrl: string; email: string; apiToken: string }
+): Promise<void> {
+  if (!supabaseAdmin) return;
+  const { data: rows } = await supabaseAdmin
+    .from("violations")
+    .select("id, jira_key")
+    .eq("workspace_id", workspaceId)
+    .in("policy_state", ["tracked", "regressed"])
+    .not("jira_key", "is", null);
+  const violations = (rows ?? []) as Array<{ id: string; jira_key: string }>;
+  for (const v of violations) {
+    const key = v.jira_key?.trim();
+    if (!key) continue;
+    try {
+      const issue = await getIssue(config, key);
+      if (issue && !isJiraOpen(issue.status)) {
+        await markViolationResolvedFromJira(supabaseAdmin, v.id, issue.status);
+      }
+    } catch {
+      /* skip on API error */
+    }
+  }
+}
 
 function repoNameFromUrl(url: string): string | null {
   const m = url.match(/(?:github\.com|gitlab\.com|bitbucket\.org)[/:][\w.-]+\/([\w.-]+?)(?:\.git)?\/?$/i);
@@ -42,6 +84,22 @@ export async function getWorkspaceProjectKey(
   return (data as { jira_project_key?: string | null })?.jira_project_key ?? null;
 }
 
+/** Load latest graph for workspace from Supabase. TODO: revisit if large graphs become a bottleneck. */
+export async function getGraphByWorkspaceId(
+  workspaceId: string | null
+): Promise<ArchGraph | null> {
+  if (!workspaceId || !supabaseAdmin) return null;
+  const { data, error } = await supabaseAdmin
+    .from("graphs")
+    .select("graph_json")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data?.graph_json) return null;
+  return data.graph_json as ArchGraph;
+}
+
 /** List Jira projects the user can access (for project key dropdown). */
 router.get("/jira-projects", requireUser, async (req, res) => {
   try {
@@ -55,6 +113,10 @@ router.get("/jira-projects", requireUser, async (req, res) => {
     const projects = await listProjects(config);
     res.json({ projects });
   } catch (err: unknown) {
+    if (err instanceof JiraDecryptError) {
+      res.status(400).json({ error: err.message, code: "jira_decrypt_failed" });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
   }
@@ -108,7 +170,40 @@ router.get("/jira-issues", requireUser, async (req, res) => {
         ? jql.replace(/\s*ORDER BY\s+/i, `${labelClause} ORDER BY `)
         : jql + labelClause;
     }
-    const issues = await searchIssues(config, jql, 25);
+    const includeStaleDetection = req.query.includeStaleDetection === "true" || req.query.includeStaleDetection === "1";
+    const issues = await searchIssues(config, jql, 25, {
+      includeDescription: includeStaleDetection,
+    });
+    let staleMismatches: Array<{ key: string; summary: string; reason: string; storedModule: string | null }> | undefined;
+    if (includeStaleDetection && workspaceId) {
+      const graph = await getGraphByWorkspaceId(workspaceId);
+      if (graph) {
+        const issuesWithFp = issues.map((i) => {
+          const { fingerprint, module: mod } = extractFingerprintFromDescription(i.description);
+          return {
+            key: i.key,
+            summary: i.summary,
+            status: i.status,
+            storedFingerprint: fingerprint,
+            storedModule: mod,
+          };
+        });
+        const mismatches = detectStaleJira(graph, issuesWithFp);
+        staleMismatches = mismatches.map((m) => ({
+          key: m.key,
+          summary: m.summary,
+          reason: m.reason,
+          storedModule: m.storedModule,
+        }));
+      }
+    }
+    if (workspaceId) {
+      setImmediate(() => {
+        syncViolationsFromJiraStatus(workspaceId, config).catch((err) =>
+          console.warn("[jira] syncViolationsFromJiraStatus failed:", err instanceof Error ? err.message : err)
+        );
+      });
+    }
     res.json({
       issues: issues.map((i: JiraIssue) => ({
         key: i.key,
@@ -120,8 +215,13 @@ router.get("/jira-issues", requireUser, async (req, res) => {
         labels: i.labels,
       })),
       repoName: repoName ?? undefined,
+      ...(staleMismatches && staleMismatches.length > 0 ? { staleMismatches } : {}),
     });
   } catch (err: unknown) {
+    if (err instanceof JiraDecryptError) {
+      res.status(400).json({ error: err.message, code: "jira_decrypt_failed" });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
   }
@@ -150,6 +250,10 @@ router.post("/jira-add-label", requireUser, async (req, res) => {
     }
     res.json({ success: true });
   } catch (err: unknown) {
+    if (err instanceof JiraDecryptError) {
+      res.status(400).json({ error: err.message, code: "jira_decrypt_failed" });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
   }

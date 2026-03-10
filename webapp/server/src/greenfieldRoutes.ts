@@ -16,6 +16,8 @@ import {
   type DraftNode,
   type DraftEdge,
 } from "./greenfieldDraft.js";
+import { supabaseAdmin } from "./supabaseAdmin.js";
+import { todoToRailCore } from "./todos.js";
 
 const router = Router();
 
@@ -113,6 +115,144 @@ router.post("/greenfield/edges", requireUser, (req, res) => {
   }
   const draft = appendDraftEdge(sessionId, edge);
   res.status(201).json({ draft });
+});
+
+router.post("/greenfield/nodes/:nodeId/to-todo", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const nodeId = req.params.nodeId;
+  const { sessionId, workspaceId } = req.body as {
+    sessionId?: string;
+    workspaceId?: string;
+  };
+  if (!sessionId || !nodeId || !workspaceId) {
+    res.status(400).json({ error: "sessionId, workspaceId, and nodeId are required." });
+    return;
+  }
+
+  const draft = loadDraft(sessionId);
+  if (!draft) {
+    res.status(404).json({ error: "Draft not found." });
+    return;
+  }
+
+  const node = draft.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    res.status(404).json({ error: "Node not found in draft." });
+    return;
+  }
+
+  const { data: ws } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", req.user!.id)
+    .maybeSingle();
+
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  const title = node.label || node.id;
+  const description = node.description ?? null;
+
+  const { data, error } = await supabaseAdmin
+    .from("todos")
+    .insert({
+      workspace_id: workspaceId,
+      title,
+      description,
+      phase: null,
+      depends_on: null,
+      status: "pending",
+      source: "greenfield",
+      source_path: node.archNodeId ?? node.id,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  res.status(201).json({ todo: data });
+});
+
+/** Unified pipeline: create todo from greenfield node and immediately create rail. Returns { railId, todoId }. */
+router.post("/greenfield/nodes/:nodeId/to-rail", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const nodeId = req.params.nodeId;
+  const { sessionId, workspaceId } = req.body as {
+    sessionId?: string;
+    workspaceId?: string;
+  };
+  if (!sessionId || !nodeId || !workspaceId) {
+    res.status(400).json({ error: "sessionId, workspaceId, and nodeId are required." });
+    return;
+  }
+
+  const draft = loadDraft(sessionId);
+  if (!draft) {
+    res.status(404).json({ error: "Draft not found." });
+    return;
+  }
+
+  const node = draft.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    res.status(404).json({ error: "Node not found in draft." });
+    return;
+  }
+
+  const { data: ws } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", req.user!.id)
+    .maybeSingle();
+
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  const title = node.label || node.id;
+  const description = node.description ?? null;
+
+  const { data: todoRow, error: todoErr } = await supabaseAdmin
+    .from("todos")
+    .insert({
+      workspace_id: workspaceId,
+      title,
+      description,
+      phase: null,
+      depends_on: null,
+      status: "pending",
+      source: "greenfield",
+      source_path: node.archNodeId ?? node.id,
+    })
+    .select("id")
+    .single();
+
+  if (todoErr || !todoRow) {
+    res.status(500).json({ error: todoErr?.message ?? "Failed to create todo." });
+    return;
+  }
+
+  const todoId = String(todoRow.id);
+  try {
+    const { railId } = await todoToRailCore(todoId, req.user!.id);
+    res.status(201).json({ railId, todoId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to create rail.";
+    res.status(500).json({ error: msg });
+  }
 });
 
 export { router as greenfieldRoutes };

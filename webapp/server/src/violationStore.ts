@@ -31,6 +31,7 @@ export interface StoredViolation {
   policy_state: "new" | "tracked" | "accepted" | "resolved" | "waived" | "regressed";
   jira_key: string | null;
   jira_status: string | null;
+  rail_id?: string | null;
 }
 
 interface RawViolation {
@@ -346,6 +347,44 @@ export async function buildGovernanceNotice(
     lines.join("\n") +
     "\n"
   );
+}
+
+/**
+ * Mark a violation as resolved when its Jira ticket is Done/Resolved/Closed.
+ * Used for reverse sync: Jira status change → violation policy_state update.
+ */
+export async function markViolationResolvedFromJira(
+  db: SupabaseClient,
+  violationId: string,
+  jiraStatus: string
+): Promise<void> {
+  const { data: row } = await db
+    .from("violations")
+    .select("id, workspace_id, policy_state")
+    .eq("id", violationId)
+    .single();
+
+  if (!row || row.policy_state === "resolved") return;
+
+  if (row.workspace_id) {
+    try {
+      await db.from("violation_policy_events").insert({
+        violation_id: violationId,
+        workspace_id: row.workspace_id,
+        actor_id: null,
+        previous_state: row.policy_state ?? null,
+        new_state: "resolved",
+        reason: "Jira ticket resolved/closed",
+      });
+    } catch {
+      /* non-fatal */
+    }
+  }
+
+  await db
+    .from("violations")
+    .update({ policy_state: "resolved", jira_status: jiraStatus })
+    .eq("id", violationId);
 }
 
 export async function markViolationTracked(

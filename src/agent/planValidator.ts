@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { parseJsonFromLLM } from "./llmJson";
 import type { NodeLayer } from "../types";
-import type { AgentPlan, ArchRulesV2, ProposedFileSpec } from "./types";
+import type { AgentPlan, ArchRulesV2, ProposedFileSpec, SuccessCheck } from "./types";
 
 const VALID_LAYERS: NodeLayer[] = [
   "Presentation",
@@ -50,6 +50,24 @@ function isValidProposedFile(obj: unknown): obj is ProposedFileSpec {
   );
 }
 
+function isValidSuccessCheck(obj: unknown): obj is SuccessCheck {
+  if (!obj || typeof obj !== "object") return false;
+  const o = obj as Record<string, unknown>;
+  if (typeof o.kind !== "string") return false;
+  if (o.kind === "staging_write") return o.required === true;
+  if (o.kind === "lint") return o.required === true && (o.paths === undefined || Array.isArray(o.paths));
+  if (o.kind === "vitest") return o.required === true && (o.pattern === undefined || typeof o.pattern === "string");
+  if (o.kind === "playwright") {
+    return (
+      o.required === true &&
+      Array.isArray(o.specs) &&
+      (o.specs as unknown[]).every((s) => typeof s === "string") &&
+      (o.baseUrl === undefined || typeof o.baseUrl === "string")
+    );
+  }
+  return false;
+}
+
 function isValidAgentPlan(obj: unknown): obj is AgentPlan {
   if (!obj || typeof obj !== "object") return false;
   const o = obj as Record<string, unknown>;
@@ -63,6 +81,12 @@ function isValidAgentPlan(obj: unknown): obj is AgentPlan {
     if (!VALID_LAYERS.includes(task.layer as NodeLayer)) return false;
     if (!VALID_ACTIONS.includes(task.action as (typeof VALID_ACTIONS)[number])) return false;
     if (typeof task.expectedOutput !== "string") return false;
+    if (task.successChecks !== undefined) {
+      if (!Array.isArray(task.successChecks)) return false;
+      for (const c of task.successChecks as unknown[]) {
+        if (!isValidSuccessCheck(c)) return false;
+      }
+    }
     if (task.proposedFiles !== undefined) {
       if (!Array.isArray(task.proposedFiles)) return false;
       for (const f of task.proposedFiles as unknown[]) {
@@ -76,6 +100,27 @@ function isValidAgentPlan(obj: unknown): obj is AgentPlan {
     if (typeof d[0] !== "string" || typeof d[1] !== "string") return false;
   }
   return true;
+}
+
+function checkTaskIdsUnique(plan: AgentPlan): string | null {
+  const seen = new Set<string>();
+  for (const t of plan.tasks) {
+    if (seen.has(t.id)) return t.id;
+    seen.add(t.id);
+  }
+  return null;
+}
+
+function checkDependenciesReferenceExisting(plan: AgentPlan): { missing: string[]; self: string[] } {
+  const ids = new Set(plan.tasks.map((t) => t.id));
+  const missing = new Set<string>();
+  const self = new Set<string>();
+  for (const [a, b] of plan.dependencies) {
+    if (a === b) self.add(a);
+    if (!ids.has(a)) missing.add(a);
+    if (!ids.has(b)) missing.add(b);
+  }
+  return { missing: [...missing], self: [...self] };
 }
 
 function detectCycle(plan: AgentPlan): string[] | null {
@@ -202,20 +247,133 @@ function checkModuleExists(plan: AgentPlan, projectRoot: string): { taskId: stri
   return null;
 }
 
-function checkLayerRules(plan: AgentPlan, projectRoot: string): { taskId: string; module: string; layer: string; reason: string } | null {
+function checkNamingConventions(
+  plan: AgentPlan,
+  projectRoot: string
+): { taskId: string; module: string; layer: string; reason: string } | null {
   const rules = readArchRulesV2(projectRoot);
-  const directions = rules?.layerDirections;
-  if (!directions || directions.length === 0) return null;
+  const conventions = rules?.namingConventions;
+  if (!conventions || conventions.length === 0) return null;
 
   for (const task of plan.tasks) {
-    const layer = task.layer;
-    for (const d of directions) {
-      if (d.from === layer && d.allowed === false) {
+    const module = task.module.replace(/\\/g, "/");
+    const base = module.split("/").filter(Boolean).pop() ?? module;
+    for (const c of conventions) {
+      try {
+        const re = new RegExp(c.pattern);
+        if (re.test(base) && task.layer !== (c.expectedLayer as NodeLayer)) {
+          return {
+            taskId: task.id,
+            module: task.module,
+            layer: task.layer,
+            reason: `Naming convention mismatch: "${base}" matches ${c.pattern} → expected layer "${c.expectedLayer}", got "${task.layer}"`,
+          };
+        }
+      } catch {
+        // Ignore invalid regex patterns in rules file
+      }
+    }
+  }
+  return null;
+}
+
+function hasTestsUnderPath(fullPath: string): boolean {
+  const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx)$/i;
+  const stack = [fullPath];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+        stack.push(path.join(cur, e.name));
+      } else if (TEST_FILE.test(e.name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasContextOrDocsUnderPath(fullPath: string): boolean {
+  const DOC_FILES = new Set([".context.md", "README.md", "readme.md"]);
+  try {
+    if (fs.statSync(fullPath).isFile()) return DOC_FILES.has(path.basename(fullPath));
+  } catch {}
+  const stack = [fullPath];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+        stack.push(path.join(cur, e.name));
+      } else if (DOC_FILES.has(e.name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function checkPlanCoversHealthGaps(
+  plan: AgentPlan,
+  projectRoot: string
+): { taskId: string; module: string; reason: string } | null {
+  // Heuristic “red/amber” proxy for now (until ModuleSignals are wired in here):
+  // - missing tests OR missing docs/context in an existing module requires explicit coverage in plan.
+  // Explicit coverage can be either:
+  // - successChecks include lint/vitest/playwright for that task, OR
+  // - expectedOutput mentions tests/docs/context, OR
+  // - proposedFiles includes .context.md / test/spec files.
+  const coverageKeywords = /(test|vitest|jest|playwright|eslint|lint|\.context\.md|readme|docs?)/i;
+
+  function taskClaimsCoverage(t: AgentPlan["tasks"][number]): boolean {
+    const checks = t.successChecks ?? [];
+    const hasVerification =
+      checks.some((c) => c.kind === "lint" || c.kind === "vitest" || c.kind === "playwright") ||
+      checks.some((c) => c.kind === "staging_write");
+    const mentions = coverageKeywords.test(t.expectedOutput);
+    const proposed = (t.proposedFiles ?? []).some((f) => {
+      if (!f) return false;
+      if (typeof f === "string") return coverageKeywords.test(f);
+      return coverageKeywords.test(f.name);
+    });
+    return hasVerification || mentions || proposed;
+  }
+
+  for (const t of plan.tasks) {
+    if (t.action === "create") continue;
+    const full = path.isAbsolute(t.module) ? t.module : path.join(projectRoot, t.module);
+    if (!fs.existsSync(full)) continue;
+    const stat = fs.statSync(full);
+    const baseDir = stat.isDirectory() ? full : path.dirname(full);
+    const hasTests = hasTestsUnderPath(baseDir);
+    const hasDocs = hasContextOrDocsUnderPath(baseDir);
+    if (!hasTests || !hasDocs) {
+      const sameModuleTasks = plan.tasks.filter((x) => x.module === t.module);
+      const covered = sameModuleTasks.some(taskClaimsCoverage);
+      if (!covered) {
+        const missing = [
+          !hasTests ? "tests" : null,
+          !hasDocs ? "docs/context (.context.md/README.md)" : null,
+        ]
+          .filter(Boolean)
+          .join(" and ");
         return {
-          taskId: task.id,
-          module: task.module,
-          layer,
-          reason: `Layer "${layer}" cannot be used (rule: ${d.from} → ${d.to} disallowed)`,
+          taskId: t.id,
+          module: t.module,
+          reason: `Plan touches existing module missing ${missing} but has no explicit coverage (tests/docs/verification) in any task for that module.`,
         };
       }
     }
@@ -242,6 +400,24 @@ export function validatePlan(raw: string, projectRoot: string): PlanValidationRe
 
   const plan = parsed;
 
+  if (!plan.goal.trim()) {
+    return { valid: false, error: "Schema validation failed: goal must be a non-empty string." };
+  }
+  if (plan.tasks.length === 0) {
+    return { valid: false, error: "Schema validation failed: tasks must be a non-empty array." };
+  }
+  const dup = checkTaskIdsUnique(plan);
+  if (dup) {
+    return { valid: false, error: `Schema validation failed: duplicate task id "${dup}".` };
+  }
+  const depRef = checkDependenciesReferenceExisting(plan);
+  if (depRef.self.length > 0) {
+    return { valid: false, error: `Dependency validation failed: self-dependency detected for task(s): ${depRef.self.join(", ")}.` };
+  }
+  if (depRef.missing.length > 0) {
+    return { valid: false, error: `Dependency validation failed: unknown task id(s) referenced: ${depRef.missing.join(", ")}.` };
+  }
+
   const cycle = detectCycle(plan);
   if (cycle) {
     return {
@@ -258,6 +434,17 @@ export function validatePlan(raw: string, projectRoot: string): PlanValidationRe
     };
   }
 
+  for (const t of plan.tasks) {
+    const checks = t.successChecks ?? [];
+    const hasStagingCheck = checks.some((c) => c.kind === "staging_write" && c.required === true);
+    if (!hasStagingCheck) {
+      return {
+        valid: false,
+        error: `Success criteria validation failed: task ${t.id} is missing required successChecks including {kind:"staging_write", required:true}.`,
+      };
+    }
+  }
+
   const missingModule = checkModuleExists(plan, projectRoot);
   if (missingModule) {
     return {
@@ -266,14 +453,24 @@ export function validatePlan(raw: string, projectRoot: string): PlanValidationRe
     };
   }
 
-  const layerViolation = checkLayerRules(plan, projectRoot);
-  if (layerViolation) {
+  const namingViolation = checkNamingConventions(plan, projectRoot);
+  if (namingViolation) {
     return {
       valid: false,
       plan,
-      layerViolation,
-      error: layerViolation.reason,
+      layerViolation: {
+        taskId: namingViolation.taskId,
+        module: namingViolation.module,
+        layer: namingViolation.layer,
+        reason: namingViolation.reason,
+      },
+      error: namingViolation.reason,
     };
+  }
+
+  const healthGap = checkPlanCoversHealthGaps(plan, projectRoot);
+  if (healthGap) {
+    return { valid: false, error: healthGap.reason };
   }
 
   return { valid: true, plan: topoSortTasks(plan) };

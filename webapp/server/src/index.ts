@@ -15,6 +15,8 @@ import { scaffoldRoutes } from "./scaffold.js";
 import { materializeRoutes } from "./materialize.js";
 import { authRoutes } from "./auth.js";
 import { workspaceRoutes } from "./workspaces.js";
+import { todosRoutes } from "./todos.js";
+import { todosImportRoutes } from "./todosImport.js";
 import { shareRoutes } from "./shareRoutes.js";
 import { metricsRoutes } from "./metrics.js";
 import { taskRoutes } from "./taskRoutes.js";
@@ -53,13 +55,15 @@ app.use("/api", scaffoldRoutes);
 app.use("/api", materializeRoutes);
 app.use("/api", authRoutes);
 app.use("/api", workspaceRoutes);
+app.use("/api", todosRoutes);
+app.use("/api", todosImportRoutes);
 app.use("/api", chatThreadRoutes);
 app.use("/api", userMemoriesRoutes);
 app.use("/api", shareRoutes);
 app.use("/api", metricsRoutes);
 app.use("/api", taskRoutes);
-app.use("/api", railsRoutes);
 app.use("/api", greenfieldRoutes);
+app.use("/api", railsRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -70,6 +74,10 @@ app.get("*", (_req, res) => {
   res.sendFile(path.join(distPath, "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
-});
+export { app };
+
+if (!process.env.VITEST) {
+  app.listen(PORT, () => {
+    console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
+  });
+}

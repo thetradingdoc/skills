@@ -25,6 +25,7 @@ import {
   getRail,
 } from "../../../src/agent/rail/manager.js";
 import { runTaskAtIndex } from "../../../src/agent/taskRunner.js";
+import { completeTodosForRail } from "./todos.js";
 
 interface ProposedNode {
   id: string;
@@ -63,6 +64,70 @@ function validateTargetRoot(targetRoot: string): { root: string } | { error: str
     }
   }
   return { root };
+}
+
+const MATERIALIZE_MAX_CHANGED_FILES =
+  typeof process.env.MATERIALIZE_MAX_CHANGED_FILES === "string" &&
+  !Number.isNaN(Number(process.env.MATERIALIZE_MAX_CHANGED_FILES))
+    ? Math.max(1, Number(process.env.MATERIALIZE_MAX_CHANGED_FILES))
+    : 200;
+
+const MATERIALIZE_MAX_TOTAL_BYTES =
+  typeof process.env.MATERIALIZE_MAX_TOTAL_BYTES === "string" &&
+  !Number.isNaN(Number(process.env.MATERIALIZE_MAX_TOTAL_BYTES))
+    ? Math.max(10_000, Number(process.env.MATERIALIZE_MAX_TOTAL_BYTES))
+    : 500_000;
+
+function computeSandboxDiffSize(root: string, railId: string): {
+  changedFiles: number;
+  totalBytes: number;
+} {
+  const sandboxPath = getSandboxPath(root, railId);
+  if (!fs.existsSync(sandboxPath)) {
+    return { changedFiles: 0, totalBytes: 0 };
+  }
+  let changedFiles = 0;
+  let totalBytes = 0;
+  const walk = (dir: string) => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+      } else {
+        const rel = path.relative(sandboxPath, full);
+        if (!rel || rel.endsWith("/")) continue;
+        const sandboxFile = full;
+        const rootFile = path.join(root, rel);
+        let before: string | undefined;
+        let after: string | undefined;
+        try {
+          if (fs.existsSync(rootFile) && fs.statSync(rootFile).isFile()) {
+            before = fs.readFileSync(rootFile, "utf-8");
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          after = fs.readFileSync(sandboxFile, "utf-8");
+        } catch {
+          // ignore
+        }
+        if (before === after) continue;
+        changedFiles += 1;
+        if (after) {
+          totalBytes += Buffer.byteLength(after, "utf-8");
+        }
+      }
+    }
+  };
+  try {
+    walk(sandboxPath);
+  } catch {
+    // best-effort; if diff size fails, fall back to allowing approval
+    return { changedFiles: 0, totalBytes: 0 };
+  }
+  return { changedFiles, totalBytes };
 }
 
 /** Core materialize logic — creates folders and index files. */
@@ -563,7 +628,7 @@ router.post("/materialize-async", requireUser, async (req, res) => {
 
 /** Approve greenfield materialize rail — copy sandbox to root and archive. */
 router.post("/materialize/approve", requireUser, async (req, res) => {
-  const { rootPath, railId } = req.body as { rootPath?: string; railId?: string };
+  const { rootPath, railId, force } = req.body as { rootPath?: string; railId?: string; force?: boolean };
   if (!rootPath || typeof rootPath !== "string" || !railId || typeof railId !== "string") {
     res.status(400).json({ error: "rootPath and railId are required." });
     return;
@@ -588,11 +653,32 @@ router.post("/materialize/approve", requireUser, async (req, res) => {
     return;
   }
 
+  if (!force) {
+    const { changedFiles, totalBytes } = computeSandboxDiffSize(validated.root, railId);
+    if (changedFiles > MATERIALIZE_MAX_CHANGED_FILES || totalBytes > MATERIALIZE_MAX_TOTAL_BYTES) {
+      res.status(409).json({
+        error:
+          "This materialization would apply a very large diff. Review the changes in your editor and confirm before proceeding.",
+        code: "MATERIALIZE_DIFF_TOO_LARGE",
+        limits: {
+          maxChangedFiles: MATERIALIZE_MAX_CHANGED_FILES,
+          maxTotalBytes: MATERIALIZE_MAX_TOTAL_BYTES,
+        },
+        actual: {
+          changedFiles,
+          totalBytes,
+        },
+      });
+      return;
+    }
+  }
+
   const rail = approveGreenfieldMaterialize(validated.root, railId);
   if (!rail) {
     res.status(404).json({ error: "Rail not found or not a greenfield materialize rail." });
     return;
   }
+  completeTodosForRail(railId).catch(() => {});
   res.json({ rail, message: "Materialization complete. Rail archived." });
 });
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { vscode } from "./vscode";
 import type { ArchNode, ArchGraph } from "./types";
+import { LAYER_CFG } from "./layerPalette";
 
 const LAYER_OPTIONS = [
   "Presentation",
@@ -34,6 +35,7 @@ export function NodePopup({
   fileContentMap = {},
   onClearFileContent,
 }: Props) {
+  const [activeTab, setActiveTab] = useState<"overview" | "traces" | "memory" | "state" | "eval">("overview");
   const [showContext, setShowContext] = useState(false);
   const [editLayer, setEditLayer] = useState(node.layer ?? "Uncategorized");
   const [editDescription, setEditDescription] = useState(node.description ?? "");
@@ -43,6 +45,7 @@ export function NodePopup({
 
   const inbound = graph.edges.filter((e) => e.target === node.id);
   const outbound = graph.edges.filter((e) => e.source === node.id);
+  const cfg = LAYER_CFG[(node.layer ?? "Uncategorized") as string] ?? LAYER_CFG["Uncategorized"];
 
   /** Path relative to module for extension API (extension echoes this back as key) */
   const getRelPath = (f: string) =>
@@ -95,21 +98,66 @@ export function NodePopup({
           zIndex: 1001,
           width: "min(1000px, 95vw)",
           height: "min(560px, 85vh)",
-          background: "#161b22",
-          border: "1px solid #30363d",
+          background: `linear-gradient(150deg, ${cfg.dim}, #0c1220)`,
+          border: `1px solid ${cfg.accent}66`,
           borderRadius: 12,
-          boxShadow: "0 25px 50px -12px rgba(0,0,0,0.5)",
+          boxShadow: [
+            `0 4px 0 ${cfg.accent}33`,
+            `0 8px 0 ${cfg.accent}18`,
+            `0 24px 48px rgba(0,0,0,0.5)`,
+          ].join(", "),
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
-          animation: "nodePopupFadeIn 0.2s ease",
+          animation: "popupIn 0.18s cubic-bezier(0.34,1.56,0.64,1)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
           style={{
+            height: 4,
+            background: `linear-gradient(90deg, ${cfg.accent}88, ${cfg.color}, ${cfg.accent}88)`,
+            borderRadius: "12px 12px 0 0",
+          }}
+        />
+        <div
+          style={{
+            display: "flex",
+            borderBottom: `1px solid ${cfg.accent}33`,
+            padding: "0 16px",
+          }}
+        >
+          {(
+            [
+              { id: "overview" as const, label: "Overview" },
+              { id: "traces" as const, label: "Traces" },
+              { id: "memory" as const, label: "Memory" },
+              { id: "state" as const, label: "State" },
+              { id: "eval" as const, label: "Evaluation" },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                padding: "8px 12px",
+                marginRight: 8,
+                fontSize: 11,
+                background: "transparent",
+                border: "none",
+                borderBottom: activeTab === tab.id ? `2px solid ${cfg.color}` : "2px solid transparent",
+                color: activeTab === tab.id ? "#e6edf3" : "#7d8590",
+                cursor: "pointer",
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div
+          style={{
             padding: "12px 16px",
-            borderBottom: "1px solid #30363d",
+            borderBottom: `1px solid ${cfg.accent}22`,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
@@ -122,7 +170,7 @@ export function NodePopup({
             {node.role && (
               <span style={{ fontSize: 12, color: "#7d8590", marginLeft: 8 }}>{node.role}</span>
             )}
-            <div style={{ fontSize: 11, color: "#58a6ff", marginTop: 2, wordBreak: "break-all" }}>
+            <div style={{ fontSize: 11, color: cfg.color, marginTop: 2, wordBreak: "break-all" }}>
               {node.id}
             </div>
           </div>
@@ -159,6 +207,21 @@ export function NodePopup({
         </div>
 
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          {activeTab !== "overview" ? (
+            <div style={{ flex: 1, overflow: "auto", padding: 16, fontSize: 12, color: "#7d8590" }}>
+              {activeTab === "traces" && (
+                <p>Agent traces are available in the web app. Open the architecture map in the browser for full trace analytics.</p>
+              )}
+              {activeTab === "memory" && (
+                <p>Architectural memories are available in the web app. Open the architecture map in the browser to view and manage memories.</p>
+              )}
+              {activeTab === "state" && <p>Node state — coming soon.</p>}
+              {activeTab === "eval" && (
+                <p>Evaluation metrics are available in the web app. Open the architecture map in the browser for latency and critic scores.</p>
+              )}
+            </div>
+          ) : (
+          <>
           {/* Left panel: file list + health + connections + context + correct architecture */}
           <div
             style={{
@@ -180,9 +243,9 @@ export function NodePopup({
                 }}
               >
                 {[
-                  { label: "Docs", ok: node.health?.hasDocs },
-                  { label: "Tests", ok: node.health?.hasTests },
-                  { label: "Context", ok: node.health?.hasContext },
+                  { label: "Docs", ok: node.health?.hasDocs ?? false },
+                  { label: "Tests", ok: node.health?.hasTests ?? false },
+                  { label: "Context", ok: node.health?.hasContext ?? false },
                 ].map(({ label, ok }) => (
                   <span key={label} style={{ color: ok ? "#3fb950" : "#f85149" }}>
                     {label}: {ok ? "✓" : "—"}
@@ -190,7 +253,7 @@ export function NodePopup({
                 ))}
               </div>
 
-              {node.files && node.files.length > 0 && (
+              {Array.isArray(node.files) && node.files.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 6, fontWeight: 600 }}>
                     Files ({node.files.length}) — click to open
@@ -452,7 +515,7 @@ export function NodePopup({
                           fontFamily: "monospace",
                           background: isActive ? "#0d1117" : isHovered ? "#21262d" : "transparent",
                           color: isActive ? "#e6edf3" : "#8b949e",
-                          borderBottom: isActive ? "2px solid #238636" : "2px solid transparent",
+                          borderBottom: isActive ? `2px solid ${cfg.color}` : "2px solid transparent",
                           cursor: "pointer",
                           marginBottom: -1,
                           transition: "background 0.15s, color 0.15s",
@@ -531,7 +594,7 @@ export function NodePopup({
                           display: "inline-block",
                           marginTop: 12,
                           fontSize: 11,
-                          color: "#58a6ff",
+                          color: cfg.color,
                           textDecoration: "none",
                         }}
                       >
@@ -556,6 +619,8 @@ export function NodePopup({
               </div>
             )}
           </div>
+          </>
+          )}
         </div>
       </div>
     </>

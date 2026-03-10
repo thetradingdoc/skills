@@ -138,20 +138,22 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "chokidar": "^4.0.1",
-    "playwright": "^1.58.2",
     "dotenv": "^17.3.1",
     "openai": "^6.22.0",
+    "playwright": "^1.58.2",
     "simple-git": "^3.31.1",
     "ts-morph": "^24.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/node": "^22.0.0",
+    "@types/supertest": "^7.2.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.4.0",
     "concurrently": "^9.1.0",
     "esbuild": "^0.24.0",
     "playwright": "^1.58.2",
+    "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "vitest": "^2.1.0"
   }

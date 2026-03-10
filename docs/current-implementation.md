@@ -1,16 +1,17 @@
 # Current Implementation — What the Code Does
 
-**Last Updated:** February 2026
+**Last Updated:** March 2025
 
 ---
 
 ## 1. Overview
 
-The codebase is a **VS Code / Cursor extension** (not a web app). It scans a **local workspace folder**, builds a module dependency graph, enriches it with AI, and renders it in a webview panel.
+The codebase has two main surfaces:
 
-- **No GitHub connection** — Works only on locally opened folders.
-- **No sign-in** — Nothing to log in to.
-- **No web app** — Everything runs inside VS Code.
+1. **Web app** — React SPA + Express server. Sign in (Supabase), scan a GitHub repo or load a workspace, visualize the graph, chat, run rails, materialize changes.
+2. **VS Code extension** — Uses the same core logic; scans a local folder, renders in a webview panel.
+
+Both share `src/` (agent, AI, analyzer) and use the same graph model. The web app adds workspaces, todos, Jira, and rails execution.
 
 ---
 
@@ -24,7 +25,7 @@ Scan → Drift detection → AI enrichment → Send to webview → ReactFlow ren
 2. **Drift** — Reads `.context.md` and `.arch-rules.json`, marks edges that violate rules (e.g., `auth` must not import `api`).
 3. **Enrich** — AI (Claude or MockEnricher) assigns semantic roles to modules (e.g., "JWT Auth Service").
 4. **Send** — Extension posts the graph to the webview over `postMessage`.
-5. **Render** — ReactFlow draws nodes (modules) and edges (imports), with ELK.js layout in a Web Worker.
+5. **Render** — ReactFlow (or Three.js 3D) draws nodes (modules) and edges (imports); layout via `computeDepthLayout` and `computeLayerLayout`.
 
 ---
 
@@ -36,7 +37,7 @@ Scan → Drift detection → AI enrichment → Send to webview → ReactFlow ren
 |-----------------|------------------------|
 | 3D isometric stacked nodes | Flat 2D nodes (rectangles) |
 | Color-coded tops (green / yellow / red / blue) | Color by status: drift (red), deprecated (gray), default (dark) |
-| Clusters / layers | ELK hierarchical layout groups related nodes |
+| Clusters / layers | Depth and layer layout group related nodes |
 | Project list on left, Flow Observer stats on right | ReactFlow center, right panel (Project Overview, ModuleCard, AI Q&A) |
 | Top Modules with counts (e.g., Products: 357) | **Not implemented** — no event/usage counts |
 | Live / Replay / Heatmap | **Not implemented** |
@@ -69,7 +70,7 @@ So yes, it runs through the code and shows an architecture graph — modules and
 |--------------------|---------|
 | `App` | Layout, message handling, Project Overview, ModuleCard, AI Q&A textarea. |
 | `ArchCanvas` | ReactFlow canvas, node/edge mapping, ELK layout. |
-| `computeLayout(graph)` | Web Worker runs ELK.js, returns node positions. |
+| `computeDepthLayout` / `computeLayerLayout` | Assign positions to nodes by depth and layer. |
 
 ---
 
@@ -85,9 +86,9 @@ So yes, it runs through the code and shows an architecture graph — modules and
 
 | Vision | Current |
 |--------|---------|
-| Web app | VS Code extension only |
-| Sign in | None |
-| Connect GitHub | None — local folder only |
-| Chat with repo context | AI Q&A with graph context only (no raw file content) |
-| OpenAI model | Claude (Anthropic) or MockEnricher |
-| 3D / layered styling | 2D flat nodes |
+| Web app | ✅ Implemented (React + Express) |
+| Sign in | ✅ Supabase auth |
+| Connect GitHub | ✅ Clone via URL; workspace project root |
+| Chat with repo context | ✅ Chat + rails; agent has read_file/write_file |
+| AI model | Claude (Anthropic) or MockEnricher |
+| 3D / layered styling | 2D ReactFlow + optional 3D (Three.js) |

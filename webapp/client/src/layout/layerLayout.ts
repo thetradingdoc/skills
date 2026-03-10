@@ -4,6 +4,8 @@
  * Self-contained: uses local LAYER_SEQUENCE so we don't depend on layerModel export shape.
  */
 
+import { NODE_W } from "./canvasConstants";
+
 const LAYER_SEQUENCE: string[] = [
   "Presentation",
   "Business Logic",
@@ -14,8 +16,6 @@ const LAYER_SEQUENCE: string[] = [
   "Configuration",
   "Uncategorized",
 ];
-
-const NODE_W = 168;
 const BAND_H = 220;
 
 export interface ProposedNodeLike {

@@ -75,7 +75,8 @@ function checkHealth(modulePath: string): ArchNode["health"] {
         typeof f === "string" &&
         (f.includes(".test.") || f.includes(".spec."))
     ),
-    // "No context" in the UI means the module is missing a .context.md file.
+    // Single source for "No context" in UI: missing .context.md in module dir.
+    // UI: missingContextNodes = graph.nodes.filter(n => !n.health?.hasContext)
     hasContext: flat.some(
       (f) => typeof f === "string" && f.endsWith(".context.md")
     ),

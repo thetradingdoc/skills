@@ -115,17 +115,46 @@ router.post("/scan", optionalUser, async (req, res) => {
     }
   }
 
+  let workspaceIdForScan: string | null = null;
+  const ownerId = req.user?.id;
+  const defaultName = repoNameFromUrl(trimmed) ?? "Imported repository";
+
+  if (ownerId && supabaseAdmin) {
+    const candidate =
+      typeof requestedWorkspaceId === "string" && requestedWorkspaceId.trim()
+        ? requestedWorkspaceId.trim()
+        : null;
+    if (candidate) {
+      const { data: ws, error: wsErr } = await supabaseAdmin
+        .from("workspaces")
+        .select("id")
+        .eq("id", candidate)
+        .eq("owner_id", ownerId)
+        .maybeSingle();
+      if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
+    }
+    if (!workspaceIdForScan) {
+      const { data: ws, error: wsErr } = await supabaseAdmin
+        .from("workspaces")
+        .insert({ owner_id: ownerId, name: defaultName })
+        .select("id")
+        .single();
+      if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
+    }
+  }
+
+  const scanArgs = ["tsx", "scripts/scan-repo.ts", trimmed, "--keep"];
+  if (workspaceIdForScan) {
+    scanArgs.push("--workspace-id", workspaceIdForScan);
+  }
+
   try {
-    const result = execFileSync(
-      "npx",
-      ["tsx", "scripts/scan-repo.ts", trimmed, "--keep"],
-      {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env },
-      }
-    );
+    const result = execFileSync("npx", scanArgs, {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env },
+    });
     const graph = JSON.parse(result);
 
     if (isAnonymous) {
@@ -133,46 +162,15 @@ router.post("/scan", optionalUser, async (req, res) => {
       incrementAnonymousCount(key);
     }
 
-    const ownerId = req.user?.id;
-    const defaultName = repoNameFromUrl(trimmed) ?? "Imported repository";
-
     // ── Signed-in path: MUST either persist or fail loudly ─────────────────
     if (ownerId && supabaseAdmin) {
-      let workspaceId: string | null = null;
+      const workspaceId = workspaceIdForScan;
       let persistError: string | null = null;
       let jiraProjectKey: string | null = null;
 
       try {
-        // Reuse existing workspace when requested and owned by this user.
-        const candidate =
-          typeof requestedWorkspaceId === "string" && requestedWorkspaceId.trim()
-            ? requestedWorkspaceId.trim()
-            : null;
-
-        if (candidate) {
-          const { data: ws, error: wsErr } = await supabaseAdmin
-            .from("workspaces")
-            .select("id")
-            .eq("id", candidate)
-            .eq("owner_id", ownerId)
-            .maybeSingle();
-          if (wsErr) throw wsErr;
-          workspaceId = ws?.id ?? null;
-        }
-
-        // Otherwise, create a new workspace for this repo.
         if (!workspaceId) {
-          const { data: ws, error: wsErr } = await supabaseAdmin
-            .from("workspaces")
-            .insert({ owner_id: ownerId, name: defaultName })
-            .select("id")
-            .single();
-          if (wsErr) throw wsErr;
-          workspaceId = ws?.id ?? null;
-        }
-
-        if (!workspaceId) {
-          persistError = "Failed to obtain workspace id after insert.";
+          persistError = "Failed to obtain workspace id.";
           throw new Error(persistError);
         }
 
@@ -199,6 +197,11 @@ router.post("/scan", optionalUser, async (req, res) => {
           repo_url: trimmed,
         });
         if (gErr) throw gErr;
+
+        await supabaseAdmin
+          .from("workspaces")
+          .update({ repo_url: trimmed })
+          .eq("id", workspaceId);
 
         // Fire-and-forget: embed nodes for semantic search (best-effort)
         embedAndPersistNodes(
@@ -295,10 +298,11 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
     res.status(400).json({ error: "Workspace repo_url is not a GitHub URL." });
     return;
   }
+  const scanArgs = ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId];
   try {
     const result = execFileSync(
       "npx",
-      ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep"],
+      scanArgs,
       { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } }
     );
     const graph = JSON.parse(result);
@@ -308,6 +312,10 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
       repo_url: repoUrl,
     });
     if (insErr) throw insErr;
+    await supabaseAdmin
+      .from("workspaces")
+      .update({ repo_url: repoUrl })
+      .eq("id", workspaceId);
     embedAndPersistNodes(
       graph as import("../../../src/types.js").ArchGraph,
       workspaceId,

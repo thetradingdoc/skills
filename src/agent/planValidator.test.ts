@@ -35,8 +35,22 @@ describe("planValidator", () => {
     const plan = {
       goal: "Add auth",
       tasks: [
-        { id: "T1", module: "src/auth", layer: "Business Logic", action: "create", expectedOutput: "Auth module" },
-        { id: "T2", module: "src/services", layer: "Business Logic", action: "modify", expectedOutput: "Uses auth" },
+        {
+          id: "T1",
+          module: "src/auth",
+          layer: "Business Logic",
+          action: "create",
+          expectedOutput: "Auth module",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
+        {
+          id: "T2",
+          module: "src/services",
+          layer: "Business Logic",
+          action: "modify",
+          expectedOutput: "Uses auth",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
       ],
       dependencies: [["T1", "T2"]],
     };
@@ -50,8 +64,22 @@ describe("planValidator", () => {
     const plan = {
       goal: "x",
       tasks: [
-        { id: "A", module: "src/auth", layer: "Business Logic", action: "create", expectedOutput: "x" },
-        { id: "B", module: "src/services", layer: "Business Logic", action: "create", expectedOutput: "x" },
+        {
+          id: "A",
+          module: "src/auth",
+          layer: "Business Logic",
+          action: "create",
+          expectedOutput: "x",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
+        {
+          id: "B",
+          module: "src/services",
+          layer: "Business Logic",
+          action: "create",
+          expectedOutput: "x",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
       ],
       dependencies: [
         ["A", "B"],
@@ -68,8 +96,22 @@ describe("planValidator", () => {
     const plan = {
       goal: "x",
       tasks: [
-        { id: "T1", module: "src/services", layer: "Business Logic", action: "modify", expectedOutput: "x" },
-        { id: "T2", module: "src/services/index.ts", layer: "Business Logic", action: "modify", expectedOutput: "x" },
+        {
+          id: "T1",
+          module: "src/services",
+          layer: "Business Logic",
+          action: "modify",
+          expectedOutput: "x",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
+        {
+          id: "T2",
+          module: "src/services/index.ts",
+          layer: "Business Logic",
+          action: "modify",
+          expectedOutput: "x",
+          successChecks: [{ kind: "staging_write", required: true }],
+        },
       ],
       dependencies: [],
     };

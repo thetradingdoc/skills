@@ -1,5 +1,6 @@
 import { loadAntiPatterns } from "./rail/manager";
 import { loadNodeHistory, type NodeHistoryStore } from "./nodeHistory";
+import { formatSkillSummary } from "./skillStore";
 import type { GateType } from "./types";
 
 export interface NodeHistorySummary {
@@ -40,12 +41,13 @@ export function loadPlannerContext(rootPath: string, archetype?: string | null):
   const history = loadNodeHistory(rootPath);
 
   const antiPatterns = anti.map((p) => `Avoid: ${p.reason} (from outcome "${p.outcome}")`);
+  const skillHintsRaw = formatSkillSummary(rootPath, 12);
 
   return {
     antiPatterns,
     nodeHistory: summarizeNodeHistory(history),
     violations: [],
-    skillHints: [],
+    skillHints: skillHintsRaw ? skillHintsRaw.split("\n").filter(Boolean) : [],
     gates: [],
   };
 }

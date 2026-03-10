@@ -10,6 +10,7 @@
  */
 
 import type { ArchNode } from "../types";
+import { NODE_W } from "../canvasConstants";
 
 export interface LayoutNode {
   id: string;
@@ -39,7 +40,7 @@ const LAYER_RANK: Record<NodeLayer | string, number> = {
 };
 
 const LAYER_Y_BAND = 220;
-const NODE_X_SPACING = 260;
+const NODE_X_SPACING = NODE_W + 80;
 const CANVAS_PADDING = 80;
 
 /**

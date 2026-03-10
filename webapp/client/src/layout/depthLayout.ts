@@ -1,7 +1,6 @@
 import type { ArchGraph, ArchNode } from "../types";
 import { LAYER_ORDER } from "../architecture/layerModel";
-
-const NODE_W = 168;
+import { NODE_W } from "./canvasConstants";
 
 export interface LayerBand {
   id: string;

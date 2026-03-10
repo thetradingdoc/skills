@@ -24,9 +24,9 @@ if (process.env.OPENAI_API_KEY) {
 }
 
 // src/index.ts
-import path31 from "path";
+import path35 from "path";
 import { fileURLToPath as fileURLToPath5 } from "url";
-import fs28 from "fs";
+import fs30 from "fs";
 import express from "express";
 import cors from "cors";
 
@@ -310,7 +310,7 @@ async function embedAndPersistNodes(graph, workspaceId, supabase, apiKey) {
   return { embedded, failed };
 }
 
-// src/utils/deriveProjectKey.ts
+// ../shared/deriveProjectKey.ts
 function deriveProjectKey(repoUrl) {
   const repoName = (repoUrl.split("/").pop() ?? "").replace(/\.git$/i, "");
   const normalized = repoName.toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^[0-9]+/, "").slice(0, 10);
@@ -468,6 +468,24 @@ async function buildGovernanceNotice(db, workspaceId, nodeIds) {
     return `- ${parts.join(" ")}`;
   });
   return "\n\n\u26A0 GOVERNANCE NOTICE: The following open high/critical violations exist on nodes relevant to this request. Address these before making structural changes:\n" + lines.join("\n") + "\n";
+}
+async function markViolationResolvedFromJira(db, violationId, jiraStatus) {
+  const { data: row } = await db.from("violations").select("id, workspace_id, policy_state").eq("id", violationId).single();
+  if (!row || row.policy_state === "resolved") return;
+  if (row.workspace_id) {
+    try {
+      await db.from("violation_policy_events").insert({
+        violation_id: violationId,
+        workspace_id: row.workspace_id,
+        actor_id: null,
+        previous_state: row.policy_state ?? null,
+        new_state: "resolved",
+        reason: "Jira ticket resolved/closed"
+      });
+    } catch {
+    }
+  }
+  await db.from("violations").update({ policy_state: "resolved", jira_status: jiraStatus }).eq("id", violationId);
 }
 async function markViolationTracked(db, violationId, jiraKey, jiraStatus = "To Do") {
   const { data: row } = await db.from("violations").select("id, workspace_id, policy_state").eq("id", violationId).single();
@@ -632,8 +650,8 @@ function authHeader(config) {
   const encoded = Buffer.from(`${config.email}:${config.apiToken}`).toString("base64");
   return `Basic ${encoded}`;
 }
-async function jiraFetch(config, path32, options = {}) {
-  const url = `${config.baseUrl.replace(/\/$/, "")}${path32}`;
+async function jiraFetch(config, path36, options = {}) {
+  const url = `${config.baseUrl.replace(/\/$/, "")}${path36}`;
   return fetch(url, {
     ...options,
     headers: {
@@ -778,6 +796,27 @@ function removeSandbox(rootPath, railId) {
   } catch {
   }
 }
+function cleanupOrphanSandboxes(rootPath, workspaceId) {
+  const base = path2.join(rootPath, ".agent", "sandboxes");
+  if (!fs2.existsSync(base)) return;
+  const rails = new Set(
+    getAllRails().filter((r) => !workspaceId || r.workspaceId === workspaceId).map((r) => r.id)
+  );
+  const entries = fs2.readdirSync(base, { withFileTypes: true });
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const name = e.name;
+    if (!name.startsWith("rail-")) continue;
+    const railId = name.slice("rail-".length);
+    if (!rails.has(railId)) {
+      const dir = path2.join(base, name);
+      try {
+        fs2.rmSync(dir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  }
+}
 
 // ../../src/agent/rail/telemetry.ts
 import * as fs3 from "fs";
@@ -808,9 +847,9 @@ function recordLlmCall(railId) {
   const t = ensure(railId);
   t.llmCallCount += 1;
 }
-function recordTaskLatency(railId, taskId2, ms) {
+function recordTaskLatency(railId, taskId, ms) {
   const t = ensure(railId);
-  t.taskLatencies[taskId2] = ms;
+  t.taskLatencies[taskId] = ms;
 }
 function getRailTelemetry(railId) {
   return ensure(railId);
@@ -1198,21 +1237,21 @@ function createTask(task) {
   }
   return task;
 }
-function updateTaskEvidence(taskId2, evidence) {
-  const existing = inMemoryStore.tasks.get(taskId2);
+function updateTaskEvidence(taskId, evidence) {
+  const existing = inMemoryStore.tasks.get(taskId);
   if (!existing) return null;
   const updated = { ...existing, evidence };
-  inMemoryStore.tasks.set(taskId2, updated);
+  inMemoryStore.tasks.set(taskId, updated);
   const rail = inMemoryStore.rails.get(updated.railId);
   if (rail) {
-    const tasks2 = (rail.tasks ?? []).map((t) => t.id === taskId2 ? updated : t);
+    const tasks2 = (rail.tasks ?? []).map((t) => t.id === taskId ? updated : t);
     const updatedRail = { ...rail, tasks: tasks2, updatedAt: Date.now(), version: (rail.version ?? 0) + 1 };
     inMemoryStore.rails.set(rail.id, updatedRail);
   }
   return updated;
 }
-function updateTaskStatus(taskId2, status) {
-  const existing = inMemoryStore.tasks.get(taskId2);
+function updateTaskStatus(taskId, status) {
+  const existing = inMemoryStore.tasks.get(taskId);
   if (!existing) return null;
   const now = Date.now();
   const updated = {
@@ -1220,10 +1259,10 @@ function updateTaskStatus(taskId2, status) {
     status,
     resolvedAt: status === "completed" ? now : existing.resolvedAt
   };
-  inMemoryStore.tasks.set(taskId2, updated);
+  inMemoryStore.tasks.set(taskId, updated);
   const rail = inMemoryStore.rails.get(updated.railId);
   if (rail) {
-    const tasks2 = (rail.tasks ?? []).map((t) => t.id === taskId2 ? updated : t);
+    const tasks2 = (rail.tasks ?? []).map((t) => t.id === taskId ? updated : t);
     const updatedRail = { ...rail, tasks: tasks2, updatedAt: Date.now(), version: (rail.version ?? 0) + 1 };
     inMemoryStore.rails.set(rail.id, updatedRail);
     if (status === "completed" && typeof updated.createdAt === "number") {
@@ -1510,21 +1549,21 @@ function detectCycle(edges) {
   }
   const visited = /* @__PURE__ */ new Set();
   const recStack = /* @__PURE__ */ new Set();
-  const path32 = [];
+  const path36 = [];
   function dfs(node) {
     visited.add(node);
     recStack.add(node);
-    path32.push(node);
+    path36.push(node);
     for (const n of adj.get(node) ?? []) {
       if (!visited.has(n)) {
         const cycle = dfs(n);
         if (cycle) return cycle;
       } else if (recStack.has(n)) {
-        const idx = path32.indexOf(n);
-        return path32.slice(idx);
+        const idx = path36.indexOf(n);
+        return path36.slice(idx);
       }
     }
-    path32.pop();
+    path36.pop();
     recStack.delete(node);
     return null;
   }
@@ -1804,42 +1843,43 @@ router.post("/scan", optionalUser, async (req, res) => {
       return;
     }
   }
+  let workspaceIdForScan = null;
+  const ownerId = req.user?.id;
+  const defaultName = repoNameFromUrl(trimmed) ?? "Imported repository";
+  if (ownerId && supabaseAdmin) {
+    const candidate = typeof requestedWorkspaceId === "string" && requestedWorkspaceId.trim() ? requestedWorkspaceId.trim() : null;
+    if (candidate) {
+      const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id").eq("id", candidate).eq("owner_id", ownerId).maybeSingle();
+      if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
+    }
+    if (!workspaceIdForScan) {
+      const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").insert({ owner_id: ownerId, name: defaultName }).select("id").single();
+      if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
+    }
+  }
+  const scanArgs = ["tsx", "scripts/scan-repo.ts", trimmed, "--keep"];
+  if (workspaceIdForScan) {
+    scanArgs.push("--workspace-id", workspaceIdForScan);
+  }
   try {
-    const result = execFileSync(
-      "npx",
-      ["tsx", "scripts/scan-repo.ts", trimmed, "--keep"],
-      {
-        cwd: projectRoot,
-        encoding: "utf-8",
-        maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env }
-      }
-    );
+    const result = execFileSync("npx", scanArgs, {
+      cwd: projectRoot,
+      encoding: "utf-8",
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env }
+    });
     const graph = JSON.parse(result);
     if (isAnonymous) {
       const key = getAnonymousScanKey(req);
       incrementAnonymousCount(key);
     }
-    const ownerId = req.user?.id;
-    const defaultName = repoNameFromUrl(trimmed) ?? "Imported repository";
     if (ownerId && supabaseAdmin) {
-      let workspaceId = null;
+      const workspaceId = workspaceIdForScan;
       let persistError = null;
       let jiraProjectKey = null;
       try {
-        const candidate = typeof requestedWorkspaceId === "string" && requestedWorkspaceId.trim() ? requestedWorkspaceId.trim() : null;
-        if (candidate) {
-          const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id").eq("id", candidate).eq("owner_id", ownerId).maybeSingle();
-          if (wsErr) throw wsErr;
-          workspaceId = ws?.id ?? null;
-        }
         if (!workspaceId) {
-          const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").insert({ owner_id: ownerId, name: defaultName }).select("id").single();
-          if (wsErr) throw wsErr;
-          workspaceId = ws?.id ?? null;
-        }
-        if (!workspaceId) {
-          persistError = "Failed to obtain workspace id after insert.";
+          persistError = "Failed to obtain workspace id.";
           throw new Error(persistError);
         }
         const { data: wsRow } = await supabaseAdmin.from("workspaces").select("jira_project_key").eq("id", workspaceId).single();
@@ -1856,6 +1896,7 @@ router.post("/scan", optionalUser, async (req, res) => {
           repo_url: trimmed
         });
         if (gErr) throw gErr;
+        await supabaseAdmin.from("workspaces").update({ repo_url: trimmed }).eq("id", workspaceId);
         embedAndPersistNodes(
           graph,
           workspaceId,
@@ -1923,10 +1964,11 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
     res.status(400).json({ error: "Workspace repo_url is not a GitHub URL." });
     return;
   }
+  const scanArgs = ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId];
   try {
     const result = execFileSync(
       "npx",
-      ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep"],
+      scanArgs,
       { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } }
     );
     const graph = JSON.parse(result);
@@ -1936,6 +1978,7 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
       repo_url: repoUrl
     });
     if (insErr) throw insErr;
+    await supabaseAdmin.from("workspaces").update({ repo_url: repoUrl }).eq("id", workspaceId);
     embedAndPersistNodes(
       graph,
       workspaceId,
@@ -1957,7 +2000,7 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
 });
 
 // src/chat.ts
-import { Router as Router3 } from "express";
+import { Router as Router4 } from "express";
 import { randomUUID } from "node:crypto";
 
 // ../../src/ai/manager.ts
@@ -2408,6 +2451,10 @@ function executeReadFile(rootPath, filePath) {
   if (!isUnderRoot(root, path12.resolve(absPath))) {
     return { error: "Path outside project root" };
   }
+  const base = path12.basename(absPath);
+  if (base === ".env" || base.startsWith(".env.") && !base.endsWith(".example") && !base.endsWith(".sample")) {
+    return { error: "Environment files (.env*) are not readable" };
+  }
   try {
     if (!fs11.existsSync(absPath)) {
       return { error: `File not found: ${filePath}` };
@@ -2462,6 +2509,10 @@ var RUN_STDOUT_MAX = 2e3;
 var RUN_STDERR_MAX = 500;
 function executeRunCommand(rootPath, command) {
   const trimmed = command.trim();
+  const root = path12.resolve(rootPath);
+  if (!fs11.existsSync(root) || !fs11.statSync(root).isDirectory()) {
+    return { error: "Invalid project root" };
+  }
   const allowed = RUN_COMMAND_ALLOWLIST.some(
     (prefix) => trimmed === prefix || trimmed.startsWith(prefix)
   );
@@ -2502,6 +2553,12 @@ function executeRunSkill(rootPath, skillId, args) {
   const skillsRoot = path12.join(rootPath);
   const relPath = meta.path;
   const absPath = path12.isAbsolute(relPath) ? relPath : path12.join(skillsRoot, relPath);
+  const skillsDir = path12.join(rootPath, ".agent", "skills");
+  const absNorm = path12.resolve(absPath);
+  const skillsNorm = path12.resolve(skillsDir);
+  if (!absNorm.startsWith(skillsNorm + path12.sep) && absNorm !== skillsNorm) {
+    return { error: "Skill path is outside .agent/skills (blocked)" };
+  }
   if (!fs11.existsSync(absPath)) {
     return { error: `Skill file not found on disk: ${absPath}` };
   }
@@ -2633,10 +2690,10 @@ async function executeJiraCreateTicket(rootPath, input, overrides) {
   const config = overrides?.config ?? getJiraConfig();
   if (!config) {
     return {
-      error: "Jira not configured. Set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in environment."
+      error: "Jira not configured. Connect Jira in the Governance panel (web app) or provide config via workspace."
     };
   }
-  const projectKey = (input.projectKey?.trim() || overrides?.projectKey || "").trim();
+  const projectKey = (input.projectKey?.trim() || overrides?.projectKey || config.project?.trim() || "").trim();
   if (!projectKey) {
     return {
       error: "projectKey is required. Provide it in the tool input or via workspace Jira project key."
@@ -2678,7 +2735,7 @@ async function executeJiraSearchByArchNodeId(_rootPath, archNodeId, maxResults =
   const config = overrides?.config ?? getJiraConfig();
   if (!config) {
     return {
-      error: "Jira not configured. Connect Jira in the web app or set JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN in environment."
+      error: "Jira not configured. Connect Jira in the Governance panel to enable searches."
     };
   }
   if (!ARCH_NODE_ID_SAFE.test(archNodeId)) {
@@ -2686,7 +2743,7 @@ async function executeJiraSearchByArchNodeId(_rootPath, archNodeId, maxResults =
       error: "archNodeId contains invalid characters. Use only letters, numbers, dash, underscore, slash, dot."
     };
   }
-  const projectKey = (overrides?.projectKey ?? "").trim();
+  const projectKey = (overrides?.projectKey ?? config.project?.trim() ?? "").trim();
   const label = `archNodeId:${archNodeId}`;
   const jqlBase = projectKey ? `project = ${projectKey} AND labels = '${label.replace(/'/g, "''")}'` : `labels = '${label.replace(/'/g, "''")}'`;
   const jql = `${jqlBase} ORDER BY updated DESC`;
@@ -2904,6 +2961,28 @@ ${digest}`;
 // ../../src/ai/contextTrim.ts
 function estimateTokens(text) {
   return Math.ceil((text?.length ?? 0) / 4);
+}
+function trimHistoryToBudget(messages, budget, fractionForRecent = 0.8) {
+  const targetBudget = Math.floor(budget * fractionForRecent);
+  let tokensUsed = 0;
+  const recent = [];
+  for (let i = messages.length - 1; i >= 0 && tokensUsed < targetBudget; i--) {
+    const m = messages[i];
+    const t = estimateTokens(m.content);
+    if (tokensUsed + t <= targetBudget) {
+      recent.unshift(m);
+      tokensUsed += t;
+    } else break;
+  }
+  const droppedCount = messages.length - recent.length;
+  if (droppedCount <= 0) return recent;
+  const last = messages[messages.length - 1];
+  const digest = `(Prior ${messages.length} turns, latest): ${last.role}: ${last.content.slice(0, 600)}`;
+  const digestTokens = estimateTokens(digest);
+  if (digestTokens + tokensUsed <= budget) {
+    return [{ role: "system", content: `HISTORY DIGEST: ${digest}` }, ...recent];
+  }
+  return recent;
 }
 function trimTextToBudget(text, budget) {
   const est = estimateTokens(text);
@@ -3285,6 +3364,14 @@ You reason in layers, understand module boundaries, and use tools to inspect rea
 
 When the user asks to build something new, always propose_architecture first before any code is written.
 
+## Response formatting rules
+- Use **bold** for section titles and emphasis, never ## markdown headers
+- Use \`inline code\` for file paths, function names, variable names, and commands
+- Use plain bullet points (\u2014) for lists, not markdown bullets
+- Write in clear prose paragraphs where possible, not just bullet lists
+- Keep tables for structured comparisons only \u2014 not for simple lists
+- Lead with the most important insight, then supporting detail
+
 You have a persistent Skill Library under .agent/skills and an index in .agent/skill_index.json.
 - When you create a small, reusable helper script or code-based tool, call save_skill with a clear name, description, language, code, and optional tags.
 - When the user asks to USE a skill (e.g. "use map-routes to summarize routes", "run the list-interfaces skill", "summarize all routes"), you MUST call the run_skill tool with that skill's id, then call the answer tool with a concise summary of the tool output. Do not reply with "I was unable to formulate" when the skill is listed in the Skill Library \u2014 execute it and report.
@@ -3572,7 +3659,7 @@ IMPORTANT: You have fulfilled the skill creation for this request.
       return { result: `Unknown tool: ${toolName}` };
   }
 }
-async function askAboutArchitecture(question, graph, nodeId, history, apiKey, findings, rootPath, jiraConfig, jiraProjectKey, rail) {
+async function askAboutArchitecture(question, graph, nodeId, history, apiKey, findings, rootPath, jiraConfig, jiraProjectKey, rail, pdfBase64, pdfFileName) {
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
     return {
@@ -3672,9 +3759,20 @@ Use these exact ids in any graphCommand you emit.`;
     const toTrim = totalEst - (CONTEXT_WINDOW_SAFE - reserveForOutput);
     contextText = trimTextToBudget(contextText, Math.max(0, contextEst - toTrim));
   }
+  const userContent = pdfBase64 && pdfBase64.length > 0 ? [
+    {
+      type: "document",
+      source: {
+        type: "base64",
+        media_type: "application/pdf",
+        data: pdfBase64
+      }
+    },
+    { type: "text", text: contextText }
+  ] : contextText;
   const messages = [
     ...railPriorTurns,
-    { role: "user", content: contextText }
+    { role: "user", content: userContent }
   ];
   const MAX_STEPS = 6;
   let finalAnswer = "";
@@ -4069,7 +4167,7 @@ function matchDesign(question) {
   return DEFAULT_FIXTURE;
 }
 async function askGreenfieldMock(params) {
-  await new Promise((resolve16) => setTimeout(resolve16, 800));
+  await new Promise((resolve20) => setTimeout(resolve20, 800));
   const { question } = params;
   const { answer, graphCommands } = matchDesign(question);
   return { answer, graphCommands };
@@ -4231,7 +4329,9 @@ async function runAnalysisTask(params) {
     traceId,
     jiraConfig,
     jiraProjectKey,
-    rail
+    rail,
+    pdfBase64,
+    pdfFileName
   } = params;
   const resolvedRoot = path15.resolve(rootPath);
   const rootExists = fs14.existsSync(resolvedRoot);
@@ -4296,6 +4396,11 @@ ${skillCode}
     nodeId,
     history
   );
+  const HISTORY_BUDGET = 6e4;
+  localHistory = trimHistoryToBudget(
+    localHistory,
+    HISTORY_BUDGET
+  );
   let attempts = 0;
   const maxAttempts = 2;
   let lastAnswer = "";
@@ -4316,7 +4421,9 @@ ${skillCode}
       rootPath,
       jiraConfig,
       jiraProjectKey,
-      rail ?? void 0
+      rail ?? void 0,
+      pdfBase64,
+      pdfFileName
     );
     lastAnswer = claudeResult.answer;
     lastGraphCommand = claudeResult.graphCommand;
@@ -4448,9 +4555,14 @@ async function runGreenfieldTask(params) {
   console.log(
     `[manager] runGreenfieldTask | traceId=${traceId} | question="${question.slice(0, 80)}${question.length > 80 ? "\u2026" : ""}"`
   );
+  const HISTORY_BUDGET = 6e4;
+  const trimmedHistory = trimHistoryToBudget(
+    history ?? [],
+    HISTORY_BUDGET
+  );
   try {
     const useMock = process.env.USE_MOCK_GREENFIELD === "1" || process.env.USE_MOCK_GREENFIELD === "true";
-    const greenfieldResult = useMock ? await askGreenfieldMock({ question, history }) : await askGreenfield({ question, history, apiKeyClaude });
+    const greenfieldResult = useMock ? await askGreenfieldMock({ question, history: trimmedHistory }) : await askGreenfield({ question, history: trimmedHistory, apiKeyClaude });
     const archetype = inferGreenfieldArchetype(params.question);
     const rootPath = params.graph?.projectRoot && typeof params.graph.projectRoot === "string" && params.graph.projectRoot.trim() ? params.graph.projectRoot.trim() : null;
     const review = await reviewGreenfieldAnswer({
@@ -4717,39 +4829,39 @@ function prune() {
   }
 }
 function createTask2() {
-  const taskId2 = crypto.randomUUID();
+  const taskId = crypto.randomUUID();
   const task = {
-    taskId: taskId2,
+    taskId,
     status: "pending",
     createdAt: Date.now()
   };
-  tasks.set(taskId2, task);
+  tasks.set(taskId, task);
   prune();
   return task;
 }
-function getTask(taskId2) {
-  return tasks.get(taskId2);
+function getTask(taskId) {
+  return tasks.get(taskId);
 }
-function setTaskRunning(taskId2) {
-  const t = tasks.get(taskId2);
+function setTaskRunning(taskId) {
+  const t = tasks.get(taskId);
   if (t) t.status = "running";
 }
-function setTaskCompleted(taskId2, result) {
-  const t = tasks.get(taskId2);
+function setTaskCompleted(taskId, result) {
+  const t = tasks.get(taskId);
   if (t && !t.cancelled) {
     t.status = "completed";
     t.result = result;
   }
 }
-function setTaskFailed(taskId2, error) {
-  const t = tasks.get(taskId2);
+function setTaskFailed(taskId, error) {
+  const t = tasks.get(taskId);
   if (t) {
     t.status = "failed";
     t.error = error;
   }
 }
-function cancelTask(taskId2) {
-  const t = tasks.get(taskId2);
+function cancelTask(taskId) {
+  const t = tasks.get(taskId);
   if (!t) return false;
   if (t.status === "pending" || t.status === "running") {
     t.cancelled = true;
@@ -4758,8 +4870,8 @@ function cancelTask(taskId2) {
   }
   return false;
 }
-function isTaskCancelled(taskId2) {
-  return tasks.get(taskId2)?.cancelled ?? false;
+function isTaskCancelled(taskId) {
+  return tasks.get(taskId)?.cancelled ?? false;
 }
 
 // src/utils/crypto.ts
@@ -4844,17 +4956,95 @@ async function getUserJiraConfigWithSource(userId) {
       },
       source: "db"
     };
-  } catch {
+  } catch (e) {
+    console.warn("[jira] Failed to decrypt api_token; marking integration unverified.", {
+      userId: userId.slice(0, 8)
+    });
+    try {
+      await supabaseAdmin.from("integrations").update({ verified: false }).eq("user_id", userId).eq("provider", "jira");
+    } catch {
+    }
     return null;
   }
 }
 async function getUserJiraConfig(userId) {
   const result = await getUserJiraConfigWithSource(userId);
+  if (!result?.config) {
+    console.warn(
+      "[jira] getUserJiraConfig returned null",
+      userId ? `(userId=${userId.slice(0, 8)}\u2026)` : "(no userId)"
+    );
+  }
   return result?.config ?? null;
 }
 
 // src/jira.ts
 import { Router as Router2 } from "express";
+
+// ../../src/agent/staleJiraDetector.ts
+import * as crypto4 from "crypto";
+function extractFingerprintFromDescription(description) {
+  const text = descriptionToString(description);
+  if (!text) return { fingerprint: null, module: null };
+  const fpMatch = text.match(/arch-fingerprint:\s*([a-fA-F0-9]+)/);
+  const modMatch = text.match(/arch-module:\s*([^\s\n]+)/);
+  return {
+    fingerprint: fpMatch?.[1] ?? null,
+    module: modMatch?.[1] ?? null
+  };
+}
+function descriptionToString(d) {
+  if (typeof d === "string") return d;
+  if (!d || typeof d !== "object") return "";
+  const obj = d;
+  if (obj.type === "doc" && Array.isArray(obj.content)) {
+    return obj.content.map((c) => descriptionToString(c)).join("");
+  }
+  if (obj.type === "paragraph" && Array.isArray(obj.content)) {
+    return obj.content.map((c) => descriptionToString(c)).join("");
+  }
+  if (obj.type === "text" && typeof obj.text === "string") return obj.text;
+  return "";
+}
+function computeModuleFingerprint(node) {
+  const payload = `${node.path}:${node.files.length}:${node.files.sort().join(",")}`;
+  return crypto4.createHash("sha256").update(payload).digest("hex").slice(0, 16);
+}
+function detectStaleJira(graph, issues) {
+  const moduleMap = /* @__PURE__ */ new Map();
+  for (const n of graph.nodes) {
+    moduleMap.set(n.path, computeModuleFingerprint(n));
+  }
+  const mismatches = [];
+  for (const issue of issues) {
+    if (!issue.storedFingerprint) continue;
+    const storedMod = issue.storedModule;
+    if (!storedMod) continue;
+    const currentFp = moduleMap.get(storedMod) ?? null;
+    if (!currentFp) {
+      mismatches.push({
+        key: issue.key,
+        summary: issue.summary,
+        storedFingerprint: issue.storedFingerprint,
+        storedModule: storedMod,
+        currentFingerprint: null,
+        reason: "orphaned"
+      });
+    } else if (currentFp !== issue.storedFingerprint) {
+      mismatches.push({
+        key: issue.key,
+        summary: issue.summary,
+        storedFingerprint: issue.storedFingerprint,
+        storedModule: storedMod,
+        currentFingerprint: currentFp,
+        reason: "changed"
+      });
+    }
+  }
+  return mismatches;
+}
+
+// src/jira.ts
 var router2 = Router2();
 router2.get("/jira-status", requireUser, async (req, res) => {
   try {
@@ -4872,6 +5062,25 @@ router2.get("/jira-status", requireUser, async (req, res) => {
     res.json({ configured: false });
   }
 });
+function isJiraOpen(status) {
+  return !/done|resolved|closed|complete/i.test(status);
+}
+async function syncViolationsFromJiraStatus(workspaceId, config) {
+  if (!supabaseAdmin) return;
+  const { data: rows } = await supabaseAdmin.from("violations").select("id, jira_key").eq("workspace_id", workspaceId).in("policy_state", ["tracked", "regressed"]).not("jira_key", "is", null);
+  const violations = rows ?? [];
+  for (const v of violations) {
+    const key = v.jira_key?.trim();
+    if (!key) continue;
+    try {
+      const issue = await getIssue(config, key);
+      if (issue && !isJiraOpen(issue.status)) {
+        await markViolationResolvedFromJira(supabaseAdmin, v.id, issue.status);
+      }
+    } catch {
+    }
+  }
+}
 function repoNameFromUrl2(url) {
   const m = url.match(/(?:github\.com|gitlab\.com|bitbucket\.org)[/:][\w.-]+\/([\w.-]+?)(?:\.git)?\/?$/i);
   return m?.[1] ?? null;
@@ -4880,6 +5089,12 @@ async function getWorkspaceProjectKey(workspaceId) {
   if (!workspaceId || !supabaseAdmin) return null;
   const { data } = await supabaseAdmin.from("workspaces").select("jira_project_key").eq("id", workspaceId).maybeSingle();
   return data?.jira_project_key ?? null;
+}
+async function getGraphByWorkspaceId(workspaceId) {
+  if (!workspaceId || !supabaseAdmin) return null;
+  const { data, error } = await supabaseAdmin.from("graphs").select("graph_json").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (error || !data?.graph_json) return null;
+  return data.graph_json;
 }
 router2.get("/jira-projects", requireUser, async (req, res) => {
   try {
@@ -4933,7 +5148,40 @@ router2.get("/jira-issues", requireUser, async (req, res) => {
       const labelClause = ` AND labels = '${repoName.replace(/'/g, "''")}'`;
       jql = /ORDER BY/i.test(jql) ? jql.replace(/\s*ORDER BY\s+/i, `${labelClause} ORDER BY `) : jql + labelClause;
     }
-    const issues = await searchIssues(config, jql, 25);
+    const includeStaleDetection = req.query.includeStaleDetection === "true" || req.query.includeStaleDetection === "1";
+    const issues = await searchIssues(config, jql, 25, {
+      includeDescription: includeStaleDetection
+    });
+    let staleMismatches;
+    if (includeStaleDetection && workspaceId) {
+      const graph = await getGraphByWorkspaceId(workspaceId);
+      if (graph) {
+        const issuesWithFp = issues.map((i) => {
+          const { fingerprint, module: mod } = extractFingerprintFromDescription(i.description);
+          return {
+            key: i.key,
+            summary: i.summary,
+            status: i.status,
+            storedFingerprint: fingerprint,
+            storedModule: mod
+          };
+        });
+        const mismatches = detectStaleJira(graph, issuesWithFp);
+        staleMismatches = mismatches.map((m) => ({
+          key: m.key,
+          summary: m.summary,
+          reason: m.reason,
+          storedModule: m.storedModule
+        }));
+      }
+    }
+    if (workspaceId) {
+      setImmediate(() => {
+        syncViolationsFromJiraStatus(workspaceId, config).catch(
+          (err) => console.warn("[jira] syncViolationsFromJiraStatus failed:", err instanceof Error ? err.message : err)
+        );
+      });
+    }
     res.json({
       issues: issues.map((i) => ({
         key: i.key,
@@ -4944,7 +5192,8 @@ router2.get("/jira-issues", requireUser, async (req, res) => {
         baseUrl: config.baseUrl.replace(/\/$/, ""),
         labels: i.labels
       })),
-      repoName: repoName ?? void 0
+      repoName: repoName ?? void 0,
+      ...staleMismatches && staleMismatches.length > 0 ? { staleMismatches } : {}
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -5156,11 +5405,2481 @@ function appendDraftEdge(sessionId2, edge, basePath) {
   }, basePath);
 }
 
-// src/chat.ts
+// src/cloneRepo.ts
+import * as fs17 from "fs";
+import * as path18 from "path";
+import { homedir } from "os";
+import { simpleGit } from "simple-git";
+var CLONES_BASE = process.env.ARCH_VIZ_CLONES_DIR?.trim() || path18.join(homedir(), ".arch-viz", "repos");
+var recloneLocks = /* @__PURE__ */ new Map();
+function getClonesDir() {
+  return CLONES_BASE;
+}
+function authUrl(url) {
+  const trimmed = url.trim();
+  const token = process.env.GITHUB_TOKEN || process.env.GITHUB_ACCESS_TOKEN;
+  if (!token) return trimmed;
+  const match = trimmed.match(/^(https?:\/\/)(github\.com\/[\w.-]+\/[\w.-]+?)(\.git)?\/?$/i);
+  if (!match) return trimmed;
+  const [, scheme, repoPath] = match;
+  return `${scheme}${token}@${repoPath}`;
+}
+function isCloneValid(dir) {
+  const gitDir = path18.join(dir, ".git");
+  try {
+    return fs17.existsSync(gitDir) && fs17.statSync(gitDir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+async function cloneToStablePath(repoUrl, workspaceId) {
+  const stableDir = path18.join(getClonesDir(), workspaceId);
+  if (fs17.existsSync(stableDir)) {
+    if (!isCloneValid(stableDir)) {
+      fs17.rmSync(stableDir, { recursive: true, force: true });
+    } else {
+      return stableDir;
+    }
+  }
+  fs17.mkdirSync(path18.dirname(stableDir), { recursive: true });
+  const cloneUrl = authUrl(repoUrl);
+  try {
+    await simpleGit().clone(cloneUrl, stableDir, ["--depth", "1"]);
+  } catch (err) {
+    if (fs17.existsSync(stableDir)) {
+      try {
+        fs17.rmSync(stableDir, { recursive: true, force: true });
+      } catch {
+      }
+    }
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/auth|401|403|permission|denied/i.test(msg)) {
+      throw new Error(
+        "Clone failed (auth). Private repositories require GITHUB_TOKEN or GITHUB_ACCESS_TOKEN. Set one in your environment."
+      );
+    }
+    throw err;
+  }
+  return stableDir;
+}
+async function ensureProjectRoot(workspaceId, graph, repoUrl) {
+  const stored = graph.projectRoot?.trim();
+  if (stored) {
+    const resolved = path18.resolve(stored);
+    if (fs17.existsSync(resolved) && isCloneValid(resolved)) return { rootPath: resolved };
+    const clonesBase = path18.resolve(getClonesDir());
+    const rel = path18.relative(clonesBase, resolved);
+    if (!rel.startsWith("..") && !path18.isAbsolute(rel) && fs17.existsSync(resolved) && !isCloneValid(resolved)) {
+      try {
+        fs17.rmSync(resolved, { recursive: true, force: true });
+      } catch {
+      }
+    }
+  }
+  const trimmedRepo = typeof repoUrl === "string" ? repoUrl.trim() : "";
+  if (!trimmedRepo) {
+    return {
+      rootPath: null,
+      error: "Source code unavailable and no repo URL stored. Please re-scan once to register the repository."
+    };
+  }
+  let existing = recloneLocks.get(workspaceId);
+  if (existing) {
+    const result2 = await existing;
+    return result2 !== null ? { rootPath: result2 } : { rootPath: null, error: "Reclone failed." };
+  }
+  const run = async () => {
+    try {
+      const stableDir = await cloneToStablePath(trimmedRepo, workspaceId);
+      const admin = supabaseAdmin;
+      if (admin) {
+        setImmediate(() => {
+          void admin.from("workspaces").update({ project_root: stableDir }).eq("id", workspaceId).then(
+            () => void 0,
+            (e) => console.warn(
+              "[cloneRepo] Failed to update workspace project_root:",
+              e instanceof Error ? e.message : e
+            )
+          );
+          const updated = { ...graph, projectRoot: stableDir };
+          void admin.from("graphs").select("id").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle().then(({ data }) => {
+            if (data?.id) {
+              admin.from("graphs").update({ graph_json: updated }).eq("id", data.id).then(
+                () => void 0,
+                (e) => console.warn("[cloneRepo] Failed to update graph projectRoot:", e instanceof Error ? e.message : e)
+              );
+            }
+          }).then(void 0, () => void 0);
+        });
+      }
+      return stableDir;
+    } catch (err) {
+      console.warn(
+        "[cloneRepo] Reclone failed:",
+        err instanceof Error ? err.message : String(err)
+      );
+      return null;
+    } finally {
+      recloneLocks.delete(workspaceId);
+    }
+  };
+  const promise = run();
+  recloneLocks.set(workspaceId, promise);
+  const result = await promise;
+  return result !== null ? { rootPath: result } : { rootPath: null, error: "Reclone failed." };
+}
+function deleteWorkspaceClone(workspaceId) {
+  const stableDir = path18.join(getClonesDir(), workspaceId);
+  try {
+    if (fs17.existsSync(stableDir)) {
+      fs17.rmSync(stableDir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    console.warn(
+      "[cloneRepo] Failed to delete clone:",
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+}
+
+// src/todos.ts
+import { Router as Router3 } from "express";
+
+// src/railExecute.ts
+import * as path28 from "path";
+
+// ../../src/agent/rail/orchestrator.ts
+import * as fs19 from "fs";
+
+// ../../src/agent/rail/executor.ts
+import * as fs18 from "fs";
+import * as path19 from "path";
+function isPathSafe(root, relPath) {
+  const resolved = path19.resolve(root, relPath);
+  const rootNorm = path19.resolve(root);
+  return resolved.startsWith(rootNorm) && resolved !== rootNorm;
+}
+function writeProposedNodesToSandbox(sandboxPath, nodes) {
+  const created = [];
+  const errors = [];
+  const root = path19.resolve(sandboxPath);
+  for (const node of nodes) {
+    const id = typeof node.id === "string" ? node.id : "";
+    const label = typeof node.label === "string" ? node.label : id;
+    const archNodeId = typeof node.archNodeId === "string" ? node.archNodeId : id;
+    const relPath = id || archNodeId || label.replace(/\s+/g, "-").toLowerCase();
+    if (!relPath || /\.\.|\\\\|\/\//.test(relPath)) {
+      errors.push(`Invalid path for node ${label}: ${relPath}`);
+      continue;
+    }
+    if (!isPathSafe(root, relPath)) {
+      errors.push(`Path traversal blocked for ${label}`);
+      continue;
+    }
+    try {
+      const absPath = path19.join(root, relPath);
+      const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(relPath);
+      const targetDir = pathLooksLikeFile ? path19.dirname(absPath) : absPath;
+      if (!fs18.existsSync(targetDir)) {
+        fs18.mkdirSync(targetDir, { recursive: true });
+      }
+      const indexPath = pathLooksLikeFile ? absPath : path19.join(absPath, "index.ts");
+      const layer = typeof node.layer === "string" ? node.layer : "Uncategorized";
+      const header = `// Generated by Arch Visualizer (sandbox). Boilerplate only.
+// @archNodeId: ${archNodeId}`;
+      const boilerplate = `
+
+// TODO: Implement ${label} (${layer}).
+
+export function TODO_${archNodeId.replace(
+        /[^a-zA-Z0-9_]/g,
+        "_"
+      )}() {
+  // implementation pending
+}
+`;
+      if (!fs18.existsSync(indexPath)) {
+        fs18.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
+      }
+      const rel = path19.relative(root, indexPath).replace(/\\/g, "/");
+      created.push(rel);
+    } catch (err) {
+      errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return { created, errors };
+}
+function syncSandboxFromRoot(rootPath, railId, paths) {
+  const sandboxRoot = ensureSandbox(rootPath, railId);
+  for (const rel of paths) {
+    const src = path19.join(rootPath, rel);
+    const dst = path19.join(sandboxRoot, rel);
+    try {
+      if (!fs18.existsSync(src)) continue;
+      const dir = path19.dirname(dst);
+      if (!fs18.existsSync(dir)) {
+        fs18.mkdirSync(dir, { recursive: true });
+      }
+      fs18.copyFileSync(src, dst);
+    } catch {
+    }
+  }
+  return sandboxRoot;
+}
+function materializeRail(railId, sandboxPath, rootPath) {
+  const copiedFiles = [];
+  try {
+    const sandboxRoot = path19.resolve(sandboxPath);
+    const projectRoot3 = path19.resolve(rootPath);
+    if (!fs18.existsSync(sandboxRoot)) {
+      return { success: false, copiedFiles, error: `Sandbox for rail ${railId} does not exist` };
+    }
+    const entries = walkDir(sandboxRoot);
+    for (const absFile of entries) {
+      const rel = path19.relative(sandboxRoot, absFile);
+      const target = path19.join(projectRoot3, rel);
+      const targetDir = path19.dirname(target);
+      if (!fs18.existsSync(targetDir)) {
+        fs18.mkdirSync(targetDir, { recursive: true });
+      }
+      fs18.copyFileSync(absFile, target);
+      copiedFiles.push(rel.replace(/\\/g, "/"));
+    }
+    return { success: true, copiedFiles };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, copiedFiles, error: message };
+  }
+}
+function walkDir(root) {
+  const result = [];
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const stat = fs18.statSync(current);
+    if (stat.isDirectory()) {
+      const children = fs18.readdirSync(current);
+      for (const child of children) {
+        stack.push(path19.join(current, child));
+      }
+    } else if (stat.isFile()) {
+      result.push(current);
+    }
+  }
+  return result;
+}
+
+// ../../src/agent/rail/orchestrator.ts
+var VALID_TRANSITIONS = {
+  PRE_PLANNING: /* @__PURE__ */ new Set(["PLANNING", "AWAITING_APPROVAL", "SUSPENDED", "FAILED"]),
+  PLANNING: /* @__PURE__ */ new Set(["AWAITING_APPROVAL", "SUSPENDED", "FAILED"]),
+  AWAITING_APPROVAL: /* @__PURE__ */ new Set(["EXECUTING", "SUSPENDED", "FAILED"]),
+  EXECUTING: /* @__PURE__ */ new Set(["AWAITING_HITL", "VERIFYING", "SELF_CORRECTING", "SUSPENDED", "FAILED"]),
+  AWAITING_HITL: /* @__PURE__ */ new Set(["EXECUTING", "SUSPENDED", "FAILED"]),
+  VERIFYING: /* @__PURE__ */ new Set(["MATERIALIZING", "SELF_CORRECTING", "SUSPENDED", "FAILED"]),
+  SELF_CORRECTING: /* @__PURE__ */ new Set(["EXECUTING", "AWAITING_HITL", "SUSPENDED", "FAILED"]),
+  MATERIALIZING: /* @__PURE__ */ new Set(["ARCHIVED", "SUSPENDED", "FAILED"]),
+  SUSPENDED: /* @__PURE__ */ new Set(["AWAITING_APPROVAL", "EXECUTING"]),
+  FAILED: /* @__PURE__ */ new Set(),
+  // terminal
+  ARCHIVED: /* @__PURE__ */ new Set()
+  // terminal
+};
+function canTransition(from, to, _ctx) {
+  const allowed = VALID_TRANSITIONS[from];
+  if (!allowed) return false;
+  if (!allowed.has(to)) return false;
+  if (to === "EXECUTING" && from === "AWAITING_APPROVAL") {
+    return _ctx?.planApproved === true;
+  }
+  if (to === "MATERIALIZING" && from === "VERIFYING") {
+    return _ctx?.reviewerPassed === true;
+  }
+  if (to === "ARCHIVED" && from === "MATERIALIZING") {
+    return _ctx?.materializationApproved === true;
+  }
+  if (to === "SUSPENDED") {
+    return from !== "ARCHIVED" && from !== "FAILED";
+  }
+  if (to === "FAILED") {
+    return from !== "ARCHIVED";
+  }
+  return true;
+}
+function transitionRail(rootPath, railId, to, ctx) {
+  const rail = getRail(rootPath, railId);
+  if (!rail) {
+    return { ok: false, rail: null, error: "Rail not found" };
+  }
+  const from = rail.state;
+  if (from === to) {
+    return { ok: true, rail };
+  }
+  if (!canTransition(from, to, ctx)) {
+    return {
+      ok: false,
+      rail: null,
+      error: `Invalid transition: ${from} -> ${to} (guards may have failed)`
+    };
+  }
+  if (to === "EXECUTING") {
+    ensureSandbox(rootPath, railId);
+  }
+  if (to === "ARCHIVED" || to === "FAILED") {
+    const sandboxPath = getSandboxPath(rootPath, railId);
+    try {
+      if (fs19.existsSync(sandboxPath)) {
+        fs19.rmSync(sandboxPath, { recursive: true, force: true });
+      }
+    } catch {
+    }
+  }
+  const updated = to === "EXECUTING" ? enterExecutingState(rootPath, railId) : updateRailState(rootPath, railId, to);
+  return { ok: !!updated, rail: updated ?? null };
+}
+function completeMaterializeAndArchive(rootPath, railId) {
+  const rail = getRail(rootPath, railId);
+  if (!rail) return null;
+  if (rail.state !== "VERIFYING" && rail.state !== "MATERIALIZING") {
+    return null;
+  }
+  const hi = rail.hallucinationIndex;
+  const intent = rail.intentDriftScore;
+  const acknowledged = !!rail.hallucinationAcknowledgedAt;
+  if (hi != null && hi > 0.5 && !acknowledged || intent != null && intent > 0.6 && !acknowledged) {
+    return null;
+  }
+  const sandboxPath = getSandboxPath(rootPath, railId);
+  const mat = materializeRail(railId, sandboxPath, rootPath);
+  const canProceed = mat.success || mat.error?.includes("does not exist");
+  if (!canProceed) {
+    return rail;
+  }
+  if (rail.state === "VERIFYING") {
+    updateRailState(rootPath, railId, "MATERIALIZING");
+  }
+  return archiveRail(rootPath, railId);
+}
+
+// ../../src/agent/taskRunner.ts
+import * as fs24 from "fs";
+import * as path26 from "path";
+
+// ../../src/agent/toolExecutor.ts
+import * as fs23 from "fs";
+import * as path25 from "path";
+
+// ../../src/agent/securityAllowlist.ts
+import * as path20 from "path";
+var READ_ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".py",
+  ".md",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".env.example",
+  ".env.sample",
+  ".sh"
+]);
+var WRITE_ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([".ts", ".tsx", ".js", ".jsx", ".md"]);
+var EXCLUDED_PATTERNS = [
+  /node_modules/,
+  /\.config\./,
+  /\.lock$/
+];
+function isEnvProtected(basename4) {
+  if (basename4 === ".env") return true;
+  if (basename4.startsWith(".env.") && !basename4.endsWith(".example") && !basename4.endsWith(".sample")) {
+    return true;
+  }
+  return false;
+}
+var DEFAULT_ALLOWED_PREFIXES = ["src/", "docs/"];
+function checkPathAllowed(filePath, config, mode = "write") {
+  const root = path20.resolve(config.projectRoot);
+  const resolved = path20.resolve(root, filePath);
+  if (!resolved.startsWith(root)) {
+    return { allowed: false, reason: "Path outside project root" };
+  }
+  const relative15 = path20.relative(root, resolved).replace(/\\/g, "/");
+  if (relative15.includes("..")) {
+    return { allowed: false, reason: "Path traversal not allowed" };
+  }
+  const ext = path20.extname(resolved);
+  const basename4 = path20.basename(resolved);
+  if (isEnvProtected(basename4)) {
+    return { allowed: false, reason: "Environment files (.env*) are not readable or writable" };
+  }
+  const isDockerfile = basename4 === "Dockerfile";
+  const allowedExts = mode === "read" ? READ_ALLOWED_EXTENSIONS : WRITE_ALLOWED_EXTENSIONS;
+  if (!isDockerfile && !allowedExts.has(ext)) {
+    return { allowed: false, reason: `Extension ${ext || "<none>"} not allowed for ${mode}` };
+  }
+  for (const pat of EXCLUDED_PATTERNS) {
+    if (pat.test(relative15)) {
+      return { allowed: false, reason: `Path matches excluded pattern: ${pat}` };
+    }
+  }
+  const prefixes = config.allowedPrefixes ?? DEFAULT_ALLOWED_PREFIXES;
+  const ok = prefixes.some((p) => relative15.startsWith(p));
+  if (!ok) {
+    return { allowed: false, reason: `Path must be under ${prefixes.join(" or ")}` };
+  }
+  return { allowed: true };
+}
+
+// ../../src/agent/staging.ts
+import * as fs20 from "fs";
+import * as path21 from "path";
+var BUFFER_FILE = "buffer.json";
+var stagingDir = "";
+var buffer = /* @__PURE__ */ new Map();
+function bufferPath() {
+  return path21.join(stagingDir, BUFFER_FILE);
+}
+function saveBuffer() {
+  const p = bufferPath();
+  const arr = Array.from(buffer.values());
+  fs20.writeFileSync(p, JSON.stringify(arr, null, 2), "utf-8");
+}
+function writeToStaging(filePath, content, opts) {
+  const id = `stg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  buffer.set(filePath, {
+    path: filePath,
+    content,
+    beforeContent: opts?.beforeContent,
+    taskId: opts?.taskId
+  });
+  saveBuffer();
+  return id;
+}
+
+// ../../src/agent/runLint.ts
+import * as path22 from "path";
+import { spawnSync as spawnSync2 } from "child_process";
+function runLint(projectRoot3, paths, workingDir) {
+  const errors = [];
+  const tscProc = spawnSync2("npx", ["tsc", "--noEmit", "--pretty", "false"], {
+    cwd: workingDir ?? projectRoot3,
+    encoding: "utf-8",
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (tscProc.status !== 0 && tscProc.stderr) {
+    const root = path22.resolve(projectRoot3);
+    const lines = tscProc.stderr.split("\n");
+    for (const line of lines) {
+      const match = line.match(/^([^(]+)\((\d+),(\d+)\):\s+error\s+TS\d+:\s+(.+)$/);
+      if (match) {
+        const [, filePath, lineNum, col, message] = match;
+        const resolved = path22.isAbsolute(filePath?.trim() ?? "") ? filePath.trim() : path22.join(root, filePath?.trim() ?? "");
+        const rel = path22.relative(root, resolved).replace(/\\/g, "/");
+        errors.push({
+          filePath: rel,
+          line: parseInt(lineNum ?? "0", 10),
+          column: parseInt(col ?? "0", 10),
+          message: message ?? "",
+          ruleId: "tsc",
+          severity: "error"
+        });
+      }
+    }
+  }
+  const lintPaths = paths?.length ? paths : ["src"];
+  const eslintProc = spawnSync2("npx", ["eslint", ...lintPaths, "--format", "json"], {
+    cwd: workingDir ?? projectRoot3,
+    encoding: "utf-8",
+    maxBuffer: 4 * 1024 * 1024
+  });
+  if (eslintProc.stdout) {
+    try {
+      const out = JSON.parse(eslintProc.stdout);
+      const root = path22.resolve(workingDir ?? projectRoot3);
+      for (const file of out) {
+        const rel = path22.relative(root, path22.isAbsolute(file.filePath) ? file.filePath : path22.join(root, file.filePath)).replace(/\\/g, "/");
+        for (const m of file.messages) {
+          errors.push({
+            filePath: rel,
+            line: m.line,
+            column: m.column,
+            message: m.message,
+            ruleId: m.ruleId ?? "unknown",
+            severity: m.severity === 2 ? "error" : "warning"
+          });
+        }
+      }
+    } catch {
+    }
+  }
+  return {
+    passed: errors.filter((e) => e.severity === "error").length === 0,
+    errors
+  };
+}
+
+// ../../src/agent/runVitest.ts
+import * as path23 from "path";
+import * as fs21 from "fs";
+import { spawnSync as spawnSync3 } from "child_process";
+function runVitest(projectRoot3, pattern, workingDir) {
+  const cwd = workingDir ?? projectRoot3;
+  const jsonFile = path23.join(cwd, ".arch-agent-staging", "vitest-results.json");
+  const stagingDir2 = path23.dirname(jsonFile);
+  if (!fs21.existsSync(stagingDir2)) {
+    fs21.mkdirSync(stagingDir2, { recursive: true });
+  }
+  const args = ["vitest", "run", "--reporter=json", `--outputFile.json=${jsonFile}`];
+  if (pattern) args.push("--testNamePattern", pattern);
+  const proc = spawnSync3("npx", args, {
+    cwd,
+    encoding: "utf-8",
+    maxBuffer: 10 * 1024 * 1024
+  });
+  const failures = [];
+  let total = 0;
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+  try {
+    const raw = fs21.existsSync(jsonFile) ? fs21.readFileSync(jsonFile, "utf-8") : "{}";
+    const parsed = JSON.parse(raw);
+    const results = parsed?.testResults ?? parsed?.results;
+    if (Array.isArray(results)) {
+      for (const file of results) {
+        const filePath = path23.relative(cwd, file.name);
+        for (const t of file.assertionResults ?? []) {
+          total++;
+          if (t.status === "passed") passed++;
+          else if (t.status === "skipped") skipped++;
+          else {
+            failed++;
+            failures.push({
+              testName: t.fullName,
+              filePath,
+              error: t.failureMessages?.[0] ?? "Test failed",
+              stackTrace: t.failureMessages?.join("\n") ?? ""
+            });
+          }
+        }
+      }
+    }
+    try {
+      fs21.unlinkSync(jsonFile);
+    } catch {
+    }
+  } catch {
+    if (proc.status !== 0) {
+      failures.push({
+        testName: pattern ?? "vitest run",
+        filePath: ".",
+        error: (proc.stderr ?? proc.stdout ?? "Vitest failed").slice(0, 500),
+        stackTrace: ""
+      });
+      failed = 1;
+      total = 1;
+    }
+  }
+  return {
+    passed: failed === 0,
+    summary: { total, passed, failed, skipped },
+    failures
+  };
+}
+
+// ../../src/agent/getAst.ts
+import * as path24 from "path";
+import * as fs22 from "fs";
+import * as crypto5 from "crypto";
+import { Project, SyntaxKind } from "ts-morph";
+function getAst(projectRoot3, filePath) {
+  const allow = checkPathAllowed(filePath, { projectRoot: projectRoot3 });
+  if (!allow.allowed) {
+    return { success: false, error: allow.reason ?? "Path not allowed" };
+  }
+  const fullPath = path24.resolve(projectRoot3, filePath);
+  if (!fs22.existsSync(fullPath)) {
+    return { success: false, error: "File not found" };
+  }
+  const ext = path24.extname(fullPath);
+  if (![".ts", ".tsx", ".js", ".jsx"].includes(ext)) {
+    return { success: false, error: "Unsupported file type for AST extraction" };
+  }
+  try {
+    const project = new Project({ skipAddingFilesFromTsConfig: true });
+    const sourceFile = project.addSourceFileAtPath(fullPath);
+    const exports = {
+      functions: sourceFile.getFunctions().map((f) => ({
+        name: f.getName() ?? "",
+        params: f.getParameters().map((p) => `${p.getName()}: ${p.getType().getText()}`).join(", "),
+        returnType: f.getReturnType().getText() || void 0
+      })),
+      classes: sourceFile.getClasses().map((c) => ({
+        name: c.getName() ?? "",
+        extends: c.getExtends()?.getText()
+      })),
+      interfaces: sourceFile.getInterfaces().map((i) => ({
+        name: i.getName() ?? ""
+      })),
+      constants: sourceFile.getVariableStatements().map((v) => {
+        const decl = v.getDeclarations()[0];
+        return {
+          name: decl?.getName() ?? "",
+          value: decl?.getInitializer()?.getText()?.slice(0, 80)
+        };
+      })
+    };
+    const imports = sourceFile.getImportDeclarations().map((imp) => {
+      const def = imp.getDefaultImport();
+      const named = imp.getNamedImports().map((n) => n.getName());
+      return {
+        specifier: imp.getModuleSpecifierValue(),
+        default: def?.getText(),
+        named: named.length > 0 ? named : void 0
+      };
+    });
+    const topLevelDeclarations = [];
+    for (const d of sourceFile.getStatements()) {
+      const kind = d.getKindName();
+      if (d.getKind() === SyntaxKind.FunctionDeclaration) {
+        const fn = d.asKindOrThrow(SyntaxKind.FunctionDeclaration);
+        topLevelDeclarations.push(`function ${fn.getName() ?? "anonymous"}`);
+      } else if (d.getKind() === SyntaxKind.ClassDeclaration) {
+        const cls = d.asKindOrThrow(SyntaxKind.ClassDeclaration);
+        topLevelDeclarations.push(`class ${cls.getName() ?? "anonymous"}`);
+      } else if (d.getKind() === SyntaxKind.InterfaceDeclaration) {
+        const iface = d.asKindOrThrow(SyntaxKind.InterfaceDeclaration);
+        topLevelDeclarations.push(`interface ${iface.getName() ?? "anonymous"}`);
+      } else if (d.getKind() === SyntaxKind.VariableStatement) {
+        const vs = d.asKindOrThrow(SyntaxKind.VariableStatement);
+        vs.getDeclarations().forEach((decl) => topLevelDeclarations.push(`const/let ${decl.getName()}`));
+      } else {
+        topLevelDeclarations.push(kind);
+      }
+    }
+    const payload = JSON.stringify({ exports, imports, topLevelDeclarations });
+    const fingerprint = crypto5.createHash("sha256").update(payload).digest("hex").slice(0, 16);
+    return {
+      success: true,
+      output: {
+        path: filePath,
+        fingerprint,
+        exports,
+        imports,
+        topLevelDeclarations
+      }
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { success: false, error: msg };
+  }
+}
+
+// ../../src/agent/toolExecutor.ts
+var MAX_CONTENT_CHARS = 5e4;
+function isInPlanScope(filePath, plan) {
+  if (!plan) return { ok: true };
+  const norm = filePath.replace(/\\/g, "/").replace(/\/+$/, "");
+  const bases = plan.tasks.map((t) => t.module.replace(/\\/g, "/").replace(/\/+$/, ""));
+  const ok = bases.some((b) => norm === b || norm.startsWith(b + "/"));
+  if (!ok) {
+    return {
+      ok: false,
+      reason: `Path is outside approved plan scope. Allowed modules: ${bases.join(", ")}`
+    };
+  }
+  return { ok: true };
+}
+async function executeTool2(tool, input, context) {
+  const allowlist = context.allowlist ?? {
+    projectRoot: context.rootPath,
+    allowedPrefixes: ["src/", "docs/"]
+  };
+  if (tool === "read_file") {
+    const filePath = typeof input.path === "string" ? input.path : "";
+    if (!filePath) {
+      const out2 = { success: false, output: {}, error: "read_file requires path" };
+      emitTrace("read_file", input, out2.output, "read_file failed: missing path");
+      return out2;
+    }
+    const scope = isInPlanScope(filePath, context.plan);
+    if (!scope.ok) {
+      const out2 = { success: false, output: { reason: scope.reason }, error: scope.reason };
+      emitTrace("read_file", input, out2.output, `read_file rejected: ${scope.reason}`);
+      return out2;
+    }
+    const check = checkPathAllowed(filePath, allowlist, "read");
+    if (!check.allowed) {
+      const out2 = { success: false, output: { reason: check.reason }, error: check.reason };
+      emitTrace("read_file", input, out2.output, `read_file rejected: ${check.reason}`);
+      return out2;
+    }
+    const fullPath = path25.resolve(context.rootPath, filePath);
+    if (!fs23.existsSync(fullPath)) {
+      const out2 = { success: false, output: { path: filePath }, error: "File not found" };
+      emitTrace("read_file", input, out2.output, "read_file failed: file not found");
+      return out2;
+    }
+    let content;
+    try {
+      content = fs23.readFileSync(fullPath, "utf-8");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const out2 = { success: false, output: { path: filePath }, error: msg };
+      emitTrace("read_file", input, out2.output, `read_file failed: ${msg}`);
+      return out2;
+    }
+    const truncated = content.length > MAX_CONTENT_CHARS;
+    const output = {
+      path: filePath,
+      content: truncated ? content.slice(0, MAX_CONTENT_CHARS) + "\n...[truncated]" : content,
+      truncated
+    };
+    emitTrace("read_file", input, output, truncated ? "read_file ok (truncated)" : "read_file ok");
+    return { success: true, output };
+  }
+  if (tool === "write_file") {
+    const filePath = typeof input.path === "string" ? input.path : "";
+    const content = typeof input.content === "string" ? input.content : "";
+    if (!filePath || !content) {
+      const out2 = { success: false, output: {}, error: "write_file requires path and content" };
+      emitTrace("write_file", { path: filePath }, out2.output, "write_file failed: missing path or content");
+      return out2;
+    }
+    const scope = isInPlanScope(filePath, context.plan);
+    if (!scope.ok) {
+      const out2 = { success: false, output: { reason: scope.reason }, error: scope.reason };
+      emitTrace("write_file", input, out2.output, `write_file rejected: ${scope.reason}`);
+      return out2;
+    }
+    const check = checkPathAllowed(filePath, allowlist, "write");
+    if (!check.allowed) {
+      const out2 = { success: false, output: { reason: check.reason }, error: check.reason };
+      emitTrace("write_file", input, out2.output, `write_file rejected: ${check.reason}`);
+      return out2;
+    }
+    const fullPath = path25.resolve(context.rootPath, filePath);
+    let beforeContent;
+    if (fs23.existsSync(fullPath)) {
+      beforeContent = fs23.readFileSync(fullPath, "utf-8");
+    }
+    const stagingId = writeToStaging(filePath, content, { beforeContent, taskId: context.taskId });
+    const output = { stagingId, path: filePath };
+    emitTrace("write_file", { path: filePath }, output, "write_file ok (staged)");
+    return { success: true, output };
+  }
+  if (tool === "get_ast") {
+    const filePath = typeof input.path === "string" ? input.path : "";
+    if (!filePath) {
+      const out2 = { success: false, output: {}, error: "get_ast requires path" };
+      emitTrace("get_ast", input, out2.output, "get_ast failed: missing path");
+      return out2;
+    }
+    const scope = isInPlanScope(filePath, context.plan);
+    if (!scope.ok) {
+      const out2 = { success: false, output: { reason: scope.reason }, error: scope.reason };
+      emitTrace("get_ast", input, out2.output, `get_ast rejected: ${scope.reason}`);
+      return out2;
+    }
+    const check = checkPathAllowed(filePath, allowlist, "read");
+    if (!check.allowed) {
+      const out2 = { success: false, output: { reason: check.reason }, error: check.reason };
+      emitTrace("get_ast", input, out2.output, `get_ast rejected: ${check.reason}`);
+      return out2;
+    }
+    const res = getAst(context.rootPath, filePath);
+    if (!res.success || !res.output) {
+      const out2 = { success: false, output: { path: filePath }, error: res.error ?? "get_ast failed" };
+      emitTrace("get_ast", input, out2.output, `get_ast failed: ${out2.error}`);
+      return out2;
+    }
+    const output = res.output;
+    emitTrace("get_ast", input, output, "get_ast ok");
+    return { success: true, output };
+  }
+  if (tool === "run_lint") {
+    const paths = Array.isArray(input.paths) ? input.paths : void 0;
+    const lintResult = runLint(context.rootPath, paths);
+    const output = {
+      passed: lintResult.passed,
+      errors: lintResult.errors
+    };
+    emitTrace("run_lint", input, output, lintResult.passed ? "run_lint pass" : "run_lint fail");
+    return { success: lintResult.passed, output };
+  }
+  if (tool === "run_vitest") {
+    const pattern = typeof input.pattern === "string" ? input.pattern : void 0;
+    const vitestResult = runVitest(context.rootPath, pattern);
+    const output = {
+      passed: vitestResult.passed,
+      summary: vitestResult.summary,
+      failures: vitestResult.failures
+    };
+    emitTrace("run_vitest", input, output, vitestResult.passed ? "run_vitest pass" : "run_vitest fail");
+    return { success: vitestResult.passed, output };
+  }
+  if (tool === "list_files") {
+    let walk2 = function(dir) {
+      const entries = fs23.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const abs = path25.join(dir, entry.name);
+        const rel = path25.relative(context.rootPath, abs).replace(/\\/g, "/");
+        if (rel.startsWith("node_modules/") || rel.startsWith(".git/")) continue;
+        if (entry.isDirectory()) {
+          walk2(abs);
+        } else if (entry.isFile()) {
+          const scope = isInPlanScope(rel, context.plan);
+          if (!scope.ok) continue;
+          const check = checkPathAllowed(rel, allowlist, "read");
+          if (!check.allowed) continue;
+          results.push(rel);
+        }
+      }
+    };
+    var walk = walk2;
+    const base = typeof input.base === "string" ? input.base : "";
+    const baseRel = base.replace(/\\/g, "/").replace(/^\/+/, "");
+    const startDir = path25.resolve(context.rootPath, baseRel || ".");
+    const results = [];
+    try {
+      if (fs23.existsSync(startDir)) {
+        walk2(startDir);
+      }
+      const output = { files: results };
+      emitTrace("read_file", input, output, "list_files ok");
+      return { success: true, output };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const out2 = { success: false, output: {}, error: msg };
+      emitTrace("error", { tool: "list_files", input }, out2.output, msg);
+      return out2;
+    }
+  }
+  if (tool === "search_files") {
+    let searchFile2 = function(rel, abs) {
+      const scope = isInPlanScope(rel, context.plan);
+      if (!scope.ok) return;
+      const check = checkPathAllowed(rel, allowlist, "read");
+      if (!check.allowed) return;
+      let content;
+      try {
+        content = fs23.readFileSync(abs, "utf-8");
+      } catch {
+        return;
+      }
+      const lines = content.split(/\r?\n/);
+      const matches = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(query)) {
+          matches.push({ line: i + 1, text: lines[i] });
+          if (matches.length >= 5) break;
+        }
+      }
+      if (matches.length) {
+        results.push({ path: rel, lines: matches });
+      }
+    }, walk2 = function(dir) {
+      if (results.length >= maxMatches) return;
+      const entries = fs23.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (results.length >= maxMatches) break;
+        const abs = path25.join(dir, entry.name);
+        const rel = path25.relative(context.rootPath, abs).replace(/\\/g, "/");
+        if (rel.startsWith("node_modules/") || rel.startsWith(".git/")) continue;
+        if (entry.isDirectory()) {
+          walk2(abs);
+        } else if (entry.isFile()) {
+          searchFile2(rel, abs);
+        }
+      }
+    };
+    var searchFile = searchFile2, walk = walk2;
+    const query = typeof input.query === "string" ? input.query : "";
+    const base = typeof input.base === "string" ? input.base : "";
+    const baseRel = base.replace(/\\/g, "/").replace(/^\/+/, "");
+    const startDir = path25.resolve(context.rootPath, baseRel || ".");
+    const maxMatches = typeof input.maxMatches === "number" && input.maxMatches > 0 ? input.maxMatches : 50;
+    const results = [];
+    if (!query) {
+      const out2 = {
+        success: false,
+        output: {},
+        error: "search_files requires query"
+      };
+      emitTrace("error", { tool: "search_files", input }, out2.output, out2.error);
+      return out2;
+    }
+    try {
+      if (fs23.existsSync(startDir)) {
+        walk2(startDir);
+      }
+      const output = { matches: results };
+      emitTrace("read_file", input, output, "search_files ok");
+      return { success: true, output };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const out2 = { success: false, output: {}, error: msg };
+      emitTrace("error", { tool: "search_files", input }, out2.output, msg);
+      return out2;
+    }
+  }
+  const out = {
+    success: false,
+    output: {},
+    error: `Tool "${tool}" not implemented`
+  };
+  emitTrace("error", { tool, input }, {}, `executeTool: ${tool} not implemented`);
+  return out;
+}
+
+// ../../src/agent/llmClient.ts
+import Anthropic4 from "@anthropic-ai/sdk";
+var VALID_TOOLS = /* @__PURE__ */ new Set(["write_file", "read_file", "get_ast"]);
+var CODE_WRITER_SYSTEM = `You are a code writer.
+
+You MUST use tools to act:
+- Use write_file to write or update code.
+- Use read_file to read additional files when needed.
+
+Constraints:
+- Only operate within the planned task/module scope.
+- Do not propose architecture. Do not change rules.
+- Prefer minimal, targeted edits that make tests pass.
+- Paths must be project-root-relative (e.g. "src/foo/bar.ts").
+- When creating new files, create all files listed in the spec.
+- When a file spec includes todos, implement them all.`;
+var CODE_WRITER_TOOLS = [
+  {
+    name: "read_file",
+    description: "Read a single file's full contents (project-root-relative path).",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" }
+      },
+      required: ["path"]
+    }
+  },
+  {
+    name: "write_file",
+    description: "Write a file's full contents (project-root-relative path).",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" }
+      },
+      required: ["path", "content"]
+    }
+  },
+  {
+    name: "get_ast",
+    description: "Extract imports/exports fingerprint for a file (project-root-relative path).",
+    input_schema: {
+      type: "object",
+      properties: {
+        path: { type: "string" }
+      },
+      required: ["path"]
+    }
+  }
+];
+function getTaskFromPlan(plan, taskId) {
+  return plan.tasks.find((t) => t.id === taskId);
+}
+function buildUserMessage(ctx) {
+  const lines = [
+    `Goal: ${ctx.goal}`,
+    `Task: ${ctx.taskId} \u2014 ${ctx.taskModule}`,
+    ""
+  ];
+  if (ctx.projectRoot && ctx.rail?.archetype) {
+    const anti = loadAntiPatterns(ctx.projectRoot, ctx.rail.archetype);
+    if (anti.length > 0) {
+      lines.push("Anti-patterns to avoid (from prior failed rails):");
+      for (const p of anti.slice(-6)) {
+        lines.push(`- Avoid: ${p.reason}`);
+      }
+      lines.push("");
+    }
+  }
+  if (ctx.conversationTurns && ctx.conversationTurns.length > 0) {
+    lines.push("Recent conversation (most recent last):");
+    for (const t of ctx.conversationTurns.slice(-4)) {
+      lines.push(`${t.role.toUpperCase()}: ${t.content}`);
+    }
+    lines.push("");
+  }
+  const task = getTaskFromPlan(ctx.plan, ctx.taskId);
+  if (task?.proposedFiles && task.proposedFiles.length > 0) {
+    lines.push("Files to create for this module (implement all of them):");
+    for (const f of task.proposedFiles) {
+      if (typeof f === "string") {
+        lines.push(`- ${f}`);
+      } else {
+        lines.push(`
+### ${f.name}`);
+        lines.push(`Purpose: ${f.purpose}`);
+        if (f.todos.length > 0) {
+          lines.push("Todos:");
+          for (const todo of f.todos) {
+            lines.push(`  - ${todo}`);
+          }
+        }
+      }
+    }
+    lines.push("");
+  }
+  if (ctx.filePath && ctx.fileContent !== void 0) {
+    lines.push(`File ${ctx.filePath}:`, "```", ctx.fileContent.slice(0, 3e4), "```", "");
+  }
+  if (ctx.astSummary) {
+    lines.push(
+      "Module signals (from get_ast):",
+      `- fingerprint: ${ctx.astSummary.fingerprint}`,
+      `- imports: ${ctx.astSummary.importCount}`,
+      `- exports: functions=${ctx.astSummary.exportFunctionCount}, classes=${ctx.astSummary.exportClassCount}, interfaces=${ctx.astSummary.exportInterfaceCount}, consts=${ctx.astSummary.exportConstCount}`,
+      ""
+    );
+  }
+  if (ctx.moduleSignals) {
+    const ms = ctx.moduleSignals;
+    lines.push(
+      "Structural module signals:",
+      `- moduleId: ${ms.moduleId}`,
+      `- fan-in: ${ms.fanIn}`,
+      `- fan-out: ${ms.fanOut}`,
+      `- external imports: ${ms.externalImportCount}`,
+      `- export count: ${ms.exportCount}`,
+      `- file count: ${ms.fileCount}`,
+      `- health: ${ms.health}`,
+      ms.healthReasons.length ? `- healthReasons: ${ms.healthReasons.join("; ")}` : "",
+      ""
+    );
+  }
+  if (ctx.errorOutput) {
+    lines.push("Error output (fix these):", ctx.errorOutput, "");
+  }
+  lines.push(
+    "Use write_file for each file you need to create or update. Use read_file if you need to inspect additional context first."
+  );
+  return lines.join("\n");
+}
+function validateToolInput(tool, input) {
+  if (tool === "read_file" || tool === "get_ast") {
+    const p = typeof input.path === "string" ? input.path.trim() : "";
+    if (!p) return { ok: false, reason: `${tool} requires non-empty "path" string` };
+    if (p.length > 500) return { ok: false, reason: `${tool} path too long` };
+    return { ok: true };
+  }
+  if (tool === "write_file") {
+    const p = typeof input.path === "string" ? input.path.trim() : "";
+    const c = typeof input.content === "string" ? input.content : "";
+    if (!p) return { ok: false, reason: 'write_file requires non-empty "path" string' };
+    if (!c) return { ok: false, reason: 'write_file requires non-empty "content" string' };
+    if (p.length > 500) return { ok: false, reason: "write_file path too long" };
+    return { ok: true };
+  }
+  return { ok: false, reason: `Unknown tool: ${tool}` };
+}
+async function callLLM(context) {
+  const apiKey = context.apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
+  if (!apiKey) {
+    const err = "Anthropic API key not configured. Set archVisualizer.anthropicApiKey or ANTHROPIC_API_KEY.";
+    emitTrace("error", { role: context.role, goal: context.goal }, { error: err }, err);
+    return { type: "no_api_key", error: err };
+  }
+  const userMsg = buildUserMessage(context);
+  const inputForTrace = {
+    role: context.role,
+    goal: context.goal,
+    taskId: context.taskId,
+    filePath: context.filePath
+  };
+  try {
+    const client = new Anthropic4({ apiKey });
+    let system = CODE_WRITER_SYSTEM;
+    let messages = [{ role: "user", content: userMsg }];
+    if (context.rail) {
+      const railHistory = buildRailContext(
+        context.rail,
+        context.railHistory ?? [],
+        500
+      );
+      const systemRail = `You are executing rail ${context.rail.id}.
+Frozen outcome: ${context.rail.frozenOutcome ?? context.rail.outcome}.
+Do not change the outcome; every step must move toward this outcome only.
+Do not introduce new goals, alter the specification, or expand scope beyond this rail.
+`;
+      const systemMessages = railHistory.filter((m) => m.role === "system").map((m) => m.content);
+      system = [systemRail, ...systemMessages, CODE_WRITER_SYSTEM].filter(Boolean).join("\n\n");
+      const priorTurns = railHistory.filter(
+        (m) => m.role === "user" || m.role === "assistant"
+      );
+      messages = [
+        ...priorTurns,
+        { role: "user", content: userMsg }
+      ];
+    }
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      temperature: 0,
+      system,
+      tools: CODE_WRITER_TOOLS,
+      messages
+    });
+    const usage = response.usage;
+    const totalTokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
+    if (context.projectRoot) {
+      bumpSessionUsage(context.projectRoot, { tokenUsage: totalTokens, llmCallCount: 1 });
+    }
+    emitTrace("llm_call", inputForTrace, { tokens: totalTokens }, "Code writer reasoning step");
+    const toolUse = response.content.find(
+      (b) => b.type === "tool_use"
+    );
+    if (toolUse) {
+      const tool = toolUse.name;
+      if (!VALID_TOOLS.has(tool)) {
+        emitTrace(
+          "error",
+          inputForTrace,
+          { tool, tokens: totalTokens },
+          `Unknown tool: ${tool}`
+        );
+        return { type: "unknown_output", raw: `Model requested unknown tool: ${tool}` };
+      }
+      const toolInput = toolUse.input ?? {};
+      const ok = validateToolInput(tool, toolInput);
+      if (!ok.ok) {
+        emitTrace(
+          "error",
+          inputForTrace,
+          { tool, input: toolInput, tokens: totalTokens },
+          `Invalid tool call: ${ok.reason}`
+        );
+        return { type: "unknown_output", raw: `Invalid tool call: ${ok.reason}` };
+      }
+      emitTrace(
+        "llm_call",
+        inputForTrace,
+        { tool, input: toolInput, tokens: totalTokens },
+        `LLM \u2192 ${tool}`
+      );
+      return { type: "tool_call", tool, input: toolInput };
+    }
+    const texts = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+    if (response.stop_reason === "end_turn") {
+      emitTrace(
+        "llm_call",
+        inputForTrace,
+        { stopReason: response.stop_reason, tokens: totalTokens, text: texts.slice(0, 800) },
+        "LLM \u2192 end_turn"
+      );
+      return { type: "end_turn", content: texts };
+    }
+    emitTrace(
+      "error",
+      inputForTrace,
+      { stopReason: response.stop_reason, tokens: totalTokens, text: texts.slice(0, 800) },
+      "unknown_llm_output"
+    );
+    return { type: "unknown_output", raw: texts || `stop_reason=${response.stop_reason ?? "unknown"}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emitTrace("error", inputForTrace, { error: msg }, `LLM failed: ${msg}`);
+    return { type: "unknown_output", raw: msg };
+  }
+}
+
+// ../../src/agent/taskRunner.ts
+var RAIL_TOKEN_BUDGET = typeof process.env.RAIL_TOKEN_BUDGET === "string" && !Number.isNaN(Number(process.env.RAIL_TOKEN_BUDGET)) ? Math.max(1e4, Math.min(18e4, Number(process.env.RAIL_TOKEN_BUDGET))) : 1e5;
+var ENTRY_CANDIDATES = ["index.ts", "index.tsx", "index.js", "index.jsx"];
+function resolveModuleToFilePath(modulePath, rootPath) {
+  const attempted = [];
+  const fullDir = path26.resolve(rootPath, modulePath);
+  const dirExists = fs24.existsSync(fullDir) && fs24.statSync(fullDir).isDirectory();
+  if (dirExists) {
+    for (const entry of ENTRY_CANDIDATES) {
+      const candidate = path26.join(fullDir, entry);
+      attempted.push(path26.relative(rootPath, candidate).replace(/\\/g, "/"));
+      if (fs24.existsSync(candidate)) {
+        return { path: attempted[attempted.length - 1] };
+      }
+    }
+  }
+  for (const ext of [".ts", ".tsx", ".js", ".jsx"]) {
+    const candidate = `${modulePath}${ext}`;
+    const full = path26.resolve(rootPath, candidate);
+    attempted.push(path26.relative(rootPath, full).replace(/\\/g, "/"));
+    if (fs24.existsSync(full)) {
+      return { path: attempted[attempted.length - 1] };
+    }
+  }
+  return { error: `Could not resolve module "${modulePath}" to a file`, attempted };
+}
+async function runTaskAtIndex(plan, taskIndex, rootPath, opts) {
+  const task = plan.tasks[taskIndex];
+  if (!task) {
+    return {
+      taskId: "",
+      toolResult: {},
+      traceId: getSessionId(),
+      error: "No task at index"
+    };
+  }
+  const isCreate = task.action === "create";
+  const requiresStagingWrite = (task.successChecks ?? []).some((c) => c.kind === "staging_write" && c.required === true) || isCreate;
+  let filePath;
+  let existingContent;
+  let astSummary;
+  if (!isCreate) {
+    const resolved = resolveModuleToFilePath(task.module, rootPath);
+    if ("error" in resolved) {
+      return {
+        taskId: task.id,
+        toolResult: { error: resolved.error, attempted: resolved.attempted },
+        traceId: getSessionId(),
+        error: `${resolved.error}. Tried: ${resolved.attempted.join(", ")}`
+      };
+    }
+    filePath = resolved.path;
+    const readResult = await executeTool2(
+      "read_file",
+      { path: filePath },
+      { rootPath, plan, taskId: task.id }
+    );
+    if (!readResult.success) {
+      return {
+        taskId: task.id,
+        toolResult: { error: readResult.error, ...readResult.output },
+        traceId: getSessionId(),
+        error: readResult.error
+      };
+    }
+    existingContent = readResult.output.content;
+    const astResult = await executeTool2(
+      "get_ast",
+      { path: filePath },
+      { rootPath, plan, taskId: task.id }
+    );
+    if (astResult.success) {
+      const o = astResult.output;
+      astSummary = {
+        path: String(o.path ?? filePath),
+        fingerprint: String(o.fingerprint ?? ""),
+        importCount: Array.isArray(o.imports) ? o.imports.length : 0,
+        exportFunctionCount: Array.isArray(o.exports?.functions) ? o.exports.functions.length : 0,
+        exportClassCount: Array.isArray(o.exports?.classes) ? o.exports.classes.length : 0,
+        exportInterfaceCount: Array.isArray(o.exports?.interfaces) ? o.exports.interfaces.length : 0,
+        exportConstCount: Array.isArray(o.exports?.constants) ? o.exports.constants.length : 0
+      };
+    }
+  }
+  if (opts?.skipLLM || !opts?.apiKey) {
+    return {
+      taskId: task.id,
+      toolResult: existingContent ? { content: existingContent } : {},
+      traceId: getSessionId()
+    };
+  }
+  let hasStaging = false;
+  let lastToolResult = {};
+  let readHops = 0;
+  const MAX_READ_HOPS = 4;
+  const MAX_ITER = typeof process.env.AGENT_MAX_ITER === "string" && !Number.isNaN(Number(process.env.AGENT_MAX_ITER)) ? Math.max(1, Math.min(50, Number(process.env.AGENT_MAX_ITER))) : 20;
+  let currentFilePath = filePath;
+  let currentFileContent = existingContent;
+  let currentError = opts?.errorOutput;
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    if (opts?.rail?.id) {
+      const telemetry = getRailTelemetry(opts.rail.id);
+      if (telemetry.tokenUsage >= RAIL_TOKEN_BUDGET) {
+        return {
+          taskId: task.id,
+          toolResult: lastToolResult,
+          traceId: getSessionId(),
+          error: `Rail token budget exceeded (${telemetry.tokenUsage}/${RAIL_TOKEN_BUDGET}). Set RAIL_TOKEN_BUDGET to increase.`,
+          hasStaging
+        };
+      }
+    }
+    const llmResult = await callLLM({
+      role: "code_writer",
+      goal: plan.goal,
+      plan,
+      taskId: task.id,
+      taskModule: task.module,
+      conversationTurns: opts?.conversationTurns,
+      fileContent: currentFileContent,
+      filePath: currentFilePath,
+      astSummary,
+      moduleSignals: opts?.moduleSignals,
+      errorOutput: currentError,
+      projectRoot: rootPath,
+      apiKey: opts.apiKey,
+      rail: opts?.rail,
+      railHistory: opts?.railHistory
+    });
+    if (llmResult.type === "no_api_key") {
+      return {
+        taskId: task.id,
+        toolResult: lastToolResult,
+        traceId: getSessionId(),
+        error: llmResult.error,
+        hasStaging
+      };
+    }
+    if (llmResult.type === "tool_call" && llmResult.tool === "write_file") {
+      const writeResult = await executeTool2("write_file", llmResult.input, {
+        rootPath,
+        plan,
+        taskId: task.id
+      });
+      if (!writeResult.success) {
+        return {
+          taskId: task.id,
+          toolResult: { error: writeResult.error },
+          traceId: getSessionId(),
+          error: writeResult.error,
+          hasStaging
+        };
+      }
+      hasStaging = true;
+      lastToolResult = writeResult.output;
+      break;
+    }
+    if (llmResult.type === "tool_call" && llmResult.tool === "read_file") {
+      if (readHops >= MAX_READ_HOPS) {
+        return {
+          taskId: task.id,
+          toolResult: lastToolResult,
+          traceId: getSessionId(),
+          error: `LLM exceeded ${MAX_READ_HOPS} read_file calls without writing`,
+          hasStaging
+        };
+      }
+      readHops++;
+      const pathToRead = typeof llmResult.input.path === "string" ? llmResult.input.path : "";
+      if (pathToRead) {
+        const secondRead = await executeTool2(
+          "read_file",
+          { path: pathToRead },
+          { rootPath, plan, taskId: task.id }
+        );
+        currentFilePath = pathToRead;
+        currentFileContent = secondRead.success ? secondRead.output.content : `[Error reading ${pathToRead}: ${secondRead.error}]`;
+        lastToolResult = secondRead.success ? secondRead.output : { error: secondRead.error };
+      }
+      continue;
+    }
+    if (llmResult.type === "tool_call" && llmResult.tool === "get_ast") {
+      const pathToRead = typeof llmResult.input.path === "string" ? llmResult.input.path : "";
+      if (pathToRead) {
+        const r = await executeTool2("get_ast", { path: pathToRead }, { rootPath, plan, taskId: task.id });
+        lastToolResult = r.success ? r.output : { error: r.error };
+      }
+      continue;
+    }
+    if (llmResult.type === "end_turn") {
+      lastToolResult = { note: llmResult.content };
+      break;
+    }
+    if (llmResult.type === "unknown_output") {
+      currentError = `Invalid or unparseable model output. Produce only a tool call (read_file/write_file/get_ast) or end_turn.
+
+Output:
+${llmResult.raw}`;
+      lastToolResult = { raw: llmResult.raw };
+      continue;
+    }
+    lastToolResult = { raw: llmResult.raw };
+    break;
+  }
+  const final = {
+    taskId: task.id,
+    toolResult: lastToolResult,
+    traceId: getSessionId(),
+    hasStaging
+  };
+  if (requiresStagingWrite && !hasStaging) {
+    final.error = `Task ${task.id} ended without producing a staging write.`;
+  }
+  return final;
+}
+
+// ../../src/agent/taskClassifier.ts
+var AUTO_CAPABLE_KINDS = /* @__PURE__ */ new Set([
+  "code_change",
+  "verification",
+  "lint",
+  "test",
+  "playwright"
+]);
+var HITL_PATTERNS = [
+  /human.?review|approval|sign.?off|confirm|manual/i,
+  /security|auth|credential|secret|production/i,
+  /delete|remove|destroy|drop/i,
+  /deploy|release|publish/i
+];
+function classifyTaskAutoCapable(task) {
+  if (task.autoCapable === false) return false;
+  if (task.autoCapable === true) return true;
+  if (!AUTO_CAPABLE_KINDS.has(task.kind)) return false;
+  const desc = (task.description ?? "").toLowerCase();
+  if (HITL_PATTERNS.some((p) => p.test(desc))) return false;
+  return true;
+}
+
+// ../../src/agent/runPlaywrightTrace.ts
+import * as path27 from "path";
+import * as fs25 from "fs";
+import { spawnSync as spawnSync4 } from "child_process";
+var STAGING_TRACES = ".arch-agent-staging/traces";
+function discoverPlaywrightSpecs(projectRoot3) {
+  const candidates = [];
+  const roots = ["tests", "playwright", "e2e"];
+  const exts = [".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".test.ts", ".test.js"];
+  const seen = /* @__PURE__ */ new Set();
+  function walk(dir, depth) {
+    if (depth <= 0) return;
+    let entries;
+    try {
+      entries = fs25.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path27.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full, depth - 1);
+      } else {
+        if (exts.some((ext) => e.name.endsWith(ext))) {
+          const rel = path27.relative(projectRoot3, full).replace(/\\/g, "/");
+          if (!seen.has(rel)) {
+            seen.add(rel);
+            candidates.push(rel);
+          }
+        }
+      }
+    }
+  }
+  for (const root of roots) {
+    const full = path27.join(projectRoot3, root);
+    if (fs25.existsSync(full) && fs25.statSync(full).isDirectory()) {
+      walk(full, 4);
+    }
+  }
+  return candidates.sort();
+}
+function parseSpecForRoutes(projectRoot3, specPath) {
+  const full = path27.join(projectRoot3, specPath);
+  const routes = [];
+  const modules = [];
+  const rel = specPath.replace(/\\/g, "/");
+  const parts = rel.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    modules.push(parts[0]);
+    if (parts.length >= 3) modules.push(parts.slice(0, 2).join("/"));
+  }
+  try {
+    const content = fs25.readFileSync(full, "utf-8");
+    const gotoMatches = content.matchAll(
+      /page\.goto\s*\(\s*[`'"](\/[^`'"]*)[`'"]\s*\)/g
+    );
+    for (const m of gotoMatches) {
+      const route = m[1]?.split("?")[0]?.replace(/\/$/, "") ?? "";
+      if (route && !routes.includes(route)) routes.push(route);
+    }
+    const routeLike = content.matchAll(/[`'"](\/[a-zA-Z0-9/_-]+)[`'"]/g);
+    for (const m of routeLike) {
+      const r = m[1];
+      if (r && r.startsWith("/") && r.length > 1 && !routes.includes(r)) {
+        routes.push(r);
+      }
+    }
+  } catch {
+  }
+  return { spec: specPath, routes, modules };
+}
+function discoverPlaywrightSpecMappings(projectRoot3) {
+  const specs = discoverPlaywrightSpecs(projectRoot3);
+  return specs.map((s) => parseSpecForRoutes(projectRoot3, s));
+}
+function mapSpecsToScope(projectRoot3, options) {
+  if (!options?.nodeIds?.length && !options?.routes?.length) {
+    return discoverPlaywrightSpecs(projectRoot3);
+  }
+  const mappings = discoverPlaywrightSpecMappings(projectRoot3);
+  const nodeIds = new Set(
+    (options.nodeIds ?? []).map((n) => n.replace(/\/$/, ""))
+  );
+  const routes = new Set(
+    (options.routes ?? []).map((r) => r.replace(/\/$/, ""))
+  );
+  const matched = /* @__PURE__ */ new Set();
+  for (const m of mappings) {
+    const moduleMatch = nodeIds.size === 0 || m.modules.some(
+      (mod) => Array.from(nodeIds).some((n) => mod.includes(n) || n.includes(mod))
+    );
+    const routeMatch = routes.size === 0 || m.routes.some(
+      (r) => Array.from(routes).some((rt) => r === rt || r.startsWith(rt + "/"))
+    );
+    if (moduleMatch || routeMatch) {
+      matched.add(m.spec);
+    }
+  }
+  if (matched.size > 0) return [...matched].sort();
+  return discoverPlaywrightSpecs(projectRoot3);
+}
+function collectFailures(suites, tracesDir, traceId) {
+  const failures = [];
+  for (const suite of suites ?? []) {
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) {
+        for (const result of test.results ?? []) {
+          if (result.status === "failed") {
+            const screenPath = result.attachments?.find((a) => a.name === "screenshot")?.path ?? path27.join(tracesDir, `${traceId}.png`);
+            failures.push({
+              testName: spec.title ?? test.title ?? "unknown",
+              error: result.error?.message ?? "Test failed",
+              screenshotPath: screenPath,
+              domSnapshot: "",
+              consoleErrors: [],
+              networkFailures: []
+            });
+          }
+        }
+      }
+    }
+  }
+  return failures;
+}
+function runPlaywrightTrace(projectRoot3, specPath, url, workingDir) {
+  const cwd = workingDir ?? projectRoot3;
+  const tracesDir = path27.join(cwd, STAGING_TRACES);
+  if (!fs25.existsSync(path27.dirname(tracesDir))) {
+    fs25.mkdirSync(path27.dirname(tracesDir), { recursive: true });
+  }
+  if (!fs25.existsSync(tracesDir)) {
+    fs25.mkdirSync(tracesDir, { recursive: true });
+  }
+  const traceId = `pw_${Date.now()}`;
+  const tracePath = path27.join(tracesDir, `${traceId}.zip`);
+  const jsonOut = path27.join(tracesDir, `${traceId}-results.json`);
+  const args = ["playwright", "test", specPath, "--reporter=json"];
+  const proc = spawnSync4("npx", args, {
+    cwd,
+    encoding: "utf-8",
+    env: {
+      ...process.env,
+      APP_URL: url,
+      PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOut
+    },
+    maxBuffer: 10 * 1024 * 1024
+  });
+  const failures = [];
+  let passed = proc.status === 0;
+  try {
+    const raw = fs25.existsSync(jsonOut) ? fs25.readFileSync(jsonOut, "utf-8") : "{}";
+    const parsed = JSON.parse(raw);
+    const suites = parsed?.suites ?? [];
+    const collected = collectFailures(suites ?? [], tracesDir, traceId);
+    if (collected.length > 0) {
+      passed = false;
+      failures.push(...collected);
+    }
+    try {
+      fs25.unlinkSync(jsonOut);
+    } catch {
+    }
+  } catch {
+    if (proc.status !== 0) {
+      passed = false;
+      failures.push({
+        testName: path27.basename(specPath),
+        error: (proc.stderr ?? proc.stdout ?? "Playwright failed").slice(0, 500),
+        screenshotPath: path27.join(tracesDir, `${traceId}.png`),
+        domSnapshot: "",
+        consoleErrors: [],
+        networkFailures: []
+      });
+    }
+  }
+  return {
+    passed,
+    spec: specPath,
+    failures,
+    tracePath
+  };
+}
+async function runPlaywrightForRail(railId, projectRoot3, sandboxPath, specs, baseUrl) {
+  let allPassed = true;
+  const allFailures = [];
+  let lastTracePath = "";
+  for (const spec of specs) {
+    const result = runPlaywrightTrace(projectRoot3, spec, baseUrl, sandboxPath);
+    allFailures.push(...result.failures);
+    if (!result.passed) {
+      allPassed = false;
+    }
+    lastTracePath = result.tracePath;
+    emitTrace({
+      role: "reviewer",
+      type: result.passed ? "info" : "error",
+      message: result.passed ? `Playwright spec ${spec} passed for rail ${railId}` : `Playwright spec ${spec} failed for rail ${railId}`,
+      railId,
+      metadata: {
+        filePath: spec
+      }
+    });
+  }
+  return {
+    passed: allPassed,
+    spec: specs.join(", "),
+    failures: allFailures,
+    tracePath: lastTracePath
+  };
+}
+
+// ../../src/agent/verificationPipeline.ts
+async function runVerificationPipeline(opts) {
+  const { projectRoot: projectRoot3, sandboxPath, railId, baseUrl, specPaths, scope } = opts;
+  const url = baseUrl ?? process.env.APP_URL ?? "http://127.0.0.1:4173";
+  const lint = runLint(projectRoot3, void 0, sandboxPath);
+  const vitest = runVitest(projectRoot3, void 0, sandboxPath);
+  const specs = specPaths ?? (scope ? mapSpecsToScope(projectRoot3, scope) : discoverPlaywrightSpecs(projectRoot3));
+  let playwright = null;
+  if (specs.length > 0) {
+    playwright = await runPlaywrightForRail(
+      railId ?? "verify",
+      projectRoot3,
+      sandboxPath,
+      specs,
+      url
+    );
+  }
+  const passed = lint.passed && vitest.passed && (!playwright || playwright.passed);
+  const errorParts = [];
+  if (!lint.passed) {
+    errorParts.push(
+      `Lint errors (${lint.errors.length}):
+${lint.errors.slice(0, 8).map((e) => `  ${e.filePath}:${e.line}:${e.column} - ${e.message}`).join("\n")}`
+    );
+  }
+  if (!vitest.passed) {
+    errorParts.push(
+      `Vitest failures (${vitest.failures.length}):
+${vitest.failures.slice(0, 5).map((f) => `  ${f.testName} (${f.filePath}): ${f.error.slice(0, 200)}`).join("\n")}`
+    );
+  }
+  if (playwright && !playwright.passed) {
+    errorParts.push(
+      `Playwright failures:
+${playwright.failures.slice(0, 5).map((f) => `  ${f.testName}: ${f.error.slice(0, 200)}`).join("\n")}`
+    );
+  }
+  const errorFeedback = errorParts.join("\n\n");
+  return {
+    passed,
+    lint,
+    vitest,
+    playwright,
+    errorFeedback
+  };
+}
+
+// src/railExecute.ts
+var workspaceExecutionCounts = /* @__PURE__ */ new Map();
+var MAX_CONCURRENT_PER_WORKSPACE = typeof process.env.RAIL_MAX_CONCURRENT === "string" && !Number.isNaN(Number(process.env.RAIL_MAX_CONCURRENT)) ? Math.max(1, Number(process.env.RAIL_MAX_CONCURRENT)) : 1;
+async function resolveRootFromWorkspace(workspaceId, ownerId) {
+  if (!supabaseAdmin) return null;
+  try {
+    const { data, error } = await supabaseAdmin.from("workspaces").select("project_root").eq("id", workspaceId).eq("owner_id", ownerId).maybeSingle();
+    if (error || !data) return null;
+    const pr = data.project_root;
+    return typeof pr === "string" && pr.trim() ? path28.resolve(pr.trim()) : null;
+  } catch {
+    return null;
+  }
+}
+async function triggerRailExecution(railId, workspaceId, userId, broadcast) {
+  const currentExec = workspaceExecutionCounts.get(workspaceId) ?? 0;
+  if (currentExec >= MAX_CONCURRENT_PER_WORKSPACE) {
+    throw new Error("Execution limit reached for this workspace. Try again later.");
+  }
+  let root = await resolveRootFromWorkspace(workspaceId, userId);
+  if (!root && supabaseAdmin) {
+    const { data: gr } = await supabaseAdmin.from("graphs").select("graph_json, repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+    const graph = gr?.graph_json ?? { nodes: [], edges: [], generatedAt: Date.now(), projectRoot: "" };
+    const repoUrl = gr?.repo_url ?? null;
+    const { rootPath, error } = await ensureProjectRoot(workspaceId, graph, repoUrl);
+    if (rootPath !== null) root = rootPath;
+    else throw new Error(error || "Workspace has no project_root. Please scan the repository first.");
+  }
+  if (!root) throw new Error("Workspace has no project_root.");
+  loadRails(root);
+  const rail = getRail(root, railId);
+  if (!rail) throw new Error("Rail not found.");
+  if (rail.archetype !== "analysis-chat") {
+    throw new Error("Only analysis-chat rails can be executed.");
+  }
+  const codeTasks = (rail.tasks ?? []).filter(
+    (t) => t.kind === "code_change" && classifyTaskAutoCapable(t)
+  );
+  if (codeTasks.length === 0) {
+    throw new Error("Rail has no code_change tasks to run.");
+  }
+  if (!["PRE_PLANNING", "PLANNING", "AWAITING_APPROVAL"].includes(rail.state)) {
+    throw new Error(
+      `Rail must be in PRE_PLANNING, PLANNING, or AWAITING_APPROVAL. Current: ${rail.state}`
+    );
+  }
+  const bgTask = createTask2();
+  setTaskRunning(bgTask.taskId);
+  workspaceExecutionCounts.set(workspaceId, currentExec + 1);
+  const sandboxPath = ensureSandbox(root, rail.id);
+  const paths = (rail.logicPath ?? []).map(
+    (s) => typeof s === "object" && s && "filePath" in s && typeof s.filePath === "string" ? s.filePath : String(s)
+  ).filter(Boolean);
+  const syncPaths = paths.length > 0 ? paths : ["src"];
+  syncSandboxFromRoot(root, rail.id, syncPaths);
+  const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+  const goal = rail.outcome ?? rail.trigger?.userMessage ?? "Analysis rail";
+  const plan = {
+    goal,
+    tasks: codeTasks.map((t, i) => ({
+      id: t.id,
+      module: rail.logicPath?.[i]?.filePath ?? `step-${i + 1}`,
+      layer: rail.logicPath?.[i]?.layer ?? "Service",
+      action: "modify",
+      expectedOutput: t.description ?? `Step ${i + 1}`
+    })),
+    dependencies: []
+  };
+  for (let i = 0; i < plan.tasks.length - 1; i++) {
+    plan.dependencies.push([plan.tasks[i].id, plan.tasks[i + 1].id]);
+  }
+  Promise.resolve().then(async () => {
+    if (isTaskCancelled(bgTask.taskId)) return;
+    const current = getRail(root, railId);
+    if (current && (current.state === "PRE_PLANNING" || current.state === "PLANNING")) {
+      transitionRail(root, railId, "AWAITING_APPROVAL");
+    }
+    const tr = transitionRail(root, railId, "EXECUTING", { planApproved: true });
+    if (!tr.ok) {
+      setTaskFailed(bgTask.taskId, tr.error ?? "Invalid transition.");
+      return;
+    }
+    const attemptHistory = [];
+    const maxSelfCorrect = rail.telemetry?.retryLimit ?? (typeof process.env.RAIL_SELF_CORRECT_MAX === "string" && !Number.isNaN(Number(process.env.RAIL_SELF_CORRECT_MAX)) ? Math.max(0, Math.min(5, Number(process.env.RAIL_SELF_CORRECT_MAX))) : 2);
+    let lastVerificationFeedback;
+    let verification = null;
+    let attempt = 0;
+    while (attempt <= maxSelfCorrect && !isTaskCancelled(bgTask.taskId)) {
+      for (let idx = 0; idx < plan.tasks.length && !isTaskCancelled(bgTask.taskId); idx++) {
+        const railTask = codeTasks[idx];
+        if (railTask) updateTaskStatus(railTask.id, "executing");
+        const result = await runTaskAtIndex(plan, idx, sandboxPath, {
+          apiKey,
+          errorOutput: lastVerificationFeedback,
+          rail,
+          railHistory: attemptHistory
+        });
+        if (result.error) {
+          attemptHistory.push({
+            role: "assistant",
+            content: `Task ${railTask?.id ?? idx} error: ${result.error}`
+          });
+        }
+        if (railTask) updateTaskStatus(railTask.id, "completed");
+      }
+      const nodeIds = (rail.logicPath ?? []).map((s) => typeof s === "object" && s && "nodeId" in s && typeof s.nodeId === "string" ? s.nodeId : null).filter((x) => !!x);
+      verification = await runVerificationPipeline({
+        projectRoot: root,
+        sandboxPath,
+        railId: rail.id,
+        baseUrl: process.env.APP_URL || "http://127.0.0.1:4173",
+        scope: nodeIds.length > 0 ? { nodeIds } : void 0
+      });
+      const passed2 = verification.passed;
+      lastVerificationFeedback = verification.errorFeedback || void 0;
+      if (passed2) break;
+      attempt++;
+    }
+    const { passed, lint, vitest, playwright: playwrightResult } = verification ?? {
+      passed: false,
+      lint: { passed: false, errors: [] },
+      vitest: { passed: false, summary: { total: 0, passed: 0, failed: 0, skipped: 0 }, failures: [] },
+      playwright: null
+    };
+    const errorOutput = lastVerificationFeedback ?? "Verification failed.";
+    const verificationTaskId = `verify-${Date.now()}`;
+    createTask({
+      id: verificationTaskId,
+      railId: rail.id,
+      kind: "verification",
+      description: "Lint + Vitest in sandbox",
+      files: [],
+      autoCapable: true,
+      status: passed ? "completed" : "rejected",
+      agent: "reviewer",
+      logicStep: 0,
+      createdAt: Date.now(),
+      resolvedAt: Date.now()
+    });
+    updateTaskEvidence(verificationTaskId, JSON.stringify({ lint, vitest, playwright: playwrightResult }));
+    const attemptNumber = (rail.telemetry?.retryCount ?? 0) + 1;
+    const attemptSummary = passed ? "Verification passed." : errorOutput || "Verification failed.";
+    updateRailPartial(root, railId, {
+      lastCritique: {
+        source: passed ? "test" : "lint",
+        message: passed ? "Lint, Vitest, and Playwright passed." : errorOutput || "Verification failed.",
+        createdAt: Date.now(),
+        attempt: attemptNumber,
+        totalAttempts: rail.telemetry?.retryLimit ?? 1
+      },
+      telemetry: {
+        ...rail.telemetry ?? {},
+        retryCount: (rail.telemetry?.retryCount ?? 0) + (passed ? 0 : 1)
+      },
+      attemptHistory: [
+        ...rail.attemptHistory ?? [],
+        { timestamp: Date.now(), summary: attemptSummary.slice(0, 5e3) }
+      ]
+    });
+    const toState = passed ? "VERIFYING" : "SELF_CORRECTING";
+    transitionRail(root, railId, toState);
+    setTaskCompleted(bgTask.taskId, {
+      message: passed ? "Verification passed. You can approve materialization." : "Verification failed. Review failures in rail detail.",
+      railId: rail.id,
+      verificationPassed: passed,
+      lint: { passed: lint.passed, errors: lint.errors.length },
+      vitest: { passed: vitest.passed, failures: vitest.failures.length },
+      playwright: playwrightResult ? { passed: playwrightResult.passed, failures: playwrightResult.failures.length } : null
+    });
+    if (supabaseAdmin && workspaceId) {
+      try {
+        await supabaseAdmin.from("workspace_memories").insert({
+          workspace_id: workspaceId,
+          content: passed ? `Rail ${rail.id} verification passed. Outcome: ${rail.outcome ?? ""}` : `Rail ${rail.id} verification failed. See lint, vitest, and Playwright results.`,
+          memory_type: "rail_result",
+          rail_id: rail.id
+        });
+      } catch {
+      }
+    }
+    if (!passed && workspaceId && broadcast) {
+      broadcast(workspaceId, { type: "rail_hitl", railId: rail.id, reason: "verification_failed" });
+    }
+  }).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    setTaskFailed(bgTask.taskId, msg);
+    updateRailPartial(root, railId, {
+      lastCritique: { source: "unknown", message: msg, createdAt: Date.now() }
+    });
+  }).finally(() => {
+    const cur = workspaceExecutionCounts.get(workspaceId) ?? 0;
+    const next = Math.max(0, cur - 1);
+    if (next === 0) workspaceExecutionCounts.delete(workspaceId);
+    else workspaceExecutionCounts.set(workspaceId, next);
+    if (broadcast) broadcast(workspaceId, { type: "rail_execute_complete", railId });
+  });
+  return { taskId: bgTask.taskId };
+}
+
+// src/todos.ts
 var router3 = Router3();
+var AUTO_EXEC_WINDOW_MS = 10 * 6e4;
+var AUTO_EXEC_MAX_PER_WINDOW = 10;
+var autoExecCounters = /* @__PURE__ */ new Map();
+async function completeTodosForRail(railId) {
+  if (!supabaseAdmin) return;
+  try {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const { data: rows } = await supabaseAdmin.from("todos").select("id, workspace_id").eq("rail_id", railId);
+    await supabaseAdmin.from("todos").update({ status: "completed", updated_at: now }).eq("rail_id", railId);
+    if (rows && rows.length > 0) {
+      const workspaceId = rows[0].workspace_id;
+      if (workspaceId) {
+        await supabaseAdmin.rpc("unlock_todos_for_workspace", {
+          p_workspace_id: workspaceId
+        });
+      }
+    }
+  } catch {
+  }
+}
+router3.get("/todos", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const includeArchived = req.query.includeArchived === "true" || req.query.includeArchived === "1";
+  let query = supabaseAdmin.from("todos").select("*").eq("workspace_id", workspaceId).order("created_at", { ascending: true });
+  if (!includeArchived) {
+    query = query.is("archived_at", null);
+  }
+  const { data, error } = await query;
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ todos: data ?? [] });
+});
+router3.post("/todos", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.body?.workspaceId?.trim();
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const description = typeof req.body?.description === "string" ? req.body.description.trim() : null;
+  const phase = typeof req.body?.phase === "number" ? req.body.phase : typeof req.body?.phase === "string" ? parseInt(req.body.phase, 10) || null : null;
+  const dependsOn = Array.isArray(req.body?.dependsOn) ? req.body.dependsOn.filter((x) => typeof x === "string" && x.trim()) : [];
+  if (!workspaceId || !title) {
+    res.status(400).json({ error: "workspaceId and title are required" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  if (dependsOn.length) {
+    const { data: deps, error: depsErr } = await supabaseAdmin.from("todos").select("id, status").in("id", dependsOn).eq("workspace_id", workspaceId);
+    if (depsErr) {
+      res.status(500).json({ error: depsErr.message });
+      return;
+    }
+    if (!deps || deps.length !== dependsOn.length) {
+      res.status(400).json({ error: "One or more dependency todos do not exist in this workspace." });
+      return;
+    }
+  }
+  const { data, error } = await supabaseAdmin.from("todos").insert({
+    workspace_id: workspaceId,
+    title,
+    description,
+    phase,
+    depends_on: dependsOn.length ? dependsOn : null,
+    status: "pending",
+    source: req.body?.source ?? null,
+    source_path: req.body?.sourcePath ?? null
+  }).select("*").single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.status(201).json({ todo: data });
+});
+router3.get("/todos/dependencies/ready", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("todos").select("id, depends_on, status").eq("workspace_id", workspaceId).is("archived_at", null);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  const rows = data ?? [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const ready = [];
+  for (const row of rows) {
+    if (row.status !== "pending") continue;
+    const deps = row.depends_on ?? [];
+    if (deps.every((id) => {
+      const dep = byId.get(id);
+      return dep && dep.status === "completed";
+    })) {
+      ready.push(row.id);
+    }
+  }
+  res.json({ ready });
+});
+router3.patch("/todos/:id", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const todoId = req.params.id;
+  const updates = {};
+  if (typeof req.body?.title === "string") {
+    updates.title = req.body.title.trim();
+  }
+  if (typeof req.body?.description === "string") {
+    updates.description = req.body.description.trim();
+  }
+  if (req.body?.phase !== void 0) {
+    updates.phase = typeof req.body.phase === "number" ? req.body.phase : typeof req.body.phase === "string" ? parseInt(req.body.phase, 10) || null : null;
+  }
+  if (Array.isArray(req.body?.dependsOn)) {
+    const dependsOn = req.body.dependsOn.filter(
+      (x) => typeof x === "string" && x.trim()
+    );
+    updates.depends_on = dependsOn.length ? dependsOn : null;
+  }
+  if (typeof req.body?.status === "string") {
+    updates.status = req.body.status;
+  }
+  if (req.body?.archived === false || req.body?.archived === null) {
+    updates.archived_at = null;
+  }
+  if (req.body?.archived === true) {
+    updates.archived_at = (/* @__PURE__ */ new Date()).toISOString();
+  }
+  const { data: row, error: fetchErr } = await supabaseAdmin.from("todos").select("id, workspace_id").eq("id", todoId).maybeSingle();
+  if (fetchErr) {
+    res.status(500).json({ error: fetchErr.message });
+    return;
+  }
+  if (!row) {
+    res.status(404).json({ error: "Todo not found" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", row.workspace_id).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("todos").update(updates).eq("id", todoId).select("*").single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ todo: data });
+});
+router3.delete("/todos/:id", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const todoId = req.params.id;
+  const hardDelete = req.query.hard === "true" || req.query.hard === "1";
+  const { data: row, error: fetchErr } = await supabaseAdmin.from("todos").select("id, workspace_id").eq("id", todoId).maybeSingle();
+  if (fetchErr) {
+    res.status(500).json({ error: fetchErr.message });
+    return;
+  }
+  if (!row) {
+    res.status(404).json({ error: "Todo not found" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", row.workspace_id).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  if (hardDelete) {
+    const { error: error2 } = await supabaseAdmin.from("todos").delete().eq("id", todoId);
+    if (error2) {
+      res.status(500).json({ error: error2.message });
+      return;
+    }
+    res.status(204).send();
+    return;
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const { error } = await supabaseAdmin.from("todos").update({ archived_at: now }).eq("id", todoId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.status(204).send();
+});
+async function todoToRailCore(todoId, userId) {
+  if (!supabaseAdmin) throw new Error("Auth service not configured.");
+  const { data: todoRow, error: todoErr } = await supabaseAdmin.from("todos").select("id, title, description, workspace_id, rail_id, source, source_path").eq("id", todoId).maybeSingle();
+  if (todoErr) throw new Error(todoErr.message);
+  if (!todoRow) throw new Error("Todo not found");
+  const workspaceId = todoRow.workspace_id;
+  if (!workspaceId) throw new Error("Todo has no workspace_id");
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", userId).single();
+  if (!ws) throw new Error("Access denied");
+  if (todoRow.rail_id) return { railId: todoRow.rail_id };
+  let rootPath = null;
+  let repoUrl = null;
+  const { data: graphRow } = await supabaseAdmin.from("graphs").select("graph_json, repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  const graph = graphRow?.graph_json ?? null;
+  repoUrl = graphRow?.repo_url ?? null;
+  const { rootPath: resolved, error } = await ensureProjectRoot(
+    workspaceId,
+    graph ?? { nodes: [], edges: [] },
+    repoUrl
+  );
+  if (resolved !== null) rootPath = resolved;
+  else if (error) throw new Error(error);
+  if (!rootPath) throw new Error("Workspace has no project_root; scan a repo before creating rails.");
+  const now = Date.now();
+  const railId = `rail-todo-${todoId}-${now}`;
+  const taskDesc = typeof todoRow.description === "string" && todoRow.description.trim() || String(todoRow.title ?? "").slice(0, 200) || "Implement todo";
+  const logicStep = {
+    step: 1,
+    layer: "Service",
+    nodeId: "todo",
+    filePath: "src",
+    action: taskDesc.slice(0, 120)
+  };
+  const rail = {
+    id: railId,
+    version: 1,
+    outcome: String(todoRow.title ?? "").slice(0, 200) || "Todo rail",
+    trigger: {
+      source: "chat",
+      userMessage: `Todo: ${String(todoRow.title ?? "").slice(0, 200)}`,
+      sessionId: userId ?? "webapp"
+    },
+    workspaceId,
+    repoUrl,
+    archetype: "analysis-chat",
+    logicPath: [logicStep],
+    state: "PRE_PLANNING",
+    activeAgent: null,
+    tasks: [],
+    jiraKeys: [],
+    traceIds: [],
+    overlaps: [],
+    createdAt: now,
+    updatedAt: now,
+    createdBy: "human",
+    sessionId: userId ?? "webapp",
+    originSummary: typeof todoRow.description === "string" && todoRow.description.trim() || String(todoRow.title ?? "").slice(0, 200)
+  };
+  createRail(rootPath, rail);
+  const codeTask = {
+    id: `task-todo-${todoId}`,
+    railId,
+    kind: "code_change",
+    description: taskDesc,
+    files: [],
+    autoCapable: true,
+    status: "pending",
+    agent: "executor",
+    logicStep: 1,
+    createdAt: now
+  };
+  createTask(codeTask);
+  const { error: linkErr } = await supabaseAdmin.from("todos").update({ rail_id: railId }).eq("id", todoId);
+  if (linkErr) throw new Error(linkErr.message);
+  return { railId };
+}
+async function runAutoRailsAndExecute(workspaceId, userId, limit) {
+  if (!supabaseAdmin) return { startedRails: [] };
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id, auto_execute_enabled").eq("id", workspaceId).eq("owner_id", userId).single();
+  if (!ws || !ws.auto_execute_enabled) {
+    return { startedRails: [] };
+  }
+  const { data, error } = await supabaseAdmin.from("todos").select("id, depends_on, status, archived_at").eq("workspace_id", workspaceId);
+  if (error) return { startedRails: [] };
+  const rows = data ?? [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const readyTodoIds = [];
+  for (const row of rows) {
+    if (row.archived_at != null || row.status !== "pending") continue;
+    const deps = row.depends_on ?? [];
+    if (deps.every((id) => (byId.get(id)?.status ?? "") === "completed")) {
+      readyTodoIds.push(row.id);
+    }
+  }
+  const picked = readyTodoIds.slice(0, Math.max(1, limit));
+  const startedRails = [];
+  for (const todoId of picked) {
+    try {
+      const { railId } = await todoToRailCore(todoId, userId);
+      await triggerRailExecution(railId, workspaceId, userId);
+      startedRails.push({ id: railId });
+    } catch (err) {
+      console.warn("[auto-rails-and-execute] todo", todoId, err instanceof Error ? err.message : err);
+    }
+  }
+  return { startedRails };
+}
+router3.post("/todos/:id/to-rail", requireUser, async (req, res) => {
+  const todoId = req.params.id;
+  if (!todoId) {
+    res.status(400).json({ error: "todo id is required" });
+    return;
+  }
+  try {
+    const { railId } = await todoToRailCore(todoId, req.user.id);
+    res.status(201).json({ railId, todoId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("not configured")) res.status(503).json({ error: msg });
+    else if (msg.includes("not found") || msg.includes("Todo not found")) res.status(404).json({ error: msg });
+    else if (msg.includes("Access denied")) res.status(403).json({ error: msg });
+    else if (msg.includes("required") || msg.includes("workspace")) res.status(400).json({ error: msg });
+    else res.status(500).json({ error: msg });
+  }
+});
+router3.post("/todos/auto-rails-and-execute", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.body?.workspaceId?.trim();
+  const limitRaw = req.body?.limit;
+  const limit = typeof limitRaw === "number" ? limitRaw : typeof limitRaw === "string" ? parseInt(limitRaw, 10) || 3 : 3;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id, auto_execute_enabled").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  if (!ws.auto_execute_enabled) {
+    res.status(403).json({
+      error: "Auto-execution is disabled for this workspace.",
+      code: "AUTO_EXEC_DISABLED"
+    });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("todos").select("id, depends_on, status, archived_at").eq("workspace_id", workspaceId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  const rows = data ?? [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const readyTodoIds = [];
+  for (const row of rows) {
+    if (row.archived_at != null || row.status !== "pending") continue;
+    const deps = row.depends_on ?? [];
+    const allCompleted = deps.every((id) => {
+      const dep = byId.get(id);
+      return dep && dep.status === "completed";
+    });
+    if (allCompleted) readyTodoIds.push(row.id);
+  }
+  const picked = readyTodoIds.slice(0, Math.max(1, limit));
+  if (picked.length === 0) {
+    res.json({ startedRails: [], message: "No dependency-ready todos to execute." });
+    return;
+  }
+  const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, limit);
+  res.json({ startedRails, pickedTodoIds: picked });
+});
+router3.post("/todos/auto-execute-ready", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.body?.workspaceId?.trim();
+  const limitRaw = req.body?.limit;
+  const limit = typeof limitRaw === "number" ? limitRaw : typeof limitRaw === "string" ? parseInt(limitRaw, 10) || 3 : 3;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const now = Date.now();
+  const counter = autoExecCounters.get(workspaceId) ?? { count: 0, windowStart: now };
+  if (now - counter.windowStart > AUTO_EXEC_WINDOW_MS) {
+    counter.count = 0;
+    counter.windowStart = now;
+  }
+  if (counter.count >= AUTO_EXEC_MAX_PER_WINDOW) {
+    autoExecCounters.set(workspaceId, counter);
+    res.status(429).json({
+      error: "Auto-execution limit reached for this workspace. Try again later.",
+      code: "AUTO_EXEC_LIMIT",
+      limit: AUTO_EXEC_MAX_PER_WINDOW,
+      windowMs: AUTO_EXEC_WINDOW_MS
+    });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id, auto_execute_enabled").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  if (!ws.auto_execute_enabled) {
+    res.status(403).json({
+      error: "Auto-execution is disabled for this workspace.",
+      code: "AUTO_EXEC_DISABLED"
+    });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("todos").select("id, depends_on, status, archived_at").eq("workspace_id", workspaceId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  const rows = data ?? [];
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const readyTodoIds = [];
+  for (const row of rows) {
+    if (row.archived_at != null || row.status !== "pending") continue;
+    const deps = row.depends_on ?? [];
+    const allCompleted = deps.every((id) => {
+      const dep = byId.get(id);
+      return dep && dep.status === "completed";
+    });
+    if (allCompleted) readyTodoIds.push(row.id);
+  }
+  const picked = readyTodoIds.slice(0, Math.max(1, limit));
+  if (picked.length === 0) {
+    res.json({ startedRails: [], message: "No dependency-ready todos to execute." });
+    return;
+  }
+  counter.count += picked.length;
+  autoExecCounters.set(workspaceId, counter);
+  const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, limit);
+  res.json({
+    startedRails,
+    pickedTodoIds: picked,
+    remainingReady: readyTodoIds.length - picked.length
+  });
+});
+router3.post("/todos/from-chat", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = req.body?.workspaceId?.trim();
+  const items = Array.isArray(req.body?.items) ? req.body.items.map((v) => typeof v === "string" ? v.trim() : "").filter(Boolean) : [];
+  if (!workspaceId || items.length === 0) {
+    res.status(400).json({ error: "workspaceId and at least one todo item are required" });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const titles = items;
+  const { data: existing } = await supabaseAdmin.from("todos").select("title").eq("workspace_id", workspaceId).in("title", titles);
+  const existingTitles = new Set((existing ?? []).map((r) => String(r.title)));
+  const rows = items.filter((title) => !existingTitles.has(title)).map((title) => ({
+    workspace_id: workspaceId,
+    title,
+    description: null,
+    phase: null,
+    depends_on: null,
+    status: "pending",
+    source: "chat",
+    source_path: null
+  }));
+  if (rows.length === 0) {
+    res.json({ created: [], skipped: items.length });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("todos").insert(rows).select("*");
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.status(201).json({
+    created: data ?? [],
+    skipped: items.length - rows.length
+  });
+});
+
+// src/chatSessionRails.ts
+var sessionRails = /* @__PURE__ */ new Map();
+function sessionKey(threadId, workspaceId, userId) {
+  if (threadId && typeof threadId === "string" && threadId.trim()) {
+    return `thread:${threadId.trim()}`;
+  }
+  if (workspaceId) {
+    return `ws:${workspaceId}:${userId}`;
+  }
+  return `user:${userId}`;
+}
+function addRailsToSession(threadId, workspaceId, userId, railIds) {
+  if (railIds.length === 0) return;
+  const key = sessionKey(threadId, workspaceId, userId);
+  const prev = sessionRails.get(key) ?? [];
+  sessionRails.set(key, [...prev, ...railIds]);
+}
+function getSessionRails(threadId, workspaceId, userId) {
+  const key = sessionKey(threadId, workspaceId, userId);
+  return sessionRails.get(key) ?? [];
+}
+function parseRailIntent(question) {
+  const lower = question.toLowerCase().trim();
+  const retryMatch = lower.match(/\bretry\s+rail\s+(\d+)\b/);
+  if (retryMatch) {
+    const n = parseInt(retryMatch[1], 10);
+    if (n >= 1) return { action: "retry", index: n - 1 };
+  }
+  const cancelMatch = lower.match(/\bcancel\s+rail\s+(\d+)\b/);
+  if (cancelMatch) {
+    const n = parseInt(cancelMatch[1], 10);
+    if (n >= 1) return { action: "cancel", index: n - 1 };
+  }
+  return null;
+}
+
+// src/railActions.ts
+import * as path29 from "path";
+async function resolveRoot(workspaceId, userId) {
+  if (!supabaseAdmin) return null;
+  try {
+    const { data, error } = await supabaseAdmin.from("workspaces").select("project_root").eq("id", workspaceId).eq("owner_id", userId).maybeSingle();
+    if (error || !data) return null;
+    const pr = data.project_root;
+    return typeof pr === "string" && pr.trim() ? path29.resolve(pr.trim()) : null;
+  } catch {
+    return null;
+  }
+}
+async function cancelRail(railId, workspaceId, userId) {
+  const root = await resolveRoot(workspaceId, userId);
+  if (!root) return { ok: false, error: "Workspace has no project_root." };
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) return { ok: false, error: "Rail not found." };
+    if (!["EXECUTING", "VERIFYING", "SELF_CORRECTING", "AWAITING_HITL"].includes(rail.state)) {
+      return { ok: false, error: `Rail is not cancellable from state ${rail.state}.` };
+    }
+    const result = transitionRail(root, railId, "SUSPENDED");
+    if (!result.ok || !result.rail) return { ok: false, error: result.error ?? "Invalid transition." };
+    updateRailState(root, railId, result.rail.state);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+async function retryRail(railId, workspaceId, userId) {
+  try {
+    const { taskId } = await triggerRailExecution(railId, workspaceId, userId);
+    return { ok: true, taskId };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// src/chat.ts
+var router4 = Router4();
 function maybeCreateAnalysisRail(params) {
-  if (params.mode !== "analysis") return;
-  if (!params.rootPath) return;
+  if (params.mode !== "analysis") return null;
+  if (!params.rootPath) return null;
   const now = Date.now();
   const railId = `rail-analysis-${now}-${Math.random().toString(16).slice(2, 8)}`;
   const trigger = {
@@ -5198,6 +7917,8 @@ function maybeCreateAnalysisRail(params) {
     version: 1,
     outcome: hasProposalNodes ? typeof proposal.summary === "string" && proposal.summary.trim() ? proposal.summary.trim() : params.question.slice(0, 200) : params.question.slice(0, 200),
     trigger,
+    workspaceId: params.workspaceId ?? null,
+    repoUrl: params.repoUrl ?? null,
     archetype: "analysis-chat",
     logicPath,
     state: hasProposalNodes ? "PRE_PLANNING" : "ARCHIVED",
@@ -5225,6 +7946,7 @@ function maybeCreateAnalysisRail(params) {
   };
   try {
     const created = createRail(params.rootPath, rail);
+    const taskId = `task-meta-${randomUUID()}`;
     const task = {
       id: taskId,
       railId: created.id,
@@ -5275,15 +7997,18 @@ function maybeCreateAnalysisRail(params) {
         createTask(codeTask);
       });
     }
+    return created.id;
   } catch (err) {
     console.error("[chat] maybeCreateAnalysisRail failed", {
       rootPath: params.rootPath,
-      error: err instanceof Error ? err.message : String(err)
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : void 0
     });
   }
+  return null;
 }
-router3.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId } = req.body;
+router4.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } = req.body;
   if (!question || typeof question !== "string") {
     res.status(400).json({ error: "question is required" });
     return;
@@ -5302,11 +8027,73 @@ router3.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, r
     res.status(400).json({ error: "History too long. Max 50 messages." });
     return;
   }
+  if (pdfBase64 != null && (typeof pdfBase64 !== "string" || pdfBase64.length > 5e7)) {
+    res.status(400).json({ error: "PDF too large. Max ~25MB." });
+    return;
+  }
+  const railIntent = parseRailIntent(question);
+  if (railIntent && workspaceId && req.user?.id) {
+    const sessionRailsList = getSessionRails(threadId ?? void 0, workspaceId, req.user.id);
+    const railId = sessionRailsList[railIntent.index];
+    if (railId) {
+      try {
+        if (railIntent.action === "cancel") {
+          const out = await cancelRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Cancelled rail ${railIntent.index + 1}.`,
+              railAction: { action: "cancel", railId, index: railIntent.index + 1 },
+              rails: [{ id: railId }]
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Cancel failed." });
+          return;
+        }
+        if (railIntent.action === "retry") {
+          const out = await retryRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Retrying rail ${railIntent.index + 1}. Execution started.`,
+              railAction: { action: "retry", railId, taskId: out.taskId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+              boardHint: { workspaceId }
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Retry failed." });
+          return;
+        }
+      } catch {
+      }
+    }
+  }
+  const lowered = question.toLowerCase();
+  const isExecutionIntent = lowered.includes("start implementing") || lowered.includes("run the tasks") || lowered.includes("go fix these") || lowered.includes("apply the plan") || lowered.includes("execute the rail");
+  const looksLikeTodoLine = (line) => /^(\d+\.\s+|-|\*)\s+.+/.test(line.trim());
+  const lines = question.split(/\r?\n/);
+  const todoLines = lines.filter(looksLikeTodoLine).map((l) => l.replace(/^(\d+\.\s+|-|\*)\s+/, "").trim());
+  const isTodoIntent = !!workspaceId && todoLines.length > 0 && (lowered.includes("todo list") || lowered.includes("todos:") || lowered.includes("backlog") || lowered.includes("tasks:"));
   const clientMode = req.body?.mode;
   const explicitMode = clientMode === "greenfield" || clientMode === "analysis" ? clientMode : null;
   const isEmptyGraph = graph.nodes.length === 0;
   const mode = explicitMode ?? (isEmptyGraph ? "greenfield" : "analysis");
-  const rootPath = mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== "" ? graph.projectRoot : null;
+  let rootPath = mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== "" ? graph.projectRoot.trim() : null;
+  let repoUrl = null;
+  if (mode === "analysis" && workspaceId && supabaseAdmin) {
+    const { data: gr } = await supabaseAdmin.from("graphs").select("repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+    repoUrl = gr?.repo_url ?? null;
+    const { rootPath: resolved, error } = await ensureProjectRoot(
+      workspaceId,
+      graph,
+      repoUrl
+    );
+    if (resolved !== null) rootPath = resolved;
+    else if (error && rootPath === null) {
+      res.status(400).json({ error });
+      return;
+    }
+  }
   try {
     const findings = [];
     const startMs = Date.now();
@@ -5343,6 +8130,45 @@ ${question}`;
         jiraProjectKey = (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ?? userJira.project ?? void 0;
       }
     }
+    if (isTodoIntent && workspaceId && supabaseAdmin && todoLines.length > 0) {
+      try {
+        const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+        if (!ws) {
+          res.status(403).json({ error: "Access denied for workspace." });
+          return;
+        }
+        const { data: existing } = await supabaseAdmin.from("todos").select("title").eq("workspace_id", workspaceId).in("title", todoLines);
+        const existingTitles = new Set((existing ?? []).map((r) => String(r.title)));
+        const rows = todoLines.filter((title) => !existingTitles.has(title)).map((title) => ({
+          workspace_id: workspaceId,
+          title,
+          description: null,
+          phase: null,
+          depends_on: null,
+          status: "pending",
+          source: "chat",
+          source_path: null
+        }));
+        if (rows.length === 0) {
+          res.json({
+            answer: "Todos already exist for each item in your list.",
+            todos: []
+          });
+          return;
+        }
+        const { data, error } = await supabaseAdmin.from("todos").insert(rows).select("*");
+        if (error) {
+          res.status(500).json({ error: error.message });
+          return;
+        }
+        res.json({
+          answer: "Created todos from your list.",
+          todos: data ?? []
+        });
+        return;
+      } catch {
+      }
+    }
     const result = await runArchitectureTask({
       question: enrichedQuestion,
       graph,
@@ -5354,36 +8180,54 @@ ${question}`;
       findings,
       rootPath,
       jiraConfig,
-      jiraProjectKey: jiraProjectKey ?? void 0
+      jiraProjectKey: jiraProjectKey ?? void 0,
+      ...pdfBase64 && typeof pdfBase64 === "string" ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" } : {}
     });
     const latencyMs = Date.now() - startMs;
-    setImmediate(() => {
-      try {
-        maybeCreateAnalysisRail({
-          mode,
-          rootPath,
-          question,
-          result: {
-            answer: result.answer,
-            criticScore: result.criticScore ?? null,
-            criticReport: result.criticReport ?? null,
-            violations: result.violations ?? [],
-            traceId: result.traceId ?? null,
-            proposal: result.proposal
-          },
-          userId: req.user?.id
-        });
-      } catch {
-      }
+    const analysisRailId = maybeCreateAnalysisRail({
+      mode,
+      rootPath,
+      question,
+      result: {
+        answer: result.answer,
+        criticScore: result.criticScore ?? null,
+        criticReport: result.criticReport ?? null,
+        violations: result.violations ?? [],
+        traceId: result.traceId ?? null,
+        proposal: result.proposal
+      },
+      userId: req.user?.id,
+      workspaceId: workspaceId ?? null,
+      repoUrl
     });
     const violations = result.violations ?? [];
+    let autoExecution = null;
+    let railsFromExecution;
+    if (isExecutionIntent && workspaceId && req.user?.id) {
+      try {
+        const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, 3);
+        if (startedRails.length > 0) {
+          railsFromExecution = startedRails;
+          autoExecution = {
+            pickedTodoIds: startedRails.map((r) => r.id),
+            startedRails: startedRails.map((r) => r.id)
+          };
+          addRailsToSession(threadId ?? void 0, workspaceId, req.user.id, startedRails.map((r) => r.id));
+        }
+      } catch {
+      }
+    }
+    if (analysisRailId) {
+      addRailsToSession(threadId ?? void 0, workspaceId ?? void 0, req.user.id, [analysisRailId]);
+    }
     if (supabaseAdmin && workspaceId) {
       const client = supabaseAdmin;
       upsertViolations(client, {
         workspaceId,
         violations,
         rulesVersion: ARCH_RULESET_VERSION,
-        markAbsent: true
+        markAbsent: false
+        // Chat returns question-scoped violations only; do not clear others.
       }).then(
         () => recordScanSnapshot(client, workspaceId, ARCH_RULESET_VERSION)
       ).catch((err) => {
@@ -5469,7 +8313,12 @@ ${question}`;
 ${result.answer.slice(0, 2e3)}`,
               memory_type: "arch_insight"
             }).throwOnError();
-            if (supabaseAdmin) await maybePruneWorkspaceMemories(supabaseAdmin, workspaceId);
+            if (supabaseAdmin) {
+              setImmediate(() => {
+                void maybePruneWorkspaceMemories(supabaseAdmin, workspaceId).catch(() => {
+                });
+              });
+            }
           } catch {
             if (process.env.METRICS_LOG === "1") {
               console.warn("[metrics] workspace_memories insert skipped");
@@ -5556,9 +8405,21 @@ ${result.answer.slice(0, 2e3)}`,
           update.title = autoTitle.slice(0, 200);
         }
         await supabaseAdmin.from("chat_threads").update(update).eq("id", threadId).eq("workspace_id", workspaceId);
-      }).catch((e) => console.warn("[chat] thread persist:", e instanceof Error ? e.message : e));
+      }).then(void 0, (e) => console.warn("[chat] thread persist:", e instanceof Error ? e.message : e));
     }
     const tokenUsage = result.tokenUsage;
+    if (tokenUsage && (process.env.METRICS_LOG === "1" || process.env.TOKEN_LOG === "1")) {
+      const in_ = tokenUsage.agentInput ?? 0;
+      const out_ = tokenUsage.agentOutput ?? 0;
+      console.log(`[chat] tokens in=${in_} out=${out_} total=${in_ + out_}`);
+    }
+    const allRails = [
+      ...analysisRailId ? [{ id: analysisRailId }] : [],
+      ...railsFromExecution ?? [],
+      ...Array.isArray(result.rails) ? result.rails : []
+    ];
+    const railsDeduped = Array.from(new Map(allRails.map((r) => [r.id, r])).values());
+    const boardHint = workspaceId && railsDeduped.length > 0 ? { workspaceId } : void 0;
     res.json({
       answer: result.answer,
       graphCommands: result.graphCommands,
@@ -5577,7 +8438,11 @@ ${result.answer.slice(0, 2e3)}`,
           /** 180K is the safe limit; warn when >80%. */
           warningThreshold: 144e3
         }
-      } : {}
+      } : {},
+      rails: railsDeduped.length > 0 ? railsDeduped : void 0,
+      railIds: railsDeduped.map((r) => r.id),
+      boardHint,
+      autoExecution: autoExecution ?? void 0
     });
   } catch (err) {
     const traceId = err instanceof ArchError ? err.traceId : void 0;
@@ -5586,8 +8451,8 @@ ${result.answer.slice(0, 2e3)}`,
     res.status(500).json({ error: userMessage, ...traceId && { traceId } });
   }
 });
-router3.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId } = req.body;
+router4.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } = req.body;
   if (!question || typeof question !== "string") {
     res.status(400).json({ error: "question is required" });
     return;
@@ -5606,11 +8471,53 @@ router3.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (
     res.status(400).json({ error: "History too long. Max 50 messages." });
     return;
   }
+  if (pdfBase64 != null && (typeof pdfBase64 !== "string" || pdfBase64.length > 5e7)) {
+    res.status(400).json({ error: "PDF too large. Max ~25MB." });
+    return;
+  }
+  const railIntent = parseRailIntent(question);
+  if (railIntent && workspaceId && req.user?.id) {
+    const sessionRailsList = getSessionRails(threadId ?? void 0, workspaceId, req.user.id);
+    const railId = sessionRailsList[railIntent.index];
+    if (railId) {
+      try {
+        if (railIntent.action === "cancel") {
+          const out = await cancelRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Cancelled rail ${railIntent.index + 1}.`,
+              railAction: { action: "cancel", railId, index: railIntent.index + 1 },
+              rails: [{ id: railId }]
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Cancel failed." });
+          return;
+        }
+        if (railIntent.action === "retry") {
+          const out = await retryRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Retrying rail ${railIntent.index + 1}. Execution started.`,
+              railAction: { action: "retry", railId, taskId: out.taskId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+              boardHint: { workspaceId }
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Retry failed." });
+          return;
+        }
+      } catch {
+      }
+    }
+  }
+  const lowered = question.toLowerCase();
+  const isExecutionIntent = lowered.includes("start implementing") || lowered.includes("run the tasks") || lowered.includes("go fix these") || lowered.includes("apply the plan") || lowered.includes("execute the rail");
   const clientMode = req.body?.mode;
   const explicitMode = clientMode === "greenfield" || clientMode === "analysis" ? clientMode : null;
   const isEmptyGraph = graph.nodes.length === 0;
   const mode = explicitMode ?? (isEmptyGraph ? "greenfield" : "analysis");
-  const rootPath = mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== "" ? graph.projectRoot : null;
   const task = createTask2();
   res.status(202).json({ taskId: task.taskId, status: "pending" });
   setTaskRunning(task.taskId);
@@ -5628,134 +8535,189 @@ router3.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (
       jiraProjectKey = (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ?? userJira.project ?? void 0;
     }
   }
-  const sessionIdForDraft = greenfieldSessionId;
-  runArchitectureTask({
-    question,
-    graph,
-    nodeId,
-    history,
-    mode,
-    apiKeyOpenAI: process.env.OPENAI_API_KEY,
-    apiKeyClaude: process.env.ANTHROPIC_API_KEY,
-    findings,
-    rootPath,
-    jiraConfig,
-    jiraProjectKey: jiraProjectKey ?? void 0
-  }).then(async (result) => {
-    if (isTaskCancelled(task.taskId)) return;
-    if (mode === "greenfield" && sessionIdForDraft && typeof sessionIdForDraft === "string" && (result.graphCommands?.length || result.graphCommand)) {
-      const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
-      const nodes = [];
-      const edges = [];
-      for (const cmd of cmds) {
-        if (cmd.action === "create_node" && "id" in cmd) {
-          nodes.push({
-            id: cmd.id,
-            label: cmd.label ?? cmd.id,
-            layer: "layer" in cmd ? cmd.layer : void 0,
-            description: "description" in cmd ? cmd.description : void 0,
-            archNodeId: "archNodeId" in cmd ? cmd.archNodeId : void 0
-          });
+  (async () => {
+    let rootPath = mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== "" ? graph.projectRoot.trim() : null;
+    let repoUrl = null;
+    if (mode === "analysis" && workspaceId && supabaseAdmin) {
+      const { data: gr } = await supabaseAdmin.from("graphs").select("repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+      repoUrl = gr?.repo_url ?? null;
+      const { rootPath: resolved, error } = await ensureProjectRoot(
+        workspaceId,
+        graph,
+        repoUrl
+      );
+      if (resolved !== null) rootPath = resolved;
+      else if (error && rootPath === null) {
+        setTaskFailed(task.taskId, error);
+        return;
+      }
+    }
+    const sessionIdForDraft = greenfieldSessionId;
+    runArchitectureTask({
+      question,
+      graph,
+      nodeId,
+      history,
+      mode,
+      apiKeyOpenAI: process.env.OPENAI_API_KEY,
+      apiKeyClaude: process.env.ANTHROPIC_API_KEY,
+      findings,
+      rootPath,
+      jiraConfig,
+      jiraProjectKey: jiraProjectKey ?? void 0,
+      ...pdfBase64 && typeof pdfBase64 === "string" ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" } : {}
+    }).then(async (result) => {
+      if (isTaskCancelled(task.taskId)) return;
+      if (mode === "greenfield" && sessionIdForDraft && typeof sessionIdForDraft === "string" && (result.graphCommands?.length || result.graphCommand)) {
+        const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
+        const nodes = [];
+        const edges = [];
+        for (const cmd of cmds) {
+          if (cmd.action === "create_node" && "id" in cmd) {
+            nodes.push({
+              id: cmd.id,
+              label: cmd.label ?? cmd.id,
+              layer: "layer" in cmd ? cmd.layer : void 0,
+              description: "description" in cmd ? cmd.description : void 0,
+              archNodeId: "archNodeId" in cmd ? cmd.archNodeId : void 0
+            });
+          }
+          if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
+            edges.push({ source: cmd.fromId, target: cmd.toId });
+          }
         }
-        if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
-          edges.push({ source: cmd.fromId, target: cmd.toId });
+        if (nodes.length > 0 || edges.length > 0) {
+          try {
+            saveDraft(sessionIdForDraft, { nodes, edges, workspaceId: workspaceId ?? void 0 });
+          } catch {
+          }
         }
       }
-      if (nodes.length > 0 || edges.length > 0) {
+      const tu = result.tokenUsage;
+      if (tu && (process.env.METRICS_LOG === "1" || process.env.TOKEN_LOG === "1")) {
+        const in_ = tu.agentInput ?? 0;
+        const out_ = tu.agentOutput ?? 0;
+        console.log(`[chat-async] tokens in=${in_} out=${out_} total=${in_ + out_}`);
+      }
+      let railsForResult = result.rails;
+      if (isExecutionIntent && workspaceId && req.user?.id) {
         try {
-          saveDraft(sessionIdForDraft, { nodes, edges, workspaceId: workspaceId ?? void 0 });
+          const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, 3);
+          if (startedRails.length > 0) {
+            railsForResult = startedRails;
+            addRailsToSession(threadId ?? void 0, workspaceId, req.user.id, startedRails.map((r) => r.id));
+          }
         } catch {
         }
       }
-    }
-    setTaskCompleted(task.taskId, {
-      answer: result.answer,
-      graphCommands: result.graphCommands,
-      graphCommand: result.graphCommand,
-      criticReport: result.criticReport,
-      criticScore: result.criticScore,
-      acceptanceCriteria: result.acceptanceCriteria,
-      archetype: result.archetype,
-      violations: result.violations ?? [],
-      traceId: result.traceId,
-      tokenUsage: result.tokenUsage
-    });
-    setImmediate(() => {
-      try {
-        maybeCreateAnalysisRail({
-          mode,
-          rootPath,
-          question,
-          result: {
-            answer: result.answer,
-            criticScore: result.criticScore ?? null,
-            criticReport: result.criticReport ?? null,
-            violations: result.violations ?? [],
-            traceId: result.traceId ?? null,
-            proposal: result.proposal
-          },
-          userId: req.user?.id
-        });
-      } catch {
-      }
-    });
-    if (supabaseAdmin && workspaceId && result.answer?.trim()) {
-      try {
-        await supabaseAdmin.from("conversation_snapshots").insert({
-          workspace_id: workspaceId,
-          node_id: nodeId ?? null,
-          intent_summary: question.slice(0, 500),
-          outcome_summary: result.answer.slice(0, 500)
-        });
-      } catch {
-        if (process.env.METRICS_LOG === "1") {
-          console.warn("[chat] conversation_snapshots insert skipped (async)");
-        }
-      }
-    }
-    if (supabaseAdmin && workspaceId && threadId && typeof threadId === "string") {
-      const toAppend = [
-        { role: "user", content: question },
-        { role: "assistant", content: (result.answer ?? "").slice(0, 1e4) }
+      const analysisRailIdAsync = maybeCreateAnalysisRail({
+        mode,
+        rootPath,
+        question,
+        result: {
+          answer: result.answer,
+          criticScore: result.criticScore ?? null,
+          criticReport: result.criticReport ?? null,
+          violations: result.violations ?? [],
+          traceId: result.traceId ?? null,
+          proposal: result.proposal
+        },
+        userId: req.user?.id,
+        workspaceId: workspaceId ?? null,
+        repoUrl
+      });
+      const allRailsAsync = [
+        ...analysisRailIdAsync ? [{ id: analysisRailIdAsync }] : [],
+        ...railsForResult ?? []
       ];
-      if (result.criticReport?.trim()) {
-        toAppend.push({ role: "assistant", content: `Critic: ${result.criticReport}`.slice(0, 1e4) });
+      const railsDedupedAsync = Array.from(new Map(allRailsAsync.map((r) => [r.id, r])).values());
+      if (analysisRailIdAsync && workspaceId && req.user?.id) {
+        addRailsToSession(threadId ?? void 0, workspaceId, req.user.id, [analysisRailIdAsync]);
       }
-      const autoTitle = question.slice(0, 60).trim();
-      supabaseAdmin.from("chat_messages").insert(
-        toAppend.map((m) => ({
-          thread_id: threadId,
-          role: m.role,
-          content: m.content
-        }))
-      ).then(async () => {
-        if (!supabaseAdmin) return;
-        const update = { updated_at: (/* @__PURE__ */ new Date()).toISOString() };
-        const { data: thread } = await supabaseAdmin.from("chat_threads").select("title").eq("id", threadId).eq("workspace_id", workspaceId).single();
-        if (thread?.title === "New chat" && autoTitle) {
-          update.title = autoTitle.slice(0, 200);
+      setTaskCompleted(task.taskId, {
+        answer: result.answer,
+        graphCommands: result.graphCommands,
+        graphCommand: result.graphCommand,
+        criticReport: result.criticReport,
+        criticScore: result.criticScore,
+        acceptanceCriteria: result.acceptanceCriteria,
+        archetype: result.archetype,
+        violations: result.violations ?? [],
+        traceId: result.traceId,
+        tokenUsage: tu,
+        rails: railsDedupedAsync.length > 0 ? railsDedupedAsync : railsForResult,
+        railIds: railsDedupedAsync.map((r) => r.id),
+        boardHint: workspaceId && railsDedupedAsync.length > 0 ? { workspaceId } : void 0
+      });
+      if (supabaseAdmin && workspaceId && (result.violations ?? []).length > 0) {
+        upsertViolations(supabaseAdmin, {
+          workspaceId,
+          violations: result.violations ?? [],
+          rulesVersion: ARCH_RULESET_VERSION,
+          markAbsent: false
+          // Chat returns question-scoped violations only; do not clear others.
+        }).then(() => recordScanSnapshot(supabaseAdmin, workspaceId, ARCH_RULESET_VERSION)).catch((err) => {
+          console.error("[chat-async] violationStore upsert failed:", err);
+        });
+      }
+      if (supabaseAdmin && workspaceId && result.answer?.trim()) {
+        try {
+          await supabaseAdmin.from("conversation_snapshots").insert({
+            workspace_id: workspaceId,
+            node_id: nodeId ?? null,
+            intent_summary: question.slice(0, 500),
+            outcome_summary: result.answer.slice(0, 500)
+          });
+        } catch {
+          if (process.env.METRICS_LOG === "1") {
+            console.warn("[chat] conversation_snapshots insert skipped (async)");
+          }
         }
-        await supabaseAdmin.from("chat_threads").update(update).eq("id", threadId).eq("workspace_id", workspaceId);
-      }).catch((e) => console.warn("[chat] thread persist:", e instanceof Error ? e.message : e));
-    }
-  }).catch((err) => {
-    const traceId = err instanceof ArchError ? err.traceId : void 0;
-    logArchError(err, traceId, "chat-async");
-    try {
-      setTaskFailed(task.taskId, toUserMessage(err, traceId));
-    } catch {
-    }
-  });
+      }
+      if (supabaseAdmin && workspaceId && threadId && typeof threadId === "string") {
+        const toAppend = [
+          { role: "user", content: question },
+          { role: "assistant", content: (result.answer ?? "").slice(0, 1e4) }
+        ];
+        if (result.criticReport?.trim()) {
+          toAppend.push({ role: "assistant", content: `Critic: ${result.criticReport}`.slice(0, 1e4) });
+        }
+        const autoTitle = question.slice(0, 60).trim();
+        supabaseAdmin.from("chat_messages").insert(
+          toAppend.map((m) => ({
+            thread_id: threadId,
+            role: m.role,
+            content: m.content
+          }))
+        ).then(async () => {
+          if (!supabaseAdmin) return;
+          const update = { updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+          const { data: thread } = await supabaseAdmin.from("chat_threads").select("title").eq("id", threadId).eq("workspace_id", workspaceId).single();
+          if (thread?.title === "New chat" && autoTitle) {
+            update.title = autoTitle.slice(0, 200);
+          }
+          await supabaseAdmin.from("chat_threads").update(update).eq("id", threadId).eq("workspace_id", workspaceId);
+        }).then(void 0, (e) => console.warn("[chat] thread persist:", e instanceof Error ? e.message : e));
+      }
+    }).catch((err) => {
+      const traceId = err instanceof ArchError ? err.traceId : void 0;
+      logArchError(err, traceId, "chat-async");
+      try {
+        setTaskFailed(task.taskId, toUserMessage(err, traceId));
+      } catch {
+      }
+    });
+  })();
 });
 
 // src/fileContent.ts
-import { Router as Router4 } from "express";
-var router4 = Router4();
+import { Router as Router5 } from "express";
+var router5 = Router5();
 function parseRepoUrl(url) {
   const m = url.trim().match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
   return m ? { owner: m[1], repo: m[2] } : null;
 }
-router4.post("/file-content", async (req, res) => {
+router5.post("/file-content", async (req, res) => {
   const { repoUrl, filePath } = req.body;
   if (!repoUrl || typeof repoUrl !== "string" || !filePath || typeof filePath !== "string") {
     res.status(400).json({ error: "repoUrl and filePath are required" });
@@ -5795,14 +8757,14 @@ router4.post("/file-content", async (req, res) => {
 });
 
 // src/validate.ts
-import { Router as Router5 } from "express";
-import { spawnSync as spawnSync2 } from "child_process";
-import * as path18 from "path";
+import { Router as Router6 } from "express";
+import { spawnSync as spawnSync5 } from "child_process";
+import * as path30 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
-var __dirname4 = path18.dirname(fileURLToPath4(import.meta.url));
-var projectRoot2 = path18.resolve(__dirname4, "../../..");
-var router5 = Router5();
-router5.post("/validate", async (req, res) => {
+var __dirname4 = path30.dirname(fileURLToPath4(import.meta.url));
+var projectRoot2 = path30.resolve(__dirname4, "../../..");
+var router6 = Router6();
+router6.post("/validate", async (req, res) => {
   const { repoUrl, createJira } = req.body;
   if (!repoUrl || typeof repoUrl !== "string") {
     res.status(400).json({ error: "repoUrl is required" });
@@ -5816,7 +8778,7 @@ router5.post("/validate", async (req, res) => {
   try {
     const args = ["tsx", "scripts/validate-repo.ts", trimmed];
     if (createJira) args.push("--jira");
-    const proc = spawnSync2("npx", args, {
+    const proc = spawnSync5("npx", args, {
       cwd: projectRoot2,
       encoding: "utf-8",
       maxBuffer: 20 * 1024 * 1024,
@@ -5836,12 +8798,12 @@ router5.post("/validate", async (req, res) => {
 });
 
 // src/jiraViolation.ts
-import * as crypto4 from "crypto";
-import { Router as Router6 } from "express";
-var router6 = Router6();
-function computeModuleFingerprint(path32, files) {
-  const payload = `${path32}:${files.length}:${[...files].sort().join(",")}`;
-  return crypto4.createHash("sha256").update(payload).digest("hex").slice(0, 16);
+import * as crypto6 from "crypto";
+import { Router as Router7 } from "express";
+var router7 = Router7();
+function computeModuleFingerprint2(path36, files) {
+  const payload = `${path36}:${files.length}:${[...files].sort().join(",")}`;
+  return crypto6.createHash("sha256").update(payload).digest("hex").slice(0, 16);
 }
 function triagePriority(severity) {
   const map = {
@@ -5857,7 +8819,7 @@ function repoNameFromPath(projectRoot3) {
   const parts = projectRoot3.replace(/\\/g, "/").split("/").filter(Boolean);
   return parts[parts.length - 1] ?? null;
 }
-function isJiraOpen(status) {
+function isJiraOpen2(status) {
   return !/done|resolved|closed|complete/i.test(status);
 }
 async function getWorkspaceProjectKey2(workspaceId) {
@@ -5865,7 +8827,7 @@ async function getWorkspaceProjectKey2(workspaceId) {
   const { data } = await supabaseAdmin.from("workspaces").select("jira_project_key").eq("id", workspaceId).single();
   return data?.jira_project_key ?? null;
 }
-router6.post("/jira-violation", requireUser, async (req, res) => {
+router7.post("/jira-violation", requireUser, async (req, res) => {
   const config = await getUserJiraConfig(req.user.id);
   if (!config) {
     res.status(400).json({
@@ -5919,6 +8881,25 @@ router6.post("/jira-violation", requireUser, async (req, res) => {
     vTargetNodeId = violation.targetNodeId;
     vDescription = violation.description;
     vSuggestedFix = violation.suggestedFix;
+    if (workspaceId && supabaseAdmin) {
+      const raw = {
+        type: vType,
+        severity: vSeverity,
+        sourceNodeId: vSourceNodeId,
+        targetNodeId: vTargetNodeId,
+        description: vDescription,
+        suggestedFix: vSuggestedFix
+      };
+      const upserted = await upsertViolations(supabaseAdmin, {
+        workspaceId,
+        violations: [raw],
+        rulesVersion: ARCH_RULESET_VERSION
+      });
+      const match = upserted.find(
+        (r) => r.source_node_id === vSourceNodeId && r.target_node_id === (vTargetNodeId ?? null) && r.type === vType
+      );
+      if (match?.id) storedId = match.id;
+    }
   } else {
     res.status(400).json({ error: "violationId or violation is required" });
     return;
@@ -5926,7 +8907,7 @@ router6.post("/jira-violation", requireUser, async (req, res) => {
   if (existingJiraKey) {
     try {
       const existing = await getIssue(config, existingJiraKey);
-      if (existing && isJiraOpen(existing.status)) {
+      if (existing && isJiraOpen2(existing.status)) {
         res.json({
           key: existingJiraKey,
           existing: true,
@@ -5946,7 +8927,7 @@ router6.post("/jira-violation", requireUser, async (req, res) => {
   const summary = `[ARCH] ${summaryBase}: ${pathPart}`;
   const modulePath = archModulePath ?? vSourceNodeId;
   const moduleFiles = Array.isArray(archModuleFiles) ? archModuleFiles : [];
-  const fingerprint = modulePath && moduleFiles.length > 0 ? computeModuleFingerprint(modulePath, moduleFiles) : null;
+  const fingerprint = modulePath && moduleFiles.length > 0 ? computeModuleFingerprint2(modulePath, moduleFiles) : null;
   const descriptionLines = [
     "## Architecture Violation \u2014 LittleLabs",
     "",
@@ -6008,9 +8989,9 @@ ${vSuggestedFix}` : "",
 });
 
 // src/integrationRoutes.ts
-import { Router as Router7 } from "express";
-var router7 = Router7();
-router7.get("/integrations", requireUser, async (req, res) => {
+import { Router as Router8 } from "express";
+var router8 = Router8();
+router8.get("/integrations", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -6022,7 +9003,7 @@ router7.get("/integrations", requireUser, async (req, res) => {
   }
   res.json({ integrations: data ?? [] });
 });
-router7.post("/integrations/jira", requireUser, async (req, res) => {
+router8.post("/integrations/jira", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -6094,7 +9075,7 @@ router7.post("/integrations/jira", requireUser, async (req, res) => {
     res.status(500).json({ error: message });
   }
 });
-router7.delete("/integrations/jira", requireUser, async (req, res) => {
+router8.delete("/integrations/jira", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -6104,11 +9085,11 @@ router7.delete("/integrations/jira", requireUser, async (req, res) => {
 });
 
 // src/scaffold.ts
-import { Router as Router8 } from "express";
-import path19 from "path";
-import * as fs17 from "fs";
-var router8 = Router8();
-router8.post("/scaffold-node", requireUser, async (req, res) => {
+import { Router as Router9 } from "express";
+import path31 from "path";
+import * as fs26 from "fs";
+var router9 = Router9();
+router9.post("/scaffold-node", requireUser, async (req, res) => {
   const { projectRoot: projectRoot3, archNodeId, relPath, layer, kind } = req.body;
   if (!projectRoot3 || !archNodeId || !relPath) {
     res.status(400).json({
@@ -6117,14 +9098,14 @@ router8.post("/scaffold-node", requireUser, async (req, res) => {
     return;
   }
   try {
-    const root = path19.resolve(projectRoot3);
-    const absPath = path19.join(root, relPath);
+    const root = path31.resolve(projectRoot3);
+    const absPath = path31.join(root, relPath);
     const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(relPath);
-    const targetDir = pathLooksLikeFile ? path19.dirname(absPath) : absPath;
-    if (!fs17.existsSync(targetDir)) {
-      fs17.mkdirSync(targetDir, { recursive: true });
+    const targetDir = pathLooksLikeFile ? path31.dirname(absPath) : absPath;
+    if (!fs26.existsSync(targetDir)) {
+      fs26.mkdirSync(targetDir, { recursive: true });
     }
-    const indexPath = pathLooksLikeFile ? absPath : path19.join(absPath, "index.ts");
+    const indexPath = pathLooksLikeFile ? absPath : path31.join(absPath, "index.ts");
     const header = `// @archNodeId: ${archNodeId}`;
     const boilerplate = `
 
@@ -6137,16 +9118,16 @@ export function TODO_${archNodeId.replace(
   // implementation pending
 }
 `;
-    if (fs17.existsSync(indexPath)) {
-      const existing = fs17.readFileSync(indexPath, "utf-8");
+    if (fs26.existsSync(indexPath)) {
+      const existing = fs26.readFileSync(indexPath, "utf-8");
       if (!existing.includes("@archNodeId:")) {
-        fs17.writeFileSync(indexPath, `${header}
+        fs26.writeFileSync(indexPath, `${header}
 ${existing}`, "utf-8");
       }
     } else {
-      fs17.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
+      fs26.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
     }
-    const rel = path19.relative(root, indexPath).replace(/\\/g, "/");
+    const rel = path31.relative(root, indexPath).replace(/\\/g, "/");
     res.json({ message: `Scaffolded node at ${rel}` });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -6155,224 +9136,14 @@ ${existing}`, "utf-8");
 });
 
 // src/materialize.ts
-import { Router as Router9 } from "express";
-import * as fs26 from "fs";
-import * as path29 from "path";
+import { Router as Router10 } from "express";
+import * as fs28 from "fs";
+import * as path33 from "path";
 import { randomUUID as randomUUID2 } from "node:crypto";
 
-// ../../src/agent/rail/executor.ts
-import * as fs18 from "fs";
-import * as path20 from "path";
-function isPathSafe(root, relPath) {
-  const resolved = path20.resolve(root, relPath);
-  const rootNorm = path20.resolve(root);
-  return resolved.startsWith(rootNorm) && resolved !== rootNorm;
-}
-function writeProposedNodesToSandbox(sandboxPath, nodes) {
-  const created = [];
-  const errors = [];
-  const root = path20.resolve(sandboxPath);
-  for (const node of nodes) {
-    const id = typeof node.id === "string" ? node.id : "";
-    const label = typeof node.label === "string" ? node.label : id;
-    const archNodeId = typeof node.archNodeId === "string" ? node.archNodeId : id;
-    const relPath = id || archNodeId || label.replace(/\s+/g, "-").toLowerCase();
-    if (!relPath || /\.\.|\\\\|\/\//.test(relPath)) {
-      errors.push(`Invalid path for node ${label}: ${relPath}`);
-      continue;
-    }
-    if (!isPathSafe(root, relPath)) {
-      errors.push(`Path traversal blocked for ${label}`);
-      continue;
-    }
-    try {
-      const absPath = path20.join(root, relPath);
-      const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(relPath);
-      const targetDir = pathLooksLikeFile ? path20.dirname(absPath) : absPath;
-      if (!fs18.existsSync(targetDir)) {
-        fs18.mkdirSync(targetDir, { recursive: true });
-      }
-      const indexPath = pathLooksLikeFile ? absPath : path20.join(absPath, "index.ts");
-      const layer = typeof node.layer === "string" ? node.layer : "Uncategorized";
-      const header = `// Generated by Arch Visualizer (sandbox). Boilerplate only.
-// @archNodeId: ${archNodeId}`;
-      const boilerplate = `
-
-// TODO: Implement ${label} (${layer}).
-
-export function TODO_${archNodeId.replace(
-        /[^a-zA-Z0-9_]/g,
-        "_"
-      )}() {
-  // implementation pending
-}
-`;
-      if (!fs18.existsSync(indexPath)) {
-        fs18.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
-      }
-      const rel = path20.relative(root, indexPath).replace(/\\/g, "/");
-      created.push(rel);
-    } catch (err) {
-      errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  return { created, errors };
-}
-function syncSandboxFromRoot(rootPath, railId, paths) {
-  const sandboxRoot = ensureSandbox(rootPath, railId);
-  for (const rel of paths) {
-    const src = path20.join(rootPath, rel);
-    const dst = path20.join(sandboxRoot, rel);
-    try {
-      if (!fs18.existsSync(src)) continue;
-      const dir = path20.dirname(dst);
-      if (!fs18.existsSync(dir)) {
-        fs18.mkdirSync(dir, { recursive: true });
-      }
-      fs18.copyFileSync(src, dst);
-    } catch {
-    }
-  }
-  return sandboxRoot;
-}
-function materializeRail(railId, sandboxPath, rootPath) {
-  const copiedFiles = [];
-  try {
-    const sandboxRoot = path20.resolve(sandboxPath);
-    const projectRoot3 = path20.resolve(rootPath);
-    if (!fs18.existsSync(sandboxRoot)) {
-      return { success: false, copiedFiles, error: `Sandbox for rail ${railId} does not exist` };
-    }
-    const entries = walkDir(sandboxRoot);
-    for (const absFile of entries) {
-      const rel = path20.relative(sandboxRoot, absFile);
-      const target = path20.join(projectRoot3, rel);
-      const targetDir = path20.dirname(target);
-      if (!fs18.existsSync(targetDir)) {
-        fs18.mkdirSync(targetDir, { recursive: true });
-      }
-      fs18.copyFileSync(absFile, target);
-      copiedFiles.push(rel.replace(/\\/g, "/"));
-    }
-    return { success: true, copiedFiles };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { success: false, copiedFiles, error: message };
-  }
-}
-function walkDir(root) {
-  const result = [];
-  const stack = [root];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    const stat = fs18.statSync(current);
-    if (stat.isDirectory()) {
-      const children = fs18.readdirSync(current);
-      for (const child of children) {
-        stack.push(path20.join(current, child));
-      }
-    } else if (stat.isFile()) {
-      result.push(current);
-    }
-  }
-  return result;
-}
-
-// ../../src/agent/rail/orchestrator.ts
-import * as fs19 from "fs";
-var VALID_TRANSITIONS = {
-  PRE_PLANNING: /* @__PURE__ */ new Set(["PLANNING", "AWAITING_APPROVAL", "SUSPENDED", "FAILED"]),
-  PLANNING: /* @__PURE__ */ new Set(["AWAITING_APPROVAL", "SUSPENDED", "FAILED"]),
-  AWAITING_APPROVAL: /* @__PURE__ */ new Set(["EXECUTING", "SUSPENDED", "FAILED"]),
-  EXECUTING: /* @__PURE__ */ new Set(["AWAITING_HITL", "VERIFYING", "SELF_CORRECTING", "SUSPENDED", "FAILED"]),
-  AWAITING_HITL: /* @__PURE__ */ new Set(["EXECUTING", "SUSPENDED", "FAILED"]),
-  VERIFYING: /* @__PURE__ */ new Set(["MATERIALIZING", "SELF_CORRECTING", "SUSPENDED", "FAILED"]),
-  SELF_CORRECTING: /* @__PURE__ */ new Set(["EXECUTING", "AWAITING_HITL", "SUSPENDED", "FAILED"]),
-  MATERIALIZING: /* @__PURE__ */ new Set(["ARCHIVED", "SUSPENDED", "FAILED"]),
-  SUSPENDED: /* @__PURE__ */ new Set(["AWAITING_APPROVAL", "EXECUTING"]),
-  FAILED: /* @__PURE__ */ new Set(),
-  // terminal
-  ARCHIVED: /* @__PURE__ */ new Set()
-  // terminal
-};
-function canTransition(from, to, _ctx) {
-  const allowed = VALID_TRANSITIONS[from];
-  if (!allowed) return false;
-  if (!allowed.has(to)) return false;
-  if (to === "EXECUTING" && from === "AWAITING_APPROVAL") {
-    return _ctx?.planApproved === true;
-  }
-  if (to === "MATERIALIZING" && from === "VERIFYING") {
-    return _ctx?.reviewerPassed === true;
-  }
-  if (to === "ARCHIVED" && from === "MATERIALIZING") {
-    return _ctx?.materializationApproved === true;
-  }
-  if (to === "SUSPENDED") {
-    return from !== "ARCHIVED" && from !== "FAILED";
-  }
-  if (to === "FAILED") {
-    return from !== "ARCHIVED";
-  }
-  return true;
-}
-function transitionRail(rootPath, railId, to, ctx) {
-  const rail = getRail(rootPath, railId);
-  if (!rail) {
-    return { ok: false, rail: null, error: "Rail not found" };
-  }
-  const from = rail.state;
-  if (from === to) {
-    return { ok: true, rail };
-  }
-  if (!canTransition(from, to, ctx)) {
-    return {
-      ok: false,
-      rail: null,
-      error: `Invalid transition: ${from} -> ${to} (guards may have failed)`
-    };
-  }
-  if (to === "EXECUTING") {
-    ensureSandbox(rootPath, railId);
-  }
-  if (to === "ARCHIVED" || to === "FAILED") {
-    const sandboxPath = getSandboxPath(rootPath, railId);
-    try {
-      if (fs19.existsSync(sandboxPath)) {
-        fs19.rmSync(sandboxPath, { recursive: true, force: true });
-      }
-    } catch {
-    }
-  }
-  const updated = to === "EXECUTING" ? enterExecutingState(rootPath, railId) : updateRailState(rootPath, railId, to);
-  return { ok: !!updated, rail: updated ?? null };
-}
-function completeMaterializeAndArchive(rootPath, railId) {
-  const rail = getRail(rootPath, railId);
-  if (!rail) return null;
-  if (rail.state !== "VERIFYING" && rail.state !== "MATERIALIZING") {
-    return null;
-  }
-  const hi = rail.hallucinationIndex;
-  const acknowledged = !!rail.hallucinationAcknowledgedAt;
-  if (hi != null && hi > 0.5 && !acknowledged) {
-    return null;
-  }
-  const sandboxPath = getSandboxPath(rootPath, railId);
-  const mat = materializeRail(railId, sandboxPath, rootPath);
-  const canProceed = mat.success || mat.error?.includes("does not exist");
-  if (!canProceed) {
-    return rail;
-  }
-  if (rail.state === "VERIFYING") {
-    updateRailState(rootPath, railId, "MATERIALIZING");
-  }
-  return archiveRail(rootPath, railId);
-}
-
 // ../../src/agent/rail/greenfieldSpecGeneration.ts
-import * as fs20 from "fs";
-import * as path21 from "path";
+import * as fs27 from "fs";
+import * as path32 from "path";
 var MAX_TEST_NAME_LEN = 80;
 function truncateAtWord(text, maxLen) {
   const safe = text.replace(/"/g, "'").trim();
@@ -6432,13 +9203,13 @@ ${blocks.join("\n\n")}
 var DEFAULT_SPEC_RELATIVE = "scripts/greenfield-generated.spec.ts";
 function writeGeneratedSpecToSandbox(sandboxPath, acceptanceCriteriaFunctional, specRelativePath = DEFAULT_SPEC_RELATIVE) {
   const content = generatePlaywrightSpecFromCriteria(acceptanceCriteriaFunctional);
-  const fullPath = path21.join(sandboxPath, specRelativePath);
-  const dir = path21.dirname(fullPath);
-  if (!fs20.existsSync(dir)) {
-    fs20.mkdirSync(dir, { recursive: true });
+  const fullPath = path32.join(sandboxPath, specRelativePath);
+  const dir = path32.dirname(fullPath);
+  if (!fs27.existsSync(dir)) {
+    fs27.mkdirSync(dir, { recursive: true });
   }
-  fs20.writeFileSync(fullPath, content, "utf-8");
-  return path21.resolve(fullPath);
+  fs27.writeFileSync(fullPath, content, "utf-8");
+  return path32.resolve(fullPath);
 }
 
 // ../../src/agent/rail/greenfieldMaterialize.ts
@@ -6516,809 +9287,75 @@ function approveGreenfieldMaterialize(rootPath, railId) {
   return completeMaterializeAndArchive(rootPath, railId);
 }
 
-// ../../src/agent/runPlaywrightTrace.ts
-import * as path22 from "path";
-import * as fs21 from "fs";
-import { spawnSync as spawnSync3 } from "child_process";
-var STAGING_TRACES = ".arch-agent-staging/traces";
-function collectFailures(suites, tracesDir, traceId) {
-  const failures = [];
-  for (const suite of suites ?? []) {
-    for (const spec of suite.specs ?? []) {
-      for (const test of spec.tests ?? []) {
-        for (const result of test.results ?? []) {
-          if (result.status === "failed") {
-            const screenPath = result.attachments?.find((a) => a.name === "screenshot")?.path ?? path22.join(tracesDir, `${traceId}.png`);
-            failures.push({
-              testName: spec.title ?? test.title ?? "unknown",
-              error: result.error?.message ?? "Test failed",
-              screenshotPath: screenPath,
-              domSnapshot: "",
-              consoleErrors: [],
-              networkFailures: []
-            });
-          }
-        }
-      }
-    }
-  }
-  return failures;
-}
-function runPlaywrightTrace(projectRoot3, specPath, url, workingDir) {
-  const cwd = workingDir ?? projectRoot3;
-  const tracesDir = path22.join(cwd, STAGING_TRACES);
-  if (!fs21.existsSync(path22.dirname(tracesDir))) {
-    fs21.mkdirSync(path22.dirname(tracesDir), { recursive: true });
-  }
-  if (!fs21.existsSync(tracesDir)) {
-    fs21.mkdirSync(tracesDir, { recursive: true });
-  }
-  const traceId = `pw_${Date.now()}`;
-  const tracePath = path22.join(tracesDir, `${traceId}.zip`);
-  const jsonOut = path22.join(tracesDir, `${traceId}-results.json`);
-  const args = ["playwright", "test", specPath, "--reporter=json"];
-  const proc = spawnSync3("npx", args, {
-    cwd,
-    encoding: "utf-8",
-    env: {
-      ...process.env,
-      APP_URL: url,
-      PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOut
-    },
-    maxBuffer: 10 * 1024 * 1024
-  });
-  const failures = [];
-  let passed = proc.status === 0;
-  try {
-    const raw = fs21.existsSync(jsonOut) ? fs21.readFileSync(jsonOut, "utf-8") : "{}";
-    const parsed = JSON.parse(raw);
-    const suites = parsed?.suites ?? [];
-    const collected = collectFailures(suites ?? [], tracesDir, traceId);
-    if (collected.length > 0) {
-      passed = false;
-      failures.push(...collected);
-    }
-    try {
-      fs21.unlinkSync(jsonOut);
-    } catch {
-    }
-  } catch {
-    if (proc.status !== 0) {
-      passed = false;
-      failures.push({
-        testName: path22.basename(specPath),
-        error: (proc.stderr ?? proc.stdout ?? "Playwright failed").slice(0, 500),
-        screenshotPath: path22.join(tracesDir, `${traceId}.png`),
-        domSnapshot: "",
-        consoleErrors: [],
-        networkFailures: []
-      });
-    }
-  }
-  return {
-    passed,
-    spec: specPath,
-    failures,
-    tracePath
-  };
-}
-async function runPlaywrightForRail(railId, projectRoot3, sandboxPath, specs, baseUrl) {
-  let allPassed = true;
-  const allFailures = [];
-  let lastTracePath = "";
-  for (const spec of specs) {
-    const result = runPlaywrightTrace(projectRoot3, spec, baseUrl, sandboxPath);
-    allFailures.push(...result.failures);
-    if (!result.passed) {
-      allPassed = false;
-    }
-    lastTracePath = result.tracePath;
-    emitTrace({
-      role: "reviewer",
-      type: result.passed ? "info" : "error",
-      message: result.passed ? `Playwright spec ${spec} passed for rail ${railId}` : `Playwright spec ${spec} failed for rail ${railId}`,
-      railId,
-      metadata: {
-        filePath: spec
-      }
-    });
-  }
-  return {
-    passed: allPassed,
-    spec: specs.join(", "),
-    failures: allFailures,
-    tracePath: lastTracePath
-  };
-}
-
-// ../../src/agent/taskRunner.ts
-import * as fs25 from "fs";
-import * as path28 from "path";
-
-// ../../src/agent/toolExecutor.ts
-import * as fs24 from "fs";
-import * as path27 from "path";
-
-// ../../src/agent/securityAllowlist.ts
-import * as path23 from "path";
-var READ_ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".py",
-  ".md",
-  ".json",
-  ".yaml",
-  ".yml",
-  ".env.example",
-  ".env.sample",
-  ".sh"
-]);
-var WRITE_ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set([".ts", ".tsx", ".js", ".jsx", ".md"]);
-var EXCLUDED_PATTERNS = [
-  /node_modules/,
-  /\.config\./,
-  /\.lock$/
-];
-function isEnvProtected(basename4) {
-  if (basename4 === ".env") return true;
-  if (basename4.startsWith(".env.") && !basename4.endsWith(".example") && !basename4.endsWith(".sample")) {
-    return true;
-  }
-  return false;
-}
-var DEFAULT_ALLOWED_PREFIXES = ["src/", "docs/"];
-function checkPathAllowed(filePath, config, mode = "write") {
-  const root = path23.resolve(config.projectRoot);
-  const resolved = path23.resolve(root, filePath);
-  if (!resolved.startsWith(root)) {
-    return { allowed: false, reason: "Path outside project root" };
-  }
-  const relative12 = path23.relative(root, resolved).replace(/\\/g, "/");
-  if (relative12.includes("..")) {
-    return { allowed: false, reason: "Path traversal not allowed" };
-  }
-  const ext = path23.extname(resolved);
-  const basename4 = path23.basename(resolved);
-  if (isEnvProtected(basename4)) {
-    return { allowed: false, reason: "Environment files (.env*) are not readable or writable" };
-  }
-  const isDockerfile = basename4 === "Dockerfile";
-  const allowedExts = mode === "read" ? READ_ALLOWED_EXTENSIONS : WRITE_ALLOWED_EXTENSIONS;
-  if (!isDockerfile && !allowedExts.has(ext)) {
-    return { allowed: false, reason: `Extension ${ext || "<none>"} not allowed for ${mode}` };
-  }
-  for (const pat of EXCLUDED_PATTERNS) {
-    if (pat.test(relative12)) {
-      return { allowed: false, reason: `Path matches excluded pattern: ${pat}` };
-    }
-  }
-  const prefixes = config.allowedPrefixes ?? DEFAULT_ALLOWED_PREFIXES;
-  const ok = prefixes.some((p) => relative12.startsWith(p));
-  if (!ok) {
-    return { allowed: false, reason: `Path must be under ${prefixes.join(" or ")}` };
-  }
-  return { allowed: true };
-}
-
-// ../../src/agent/staging.ts
-import * as fs22 from "fs";
-import * as path24 from "path";
-var BUFFER_FILE = "buffer.json";
-var stagingDir = "";
-var buffer = /* @__PURE__ */ new Map();
-function bufferPath() {
-  return path24.join(stagingDir, BUFFER_FILE);
-}
-function saveBuffer() {
-  const p = bufferPath();
-  const arr = Array.from(buffer.values());
-  fs22.writeFileSync(p, JSON.stringify(arr, null, 2), "utf-8");
-}
-function writeToStaging(filePath, content, opts) {
-  const id = `stg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-  buffer.set(filePath, {
-    path: filePath,
-    content,
-    beforeContent: opts?.beforeContent,
-    taskId: opts?.taskId
-  });
-  saveBuffer();
-  return id;
-}
-
-// ../../src/agent/runLint.ts
-import * as path25 from "path";
-import { spawnSync as spawnSync4 } from "child_process";
-function runLint(projectRoot3, paths, workingDir) {
-  const errors = [];
-  const tscProc = spawnSync4("npx", ["tsc", "--noEmit", "--pretty", "false"], {
-    cwd: workingDir ?? projectRoot3,
-    encoding: "utf-8",
-    maxBuffer: 4 * 1024 * 1024
-  });
-  if (tscProc.status !== 0 && tscProc.stderr) {
-    const root = path25.resolve(projectRoot3);
-    const lines = tscProc.stderr.split("\n");
-    for (const line of lines) {
-      const match = line.match(/^([^(]+)\((\d+),(\d+)\):\s+error\s+TS\d+:\s+(.+)$/);
-      if (match) {
-        const [, filePath, lineNum, col, message] = match;
-        const resolved = path25.isAbsolute(filePath?.trim() ?? "") ? filePath.trim() : path25.join(root, filePath?.trim() ?? "");
-        const rel = path25.relative(root, resolved).replace(/\\/g, "/");
-        errors.push({
-          filePath: rel,
-          line: parseInt(lineNum ?? "0", 10),
-          column: parseInt(col ?? "0", 10),
-          message: message ?? "",
-          ruleId: "tsc",
-          severity: "error"
-        });
-      }
-    }
-  }
-  const lintPaths = paths?.length ? paths : ["src"];
-  const eslintProc = spawnSync4("npx", ["eslint", ...lintPaths, "--format", "json"], {
-    cwd: workingDir ?? projectRoot3,
-    encoding: "utf-8",
-    maxBuffer: 4 * 1024 * 1024
-  });
-  if (eslintProc.stdout) {
-    try {
-      const out = JSON.parse(eslintProc.stdout);
-      const root = path25.resolve(workingDir ?? projectRoot3);
-      for (const file of out) {
-        const rel = path25.relative(root, path25.isAbsolute(file.filePath) ? file.filePath : path25.join(root, file.filePath)).replace(/\\/g, "/");
-        for (const m of file.messages) {
-          errors.push({
-            filePath: rel,
-            line: m.line,
-            column: m.column,
-            message: m.message,
-            ruleId: m.ruleId ?? "unknown",
-            severity: m.severity === 2 ? "error" : "warning"
-          });
-        }
-      }
-    } catch {
-    }
-  }
-  return {
-    passed: errors.filter((e) => e.severity === "error").length === 0,
-    errors
-  };
-}
-
-// ../../src/agent/runVitest.ts
-import * as path26 from "path";
-import * as fs23 from "fs";
-import { spawnSync as spawnSync5 } from "child_process";
-function runVitest(projectRoot3, pattern, workingDir) {
-  const cwd = workingDir ?? projectRoot3;
-  const jsonFile = path26.join(cwd, ".arch-agent-staging", "vitest-results.json");
-  const stagingDir2 = path26.dirname(jsonFile);
-  if (!fs23.existsSync(stagingDir2)) {
-    fs23.mkdirSync(stagingDir2, { recursive: true });
-  }
-  const args = ["vitest", "run", "--reporter=json", `--outputFile.json=${jsonFile}`];
-  if (pattern) args.push("--testNamePattern", pattern);
-  const proc = spawnSync5("npx", args, {
-    cwd,
-    encoding: "utf-8",
-    maxBuffer: 10 * 1024 * 1024
-  });
-  const failures = [];
-  let total = 0;
-  let passed = 0;
-  let failed = 0;
-  let skipped = 0;
-  try {
-    const raw = fs23.existsSync(jsonFile) ? fs23.readFileSync(jsonFile, "utf-8") : "{}";
-    const parsed = JSON.parse(raw);
-    const results = parsed?.testResults ?? parsed?.results;
-    if (Array.isArray(results)) {
-      for (const file of results) {
-        const filePath = path26.relative(cwd, file.name);
-        for (const t of file.assertionResults ?? []) {
-          total++;
-          if (t.status === "passed") passed++;
-          else if (t.status === "skipped") skipped++;
-          else {
-            failed++;
-            failures.push({
-              testName: t.fullName,
-              filePath,
-              error: t.failureMessages?.[0] ?? "Test failed",
-              stackTrace: t.failureMessages?.join("\n") ?? ""
-            });
-          }
-        }
-      }
-    }
-    try {
-      fs23.unlinkSync(jsonFile);
-    } catch {
-    }
-  } catch {
-    if (proc.status !== 0) {
-      failures.push({
-        testName: pattern ?? "vitest run",
-        filePath: ".",
-        error: (proc.stderr ?? proc.stdout ?? "Vitest failed").slice(0, 500),
-        stackTrace: ""
-      });
-      failed = 1;
-      total = 1;
-    }
-  }
-  return {
-    passed: failed === 0,
-    summary: { total, passed, failed, skipped },
-    failures
-  };
-}
-
-// ../../src/agent/toolExecutor.ts
-var MAX_CONTENT_CHARS = 5e4;
-async function executeTool2(tool, input, context) {
-  const allowlist = context.allowlist ?? {
-    projectRoot: context.rootPath,
-    allowedPrefixes: ["src/", "docs/"]
-  };
-  if (tool === "read_file") {
-    const filePath = typeof input.path === "string" ? input.path : "";
-    if (!filePath) {
-      const out2 = { success: false, output: {}, error: "read_file requires path" };
-      emitTrace("read_file", input, out2.output, "read_file failed: missing path");
-      return out2;
-    }
-    const check = checkPathAllowed(filePath, allowlist, "read");
-    if (!check.allowed) {
-      const out2 = { success: false, output: { reason: check.reason }, error: check.reason };
-      emitTrace("read_file", input, out2.output, `read_file rejected: ${check.reason}`);
-      return out2;
-    }
-    const fullPath = path27.resolve(context.rootPath, filePath);
-    if (!fs24.existsSync(fullPath)) {
-      const out2 = { success: false, output: { path: filePath }, error: "File not found" };
-      emitTrace("read_file", input, out2.output, "read_file failed: file not found");
-      return out2;
-    }
-    let content;
-    try {
-      content = fs24.readFileSync(fullPath, "utf-8");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const out2 = { success: false, output: { path: filePath }, error: msg };
-      emitTrace("read_file", input, out2.output, `read_file failed: ${msg}`);
-      return out2;
-    }
-    const truncated = content.length > MAX_CONTENT_CHARS;
-    const output = {
-      path: filePath,
-      content: truncated ? content.slice(0, MAX_CONTENT_CHARS) + "\n...[truncated]" : content,
-      truncated
-    };
-    emitTrace("read_file", input, output, truncated ? "read_file ok (truncated)" : "read_file ok");
-    return { success: true, output };
-  }
-  if (tool === "write_file") {
-    const filePath = typeof input.path === "string" ? input.path : "";
-    const content = typeof input.content === "string" ? input.content : "";
-    if (!filePath || !content) {
-      const out2 = { success: false, output: {}, error: "write_file requires path and content" };
-      emitTrace("write_file", { path: filePath }, out2.output, "write_file failed: missing path or content");
-      return out2;
-    }
-    const check = checkPathAllowed(filePath, allowlist, "write");
-    if (!check.allowed) {
-      const out2 = { success: false, output: { reason: check.reason }, error: check.reason };
-      emitTrace("write_file", input, out2.output, `write_file rejected: ${check.reason}`);
-      return out2;
-    }
-    const fullPath = path27.resolve(context.rootPath, filePath);
-    let beforeContent;
-    if (fs24.existsSync(fullPath)) {
-      beforeContent = fs24.readFileSync(fullPath, "utf-8");
-    }
-    const stagingId = writeToStaging(filePath, content, { beforeContent });
-    const output = { stagingId, path: filePath };
-    emitTrace("write_file", { path: filePath }, output, "write_file ok (staged)");
-    return { success: true, output };
-  }
-  if (tool === "run_lint") {
-    const paths = Array.isArray(input.paths) ? input.paths : void 0;
-    const lintResult = runLint(context.rootPath, paths);
-    const output = {
-      passed: lintResult.passed,
-      errors: lintResult.errors
-    };
-    emitTrace("run_lint", input, output, lintResult.passed ? "run_lint pass" : "run_lint fail");
-    return { success: lintResult.passed, output };
-  }
-  if (tool === "run_vitest") {
-    const pattern = typeof input.pattern === "string" ? input.pattern : void 0;
-    const vitestResult = runVitest(context.rootPath, pattern);
-    const output = {
-      passed: vitestResult.passed,
-      summary: vitestResult.summary,
-      failures: vitestResult.failures
-    };
-    emitTrace("run_vitest", input, output, vitestResult.passed ? "run_vitest pass" : "run_vitest fail");
-    return { success: vitestResult.passed, output };
-  }
-  const out = {
-    success: false,
-    output: {},
-    error: `Tool "${tool}" not implemented`
-  };
-  emitTrace("error", { tool, input }, {}, `executeTool: ${tool} not implemented`);
-  return out;
-}
-
-// ../../src/agent/llmClient.ts
-import Anthropic4 from "@anthropic-ai/sdk";
-var VALID_TOOLS = /* @__PURE__ */ new Set(["write_file", "read_file"]);
-var CODE_WRITER_SYSTEM = `You are a code writer.
-
-You MUST use tools to act:
-- Use write_file to write or update code.
-- Use read_file to read additional files when needed.
-
-Constraints:
-- Only operate within the planned task/module scope.
-- Do not propose architecture. Do not change rules.
-- Prefer minimal, targeted edits that make tests pass.
-- Paths must be project-root-relative (e.g. "src/foo/bar.ts").
-- When creating new files, create all files listed in the spec.
-- When a file spec includes todos, implement them all.`;
-var CODE_WRITER_TOOLS = [
-  {
-    name: "read_file",
-    description: "Read a single file's full contents (project-root-relative path).",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string" }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "write_file",
-    description: "Write a file's full contents (project-root-relative path).",
-    input_schema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        content: { type: "string" }
-      },
-      required: ["path", "content"]
-    }
-  }
-];
-function getTaskFromPlan(plan, taskId2) {
-  return plan.tasks.find((t) => t.id === taskId2);
-}
-function buildUserMessage(ctx) {
-  const lines = [
-    `Goal: ${ctx.goal}`,
-    `Task: ${ctx.taskId} \u2014 ${ctx.taskModule}`,
-    ""
-  ];
-  if (ctx.conversationTurns && ctx.conversationTurns.length > 0) {
-    lines.push("Recent conversation (most recent last):");
-    for (const t of ctx.conversationTurns.slice(-4)) {
-      lines.push(`${t.role.toUpperCase()}: ${t.content}`);
-    }
-    lines.push("");
-  }
-  const task = getTaskFromPlan(ctx.plan, ctx.taskId);
-  if (task?.proposedFiles && task.proposedFiles.length > 0) {
-    lines.push("Files to create for this module (implement all of them):");
-    for (const f of task.proposedFiles) {
-      if (typeof f === "string") {
-        lines.push(`- ${f}`);
-      } else {
-        lines.push(`
-### ${f.name}`);
-        lines.push(`Purpose: ${f.purpose}`);
-        if (f.todos.length > 0) {
-          lines.push("Todos:");
-          for (const todo of f.todos) {
-            lines.push(`  - ${todo}`);
-          }
-        }
-      }
-    }
-    lines.push("");
-  }
-  if (ctx.filePath && ctx.fileContent !== void 0) {
-    lines.push(`File ${ctx.filePath}:`, "```", ctx.fileContent.slice(0, 3e4), "```", "");
-  }
-  if (ctx.errorOutput) {
-    lines.push("Error output (fix these):", ctx.errorOutput, "");
-  }
-  lines.push(
-    "Use write_file for each file you need to create or update. Use read_file if you need to inspect additional context first."
-  );
-  return lines.join("\n");
-}
-async function callLLM(context) {
-  const apiKey = context.apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
-  if (!apiKey) {
-    const err = "Anthropic API key not configured. Set archVisualizer.anthropicApiKey or ANTHROPIC_API_KEY.";
-    emitTrace("error", { role: context.role, goal: context.goal }, { error: err }, err);
-    return { type: "no_api_key", error: err };
-  }
-  const userMsg = buildUserMessage(context);
-  const inputForTrace = {
-    role: context.role,
-    goal: context.goal,
-    taskId: context.taskId,
-    filePath: context.filePath
-  };
-  try {
-    const client = new Anthropic4({ apiKey });
-    let system = CODE_WRITER_SYSTEM;
-    let messages = [{ role: "user", content: userMsg }];
-    if (context.rail) {
-      const railHistory = buildRailContext(
-        context.rail,
-        context.railHistory ?? [],
-        500
-      );
-      const systemRail = `You are executing rail ${context.rail.id}.
-Frozen outcome: ${context.rail.frozenOutcome ?? context.rail.outcome}.
-Do not change the outcome; every step must move toward this outcome only.
-Do not introduce new goals, alter the specification, or expand scope beyond this rail.
-`;
-      const systemMessages = railHistory.filter((m) => m.role === "system").map((m) => m.content);
-      system = [systemRail, ...systemMessages, CODE_WRITER_SYSTEM].filter(Boolean).join("\n\n");
-      const priorTurns = railHistory.filter(
-        (m) => m.role === "user" || m.role === "assistant"
-      );
-      messages = [
-        ...priorTurns,
-        { role: "user", content: userMsg }
-      ];
-    }
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 8192,
-      temperature: 0,
-      system,
-      tools: CODE_WRITER_TOOLS,
-      messages
-    });
-    const usage = response.usage;
-    const totalTokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
-    if (context.projectRoot) {
-      bumpSessionUsage(context.projectRoot, { tokenUsage: totalTokens, llmCallCount: 1 });
-    }
-    emitTrace("llm_call", inputForTrace, { tokens: totalTokens }, "Code writer reasoning step");
-    const toolUse = response.content.find(
-      (b) => b.type === "tool_use"
-    );
-    if (toolUse) {
-      const tool = toolUse.name;
-      if (!VALID_TOOLS.has(tool)) {
-        emitTrace(
-          "error",
-          inputForTrace,
-          { tool, tokens: totalTokens },
-          `Unknown tool: ${tool}`
-        );
-        return { type: "unknown_output", raw: `Model requested unknown tool: ${tool}` };
-      }
-      emitTrace(
-        "llm_call",
-        inputForTrace,
-        { tool, input: toolUse.input ?? {}, tokens: totalTokens },
-        `LLM \u2192 ${tool}`
-      );
-      return { type: "tool_call", tool, input: toolUse.input ?? {} };
-    }
-    const texts = response.content.filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
-    if (response.stop_reason === "end_turn") {
-      emitTrace(
-        "llm_call",
-        inputForTrace,
-        { stopReason: response.stop_reason, tokens: totalTokens, text: texts.slice(0, 800) },
-        "LLM \u2192 end_turn"
-      );
-      return { type: "end_turn", content: texts };
-    }
-    emitTrace(
-      "error",
-      inputForTrace,
-      { stopReason: response.stop_reason, tokens: totalTokens, text: texts.slice(0, 800) },
-      "unknown_llm_output"
-    );
-    return { type: "unknown_output", raw: texts || `stop_reason=${response.stop_reason ?? "unknown"}` };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    emitTrace("error", inputForTrace, { error: msg }, `LLM failed: ${msg}`);
-    return { type: "unknown_output", raw: msg };
-  }
-}
-
-// ../../src/agent/taskRunner.ts
-var ENTRY_CANDIDATES = ["index.ts", "index.tsx", "index.js", "index.jsx"];
-function resolveModuleToFilePath(modulePath, rootPath) {
-  const attempted = [];
-  const fullDir = path28.resolve(rootPath, modulePath);
-  const dirExists = fs25.existsSync(fullDir) && fs25.statSync(fullDir).isDirectory();
-  if (dirExists) {
-    for (const entry of ENTRY_CANDIDATES) {
-      const candidate = path28.join(fullDir, entry);
-      attempted.push(path28.relative(rootPath, candidate).replace(/\\/g, "/"));
-      if (fs25.existsSync(candidate)) {
-        return { path: attempted[attempted.length - 1] };
-      }
-    }
-  }
-  for (const ext of [".ts", ".tsx", ".js", ".jsx"]) {
-    const candidate = `${modulePath}${ext}`;
-    const full = path28.resolve(rootPath, candidate);
-    attempted.push(path28.relative(rootPath, full).replace(/\\/g, "/"));
-    if (fs25.existsSync(full)) {
-      return { path: attempted[attempted.length - 1] };
-    }
-  }
-  return { error: `Could not resolve module "${modulePath}" to a file`, attempted };
-}
-async function runTaskAtIndex(plan, taskIndex, rootPath, opts) {
-  const task = plan.tasks[taskIndex];
-  if (!task) {
-    return {
-      taskId: "",
-      toolResult: {},
-      traceId: getSessionId(),
-      error: "No task at index"
-    };
-  }
-  const isCreate = task.action === "create";
-  let filePath;
-  let existingContent;
-  if (!isCreate) {
-    const resolved = resolveModuleToFilePath(task.module, rootPath);
-    if ("error" in resolved) {
-      return {
-        taskId: task.id,
-        toolResult: { error: resolved.error, attempted: resolved.attempted },
-        traceId: getSessionId(),
-        error: `${resolved.error}. Tried: ${resolved.attempted.join(", ")}`
-      };
-    }
-    filePath = resolved.path;
-    const readResult = await executeTool2("read_file", { path: filePath }, { rootPath });
-    if (!readResult.success) {
-      return {
-        taskId: task.id,
-        toolResult: { error: readResult.error, ...readResult.output },
-        traceId: getSessionId(),
-        error: readResult.error
-      };
-    }
-    existingContent = readResult.output.content;
-  }
-  if (opts?.skipLLM || !opts?.apiKey) {
-    return {
-      taskId: task.id,
-      toolResult: existingContent ? { content: existingContent } : {},
-      traceId: getSessionId()
-    };
-  }
-  let hasStaging = false;
-  let lastToolResult = {};
-  let readHops = 0;
-  const MAX_READ_HOPS = 4;
-  const MAX_ITER = 20;
-  let currentFilePath = filePath;
-  let currentFileContent = existingContent;
-  let currentError = opts?.errorOutput;
-  for (let iter = 0; iter < MAX_ITER; iter++) {
-    const llmResult = await callLLM({
-      role: "code_writer",
-      goal: plan.goal,
-      plan,
-      taskId: task.id,
-      taskModule: task.module,
-      conversationTurns: opts?.conversationTurns,
-      fileContent: currentFileContent,
-      filePath: currentFilePath,
-      errorOutput: currentError,
-      projectRoot: rootPath,
-      apiKey: opts.apiKey,
-      rail: opts?.rail,
-      railHistory: opts?.railHistory
-    });
-    if (llmResult.type === "no_api_key") {
-      return {
-        taskId: task.id,
-        toolResult: lastToolResult,
-        traceId: getSessionId(),
-        error: llmResult.error,
-        hasStaging
-      };
-    }
-    if (llmResult.type === "tool_call" && llmResult.tool === "write_file") {
-      const writeResult = await executeTool2("write_file", llmResult.input, { rootPath });
-      if (!writeResult.success) {
-        return {
-          taskId: task.id,
-          toolResult: { error: writeResult.error },
-          traceId: getSessionId(),
-          error: writeResult.error,
-          hasStaging
-        };
-      }
-      hasStaging = true;
-      lastToolResult = writeResult.output;
-      currentFilePath = void 0;
-      currentFileContent = void 0;
-      currentError = void 0;
-      continue;
-    }
-    if (llmResult.type === "tool_call" && llmResult.tool === "read_file") {
-      if (readHops >= MAX_READ_HOPS) {
-        return {
-          taskId: task.id,
-          toolResult: lastToolResult,
-          traceId: getSessionId(),
-          error: `LLM exceeded ${MAX_READ_HOPS} read_file calls without writing`,
-          hasStaging
-        };
-      }
-      readHops++;
-      const pathToRead = typeof llmResult.input.path === "string" ? llmResult.input.path : "";
-      if (pathToRead) {
-        const secondRead = await executeTool2("read_file", { path: pathToRead }, { rootPath });
-        currentFilePath = pathToRead;
-        currentFileContent = secondRead.success ? secondRead.output.content : `[Error reading ${pathToRead}: ${secondRead.error}]`;
-        lastToolResult = secondRead.success ? secondRead.output : { error: secondRead.error };
-      }
-      continue;
-    }
-    if (llmResult.type === "end_turn") {
-      lastToolResult = { note: llmResult.content };
-      break;
-    }
-    lastToolResult = { raw: llmResult.raw };
-    break;
-  }
-  return {
-    taskId: task.id,
-    toolResult: lastToolResult,
-    traceId: getSessionId(),
-    hasStaging
-  };
-}
-
 // src/materialize.ts
-var router9 = Router9();
+var router10 = Router10();
 var idempotencyCache = /* @__PURE__ */ new Map();
 var IDEMPOTENCY_TTL_MS = 60 * 60 * 1e3;
 function isPathSafe2(root, relPath) {
-  const resolved = path29.resolve(root, relPath);
-  const rootNorm = path29.resolve(root);
+  const resolved = path33.resolve(root, relPath);
+  const rootNorm = path33.resolve(root);
   return resolved.startsWith(rootNorm) && resolved !== rootNorm;
 }
 function validateTargetRoot(targetRoot) {
-  const root = path29.resolve(targetRoot.trim());
+  const root = path33.resolve(targetRoot.trim());
   if (!root || root === "/" || root.length < 2) {
     return { error: "targetRoot must be a valid project directory path." };
   }
   const baseDir = process.env.PROJECTS_BASE_DIR?.trim();
   if (baseDir) {
-    const baseNorm = path29.resolve(baseDir);
-    if (!root.startsWith(baseNorm + path29.sep) && root !== baseNorm) {
+    const baseNorm = path33.resolve(baseDir);
+    if (!root.startsWith(baseNorm + path33.sep) && root !== baseNorm) {
       return { error: "targetRoot must be within the allowed projects directory." };
     }
   }
   return { root };
+}
+var MATERIALIZE_MAX_CHANGED_FILES = typeof process.env.MATERIALIZE_MAX_CHANGED_FILES === "string" && !Number.isNaN(Number(process.env.MATERIALIZE_MAX_CHANGED_FILES)) ? Math.max(1, Number(process.env.MATERIALIZE_MAX_CHANGED_FILES)) : 200;
+var MATERIALIZE_MAX_TOTAL_BYTES = typeof process.env.MATERIALIZE_MAX_TOTAL_BYTES === "string" && !Number.isNaN(Number(process.env.MATERIALIZE_MAX_TOTAL_BYTES)) ? Math.max(1e4, Number(process.env.MATERIALIZE_MAX_TOTAL_BYTES)) : 5e5;
+function computeSandboxDiffSize(root, railId) {
+  const sandboxPath = getSandboxPath(root, railId);
+  if (!fs28.existsSync(sandboxPath)) {
+    return { changedFiles: 0, totalBytes: 0 };
+  }
+  let changedFiles = 0;
+  let totalBytes = 0;
+  const walk = (dir) => {
+    const entries = fs28.readdirSync(dir, { withFileTypes: true });
+    for (const e of entries) {
+      const full = path33.join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full);
+      } else {
+        const rel = path33.relative(sandboxPath, full);
+        if (!rel || rel.endsWith("/")) continue;
+        const sandboxFile = full;
+        const rootFile = path33.join(root, rel);
+        let before;
+        let after;
+        try {
+          if (fs28.existsSync(rootFile) && fs28.statSync(rootFile).isFile()) {
+            before = fs28.readFileSync(rootFile, "utf-8");
+          }
+        } catch {
+        }
+        try {
+          after = fs28.readFileSync(sandboxFile, "utf-8");
+        } catch {
+        }
+        if (before === after) continue;
+        changedFiles += 1;
+        if (after) {
+          totalBytes += Buffer.byteLength(after, "utf-8");
+        }
+      }
+    }
+  };
+  try {
+    walk(sandboxPath);
+  } catch {
+    return { changedFiles: 0, totalBytes: 0 };
+  }
+  return { changedFiles, totalBytes };
 }
 function runMaterialize(root, nodes) {
   const created = [];
@@ -7337,13 +9374,13 @@ function runMaterialize(root, nodes) {
       continue;
     }
     try {
-      const absPath = path29.join(root, relPath);
+      const absPath = path33.join(root, relPath);
       const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(relPath);
-      const targetDir = pathLooksLikeFile ? path29.dirname(absPath) : absPath;
-      if (!fs26.existsSync(targetDir)) {
-        fs26.mkdirSync(targetDir, { recursive: true });
+      const targetDir = pathLooksLikeFile ? path33.dirname(absPath) : absPath;
+      if (!fs28.existsSync(targetDir)) {
+        fs28.mkdirSync(targetDir, { recursive: true });
       }
-      const indexPath = pathLooksLikeFile ? absPath : path29.join(absPath, "index.ts");
+      const indexPath = pathLooksLikeFile ? absPath : path33.join(absPath, "index.ts");
       const layer = typeof node.layer === "string" ? node.layer : "Uncategorized";
       const header = `// Generated by Arch Visualizer. Boilerplate only \u2014 implement as needed.
 // @archNodeId: ${archNodeId}`;
@@ -7358,16 +9395,16 @@ export function TODO_${archNodeId.replace(
   // implementation pending
 }
 `;
-      if (fs26.existsSync(indexPath)) {
-        const existing = fs26.readFileSync(indexPath, "utf-8");
+      if (fs28.existsSync(indexPath)) {
+        const existing = fs28.readFileSync(indexPath, "utf-8");
         if (!existing.includes("@archNodeId:")) {
-          fs26.writeFileSync(indexPath, `${header}
+          fs28.writeFileSync(indexPath, `${header}
 ${existing}`, "utf-8");
         }
       } else {
-        fs26.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
+        fs28.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
       }
-      const rel = path29.relative(root, indexPath).replace(/\\/g, "/");
+      const rel = path33.relative(root, indexPath).replace(/\\/g, "/");
       created.push(rel);
     } catch (err) {
       errors.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
@@ -7376,15 +9413,15 @@ ${existing}`, "utf-8");
   const success = errors.length === 0;
   if (success && created.length > 0) {
     try {
-      const agentDir = path29.join(root, ".agent");
-      if (!fs26.existsSync(agentDir)) fs26.mkdirSync(agentDir, { recursive: true });
-      const templatesPath = path29.join(agentDir, "design_templates.json");
-      const existing = fs26.existsSync(
+      const agentDir = path33.join(root, ".agent");
+      if (!fs28.existsSync(agentDir)) fs28.mkdirSync(agentDir, { recursive: true });
+      const templatesPath = path33.join(agentDir, "design_templates.json");
+      const existing = fs28.existsSync(
         templatesPath
-      ) ? JSON.parse(fs26.readFileSync(templatesPath, "utf-8")) : { designs: [] };
+      ) ? JSON.parse(fs28.readFileSync(templatesPath, "utf-8")) : { designs: [] };
       const designs = Array.isArray(existing.designs) ? existing.designs : [];
       designs.push({ nodes, createdAt: Date.now() });
-      fs26.writeFileSync(templatesPath, JSON.stringify({ designs: designs.slice(-20) }, null, 2), "utf-8");
+      fs28.writeFileSync(templatesPath, JSON.stringify({ designs: designs.slice(-20) }, null, 2), "utf-8");
     } catch {
     }
   }
@@ -7401,7 +9438,7 @@ ${existing}`, "utf-8");
     errors: errors.length > 0 ? errors : void 0
   };
 }
-router9.post("/materialize", requireUser, async (req, res) => {
+router10.post("/materialize", requireUser, async (req, res) => {
   const idempotencyKey = req.header("Idempotency-Key")?.trim();
   const { targetRoot, nodes } = req.body;
   if (!targetRoot || typeof targetRoot !== "string" || targetRoot.trim() === "") {
@@ -7447,7 +9484,7 @@ router9.post("/materialize", requireUser, async (req, res) => {
   }
   res.json(result);
 });
-router9.post("/materialize/undo", requireUser, async (req, res) => {
+router10.post("/materialize/undo", requireUser, async (req, res) => {
   const { targetRoot, created } = req.body;
   if (!targetRoot || typeof targetRoot !== "string" || targetRoot.trim() === "") {
     res.status(400).json({
@@ -7487,14 +9524,14 @@ router9.post("/materialize/undo", requireUser, async (req, res) => {
       continue;
     }
     try {
-      const absPath = path29.join(root, trimmed);
-      if (fs26.existsSync(absPath)) {
-        const stat = fs26.statSync(absPath);
+      const absPath = path33.join(root, trimmed);
+      if (fs28.existsSync(absPath)) {
+        const stat = fs28.statSync(absPath);
         if (stat.isFile()) {
-          fs26.unlinkSync(absPath);
+          fs28.unlinkSync(absPath);
           deleted.push(trimmed);
         } else if (stat.isDirectory()) {
-          fs26.rmSync(absPath, { recursive: true, force: true });
+          fs28.rmSync(absPath, { recursive: true, force: true });
           deleted.push(trimmed);
         }
       }
@@ -7504,20 +9541,20 @@ router9.post("/materialize/undo", requireUser, async (req, res) => {
   }
   const dirsToCheck = /* @__PURE__ */ new Set();
   for (const rel of deleted) {
-    let d = path29.dirname(rel);
+    let d = path33.dirname(rel);
     while (d && d !== ".") {
       dirsToCheck.add(d);
-      d = path29.dirname(d);
+      d = path33.dirname(d);
     }
   }
-  const sortedDirs = [...dirsToCheck].sort((a, b) => b.split(path29.sep).length - a.split(path29.sep).length);
+  const sortedDirs = [...dirsToCheck].sort((a, b) => b.split(path33.sep).length - a.split(path33.sep).length);
   for (const dirRel of sortedDirs) {
     try {
-      const absDir = path29.join(root, dirRel);
-      if (fs26.existsSync(absDir) && fs26.statSync(absDir).isDirectory()) {
-        const entries = fs26.readdirSync(absDir);
+      const absDir = path33.join(root, dirRel);
+      if (fs28.existsSync(absDir) && fs28.statSync(absDir).isDirectory()) {
+        const entries = fs28.readdirSync(absDir);
         if (entries.length === 0) {
-          fs26.rmdirSync(absDir);
+          fs28.rmdirSync(absDir);
         }
       }
     } catch {
@@ -7529,7 +9566,7 @@ router9.post("/materialize/undo", requireUser, async (req, res) => {
     errors: errors.length > 0 ? errors : void 0
   });
 });
-router9.post("/materialize-async", requireUser, async (req, res) => {
+router10.post("/materialize-async", requireUser, async (req, res) => {
   const { targetRoot, nodes, useRailFlow, sessionId: sessionId2, outcome, acceptanceCriteria, lastCritique } = req.body;
   if (!targetRoot || typeof targetRoot !== "string" || targetRoot.trim() === "") {
     res.status(400).json({
@@ -7719,8 +9756,8 @@ router9.post("/materialize-async", requireUser, async (req, res) => {
     setTaskFailed(task.taskId, msg);
   });
 });
-router9.post("/materialize/approve", requireUser, async (req, res) => {
-  const { rootPath, railId } = req.body;
+router10.post("/materialize/approve", requireUser, async (req, res) => {
+  const { rootPath, railId, force } = req.body;
   if (!rootPath || typeof rootPath !== "string" || !railId || typeof railId !== "string") {
     res.status(400).json({ error: "rootPath and railId are required." });
     return;
@@ -7743,18 +9780,38 @@ router9.post("/materialize/approve", requireUser, async (req, res) => {
     });
     return;
   }
+  if (!force) {
+    const { changedFiles, totalBytes } = computeSandboxDiffSize(validated.root, railId);
+    if (changedFiles > MATERIALIZE_MAX_CHANGED_FILES || totalBytes > MATERIALIZE_MAX_TOTAL_BYTES) {
+      res.status(409).json({
+        error: "This materialization would apply a very large diff. Review the changes in your editor and confirm before proceeding.",
+        code: "MATERIALIZE_DIFF_TOO_LARGE",
+        limits: {
+          maxChangedFiles: MATERIALIZE_MAX_CHANGED_FILES,
+          maxTotalBytes: MATERIALIZE_MAX_TOTAL_BYTES
+        },
+        actual: {
+          changedFiles,
+          totalBytes
+        }
+      });
+      return;
+    }
+  }
   const rail = approveGreenfieldMaterialize(validated.root, railId);
   if (!rail) {
     res.status(404).json({ error: "Rail not found or not a greenfield materialize rail." });
     return;
   }
+  completeTodosForRail(railId).catch(() => {
+  });
   res.json({ rail, message: "Materialization complete. Rail archived." });
 });
 
 // src/auth.ts
-import { Router as Router10 } from "express";
-var router10 = Router10();
-router10.post("/auth/debug-validate", async (req, res) => {
+import { Router as Router11 } from "express";
+var router11 = Router11();
+router11.post("/auth/debug-validate", async (req, res) => {
   const { token } = req.body;
   if (!token || typeof token !== "string") {
     res.status(400).json({ error: "token required in body" });
@@ -7803,7 +9860,7 @@ router10.post("/auth/debug-validate", async (req, res) => {
   }
   res.status(503).json({ error: "Auth not configured", valid: false });
 });
-router10.get("/auth/config", (_req, res) => {
+router11.get("/auth/config", (_req, res) => {
   const url = process.env.SUPABASE_URL?.trim();
   const hasKey = !!process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
   const projectRef = url?.match(/https?:\/\/([^.]+)\.supabase\.co/)?.[1] ?? null;
@@ -7812,19 +9869,44 @@ router10.get("/auth/config", (_req, res) => {
     projectRef: projectRef ?? void 0
   });
 });
-router10.get("/auth/me", requireUser, async (req, res) => {
+router11.get("/auth/me", requireUser, async (req, res) => {
   res.json({
     user: req.user
   });
 });
-router10.post("/auth/logout", (_req, res) => {
+router11.post("/auth/logout", (_req, res) => {
   res.json({ ok: true });
 });
 
 // src/workspaces.ts
-import { Router as Router11 } from "express";
-var router11 = Router11();
-router11.get("/workspaces", requireUser, async (req, res) => {
+import { Router as Router12 } from "express";
+
+// src/nodeFileMapping.ts
+function buildNodeFileMap(graph) {
+  const map = /* @__PURE__ */ new Map();
+  const nodes = graph.nodes ?? [];
+  for (const n of nodes) {
+    if (!n.id) continue;
+    const rawFiles = n.files;
+    let files;
+    if (Array.isArray(rawFiles) && rawFiles.length > 0) {
+      files = rawFiles;
+    } else {
+      const pathVal = n.path;
+      files = pathVal ? [pathVal] : [n.id];
+    }
+    const primaryPath = files[0] ?? n.path ?? n.id;
+    map.set(n.id, { nodeId: n.id, files, primaryPath });
+  }
+  return map;
+}
+function buildNodeFileMappingArray(graph) {
+  return Array.from(buildNodeFileMap(graph).values());
+}
+
+// src/workspaces.ts
+var router12 = Router12();
+router12.get("/workspaces", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7837,7 +9919,7 @@ router11.get("/workspaces", requireUser, async (req, res) => {
   }
   res.json({ workspaces: data ?? [] });
 });
-router11.post("/workspaces", requireUser, async (req, res) => {
+router12.post("/workspaces", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7855,7 +9937,7 @@ router11.post("/workspaces", requireUser, async (req, res) => {
   }
   res.json({ workspace: data });
 });
-router11.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
+router12.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7866,7 +9948,7 @@ router11.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId is required" });
     return;
   }
-  const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id, jira_project_key").eq("id", workspaceId).eq("owner_id", ownerId).single();
+  const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id, jira_project_key, auto_execute_enabled").eq("id", workspaceId).eq("owner_id", ownerId).single();
   if (wsErr || !ws) {
     res.status(404).json({ error: "Workspace not found or access denied." });
     return;
@@ -7895,10 +9977,64 @@ router11.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
   res.json({
     graph,
     repoUrl: graphRow.repo_url ?? "",
-    jiraProjectKey: ws.jira_project_key ?? null
+    jiraProjectKey: ws.jira_project_key ?? null,
+    autoExecuteEnabled: ws.auto_execute_enabled ?? false
   });
 });
-router11.get("/workspaces/:workspaceId/memories", requireUser, async (req, res) => {
+router12.get("/workspaces/:workspaceId/node-file-mapping", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", ownerId).single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { data: graphRow, error: gErr } = await supabaseAdmin.from("graphs").select("graph_json").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+  if (gErr || !graphRow?.graph_json) {
+    res.status(404).json({ error: "No graph saved for this workspace." });
+    return;
+  }
+  const graph = graphRow.graph_json;
+  const mapping = buildNodeFileMappingArray(graph);
+  res.json({ mapping });
+});
+router12.patch("/workspaces/:workspaceId/auto-execute", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { enabled } = req.body ?? {};
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: "enabled (boolean) is required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", ownerId).single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { error: uErr } = await supabaseAdmin.from("workspaces").update({ auto_execute_enabled: enabled }).eq("id", workspaceId);
+  if (uErr) {
+    res.status(500).json({ error: uErr.message });
+    return;
+  }
+  res.json({ success: true, autoExecuteEnabled: enabled });
+});
+router12.get("/workspaces/:workspaceId/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7926,7 +10062,7 @@ router11.get("/workspaces/:workspaceId/memories", requireUser, async (req, res) 
   }
   return res.json({ memories: data ?? [] });
 });
-router11.patch("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
+router12.patch("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7961,7 +10097,7 @@ router11.patch("/workspaces/:workspaceId/memories/:memoryId", requireUser, async
   }
   return res.json({ memory: data });
 });
-router11.post("/workspaces/:workspaceId/memories", requireUser, async (req, res) => {
+router12.post("/workspaces/:workspaceId/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -7996,10 +10132,14 @@ router11.post("/workspaces/:workspaceId/memories", requireUser, async (req, res)
   if (error) {
     return res.status(500).json({ error: error.message });
   }
-  void maybePruneWorkspaceMemories(supabaseAdmin, workspaceId);
+  const client = supabaseAdmin;
+  setImmediate(() => {
+    maybePruneWorkspaceMemories(client, workspaceId).catch(() => {
+    });
+  });
   return res.status(201).json({ memory: data });
 });
-router11.delete("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
+router12.delete("/workspaces/:workspaceId/memories/:memoryId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8025,7 +10165,30 @@ router11.delete("/workspaces/:workspaceId/memories/:memoryId", requireUser, asyn
   }
   return res.status(204).send();
 });
-router11.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
+router12.delete("/workspaces/:workspaceId/clone", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", ownerId).maybeSingle();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  if (!ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  deleteWorkspaceClone(workspaceId);
+  res.json({ success: true });
+});
+router12.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8051,6 +10214,7 @@ router11.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
       res.status(404).json({ error: "Workspace not found or access denied." });
       return;
     }
+    deleteWorkspaceClone(workspaceId);
     const { error: delErr } = await supabaseAdmin.from("workspaces").delete().eq("id", workspaceId).eq("owner_id", ownerId);
     if (delErr) {
       console.error("[workspaces] delete: delete failed", {
@@ -8069,7 +10233,7 @@ router11.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
-router11.patch("/workspaces/:workspaceId/jira-project-key", requireUser, async (req, res) => {
+router12.patch("/workspaces/:workspaceId/jira-project-key", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8100,7 +10264,7 @@ router11.patch("/workspaces/:workspaceId/jira-project-key", requireUser, async (
   }
   res.json({ success: true, projectKey });
 });
-router11.patch("/workspaces/:workspaceId", requireUser, async (req, res) => {
+router12.patch("/workspaces/:workspaceId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8128,7 +10292,7 @@ router11.patch("/workspaces/:workspaceId", requireUser, async (req, res) => {
   }
   res.json({ success: true });
 });
-router11.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
+router12.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8159,17 +10323,181 @@ router11.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => 
     res.status(500).json({ error: gErr.message });
     return;
   }
+  if (repoUrl && repoUrl.trim()) {
+    await supabaseAdmin.from("workspaces").update({ project_root: null, repo_url: repoUrl.trim() }).eq("id", workspaceId);
+  }
   res.json({ success: true });
 });
 
+// src/todosImport.ts
+import { Router as Router13 } from "express";
+var router13 = Router13();
+function normalizePhaseToken(token) {
+  if (!token) return null;
+  const m = token.match(/(\d+)/);
+  return m ? parseInt(m[1], 10) || null : null;
+}
+function parseDocLittleMarkdown(md) {
+  const lines = md.split(/\r?\n/);
+  let currentPhase = null;
+  const todos = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const phaseMatch = line.match(/^##\s*Phase\s+([0-9A-Za-z]+)/i) || line.match(/^###\s*Phase\s+([0-9A-Za-z]+)/i);
+    if (phaseMatch) {
+      currentPhase = normalizePhaseToken(phaseMatch[1] ?? null);
+      continue;
+    }
+    if (line.startsWith("|") && line.split("|").length >= 4) {
+      const parts = line.split("|").map((p) => p.trim());
+      const numToken = parts[1] ?? "";
+      const titleCell = parts[2] ?? "";
+      const detailsCell = parts[3] ?? "";
+      const title = titleCell.replace(/^\d+\.\s*/, "").trim();
+      if (title && title !== "Task" && title !== "Tasks") {
+        todos.push({
+          phase: currentPhase,
+          title,
+          description: detailsCell || null
+        });
+      }
+      continue;
+    }
+    const numberedMatch = line.match(/^\d+\.\s+(.*)$/);
+    if (numberedMatch) {
+      const title = numberedMatch[1].trim();
+      if (title) {
+        todos.push({ phase: currentPhase, title, description: null });
+      }
+      continue;
+    }
+    const todoMatch = line.match(/^[-*]\s+\[.\]\s+(.*)$/);
+    if (todoMatch) {
+      const title = todoMatch[1].trim();
+      if (title) {
+        todos.push({ phase: currentPhase, title, description: null });
+      }
+      continue;
+    }
+  }
+  return todos;
+}
+router13.post("/todos/import/preview", requireUser, async (req, res) => {
+  const workspaceId = req.body?.workspaceId?.trim();
+  const markdown = typeof req.body?.markdown === "string" ? req.body.markdown : "";
+  if (!workspaceId || !markdown) {
+    res.status(400).json({ error: "workspaceId and markdown are required" });
+    return;
+  }
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const parsed = parseDocLittleMarkdown(markdown);
+  const byPhase = /* @__PURE__ */ new Map();
+  for (const t of parsed) {
+    const key = t.phase ?? -1;
+    byPhase.set(key, (byPhase.get(key) ?? 0) + 1);
+  }
+  const phases = Array.from(byPhase.entries()).map(([phase, count]) => ({
+    phase: phase === -1 ? null : phase,
+    count
+  }));
+  const warnings = [];
+  if (parsed.length === 0) {
+    warnings.push("No todos detected. Check that the markdown uses tables, numbered lists, or checkboxes.");
+  }
+  res.json({
+    total: parsed.length,
+    phases,
+    items: parsed.map((t) => ({ title: t.title, description: t.description, phase: t.phase })),
+    warnings
+  });
+});
+router13.post("/todos/import/confirm", requireUser, async (req, res) => {
+  const workspaceId = req.body?.workspaceId?.trim();
+  const markdown = typeof req.body?.markdown === "string" ? req.body.markdown : "";
+  if (!workspaceId || !markdown) {
+    res.status(400).json({ error: "workspaceId and markdown are required" });
+    return;
+  }
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const parsed = parseDocLittleMarkdown(markdown);
+  if (parsed.length === 0) {
+    res.status(400).json({ error: "No todos detected in markdown." });
+    return;
+  }
+  const titles = parsed.map((t) => t.title);
+  const { data: existing } = await supabaseAdmin.from("todos").select("title, phase").eq("workspace_id", workspaceId).in("title", titles);
+  const existingSet = new Set(
+    (existing ?? []).map((r) => `${r.title}@@${r.phase ?? "null"}`)
+  );
+  const toInsert = parsed.filter((t) => !existingSet.has(`${t.title}@@${t.phase ?? "null"}`)).map((t) => ({
+    workspace_id: workspaceId,
+    title: t.title,
+    description: t.description,
+    phase: t.phase,
+    status: "pending",
+    source: "doclittle-md",
+    source_path: null
+  }));
+  if (toInsert.length === 0) {
+    res.json({ imported: [], skipped: parsed.length });
+    return;
+  }
+  toInsert.sort((a, b) => (a.phase ?? -1) - (b.phase ?? -1));
+  const imported = [];
+  const batchSize = 500;
+  for (let i = 0; i < toInsert.length; i += batchSize) {
+    const slice = toInsert.slice(i, i + batchSize);
+    const { data, error } = await supabaseAdmin.from("todos").insert(slice).select("id, phase, title");
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+    if (data) imported.push(...data);
+  }
+  const byPhase = /* @__PURE__ */ new Map();
+  for (const row of imported) {
+    const p = row.phase ?? -1;
+    if (!byPhase.has(p)) byPhase.set(p, []);
+    byPhase.get(p).push(row.id);
+  }
+  const phasesAsc = Array.from(byPhase.keys()).sort((a, b) => a - b);
+  for (let i = 1; i < phasesAsc.length; i++) {
+    const currPhase = phasesAsc[i];
+    const depIds = [];
+    for (let j = 0; j < i; j++) depIds.push(...byPhase.get(phasesAsc[j]) ?? []);
+    const currIds = byPhase.get(currPhase) ?? [];
+    for (const id of currIds) {
+      await supabaseAdmin.from("todos").update({ depends_on: depIds }).eq("id", id);
+    }
+  }
+  res.json({ imported, skipped: parsed.length - toInsert.length });
+});
+
 // src/shareRoutes.ts
-import { Router as Router12 } from "express";
+import { Router as Router14 } from "express";
 import { nanoid } from "nanoid";
 if (!process.env.APP_URL) {
   console.warn("[shareRoutes] APP_URL not set \u2014 share links may have incorrect base URL");
 }
-var router12 = Router12();
-router12.post("/workspaces/:workspaceId/share", requireUser, async (req, res) => {
+var router14 = Router14();
+router14.post("/workspaces/:workspaceId/share", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8202,7 +10530,7 @@ router12.post("/workspaces/:workspaceId/share", requireUser, async (req, res) =>
   const shareUrl = `${base.replace(/\/$/, "")}/shared/${data.slug}`;
   res.json({ url: shareUrl, slug: data.slug });
 });
-router12.get("/shared/:slug", async (req, res) => {
+router14.get("/shared/:slug", async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8233,9 +10561,9 @@ router12.get("/shared/:slug", async (req, res) => {
 });
 
 // src/metrics.ts
-import { Router as Router13 } from "express";
-var router13 = Router13();
-router13.get("/metrics/agent", requireUser, async (req, res) => {
+import { Router as Router15 } from "express";
+var router15 = Router15();
+router15.get("/metrics/agent", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim() || null;
   const nodeId = req.query.nodeId?.trim() || null;
   const limit = Math.min(Number(req.query.limit) || 50, 100);
@@ -8281,7 +10609,7 @@ router13.get("/metrics/agent", requireUser, async (req, res) => {
     });
   }
 });
-router13.get("/metrics", (_req, res) => {
+router15.get("/metrics", (_req, res) => {
   const tasks2 = getTaskMetricsSummary();
   const materialize = getMaterializeMetricsSummary();
   res.json({
@@ -8302,11 +10630,11 @@ router13.get("/metrics", (_req, res) => {
 });
 
 // src/taskRoutes.ts
-import { Router as Router14 } from "express";
-var router14 = Router14();
-router14.get("/tasks/:taskId", optionalUser, (req, res) => {
-  const { taskId: taskId2 } = req.params;
-  const task = getTask(taskId2);
+import { Router as Router16 } from "express";
+var router16 = Router16();
+router16.get("/tasks/:taskId", optionalUser, (req, res) => {
+  const { taskId } = req.params;
+  const task = getTask(taskId);
   if (!task) {
     res.status(404).json({ error: "Task not found" });
     return;
@@ -8319,21 +10647,21 @@ router14.get("/tasks/:taskId", optionalUser, (req, res) => {
     createdAt: task.createdAt
   });
 });
-router14.post("/tasks/:taskId/cancel", optionalUser, (req, res) => {
-  const { taskId: taskId2 } = req.params;
-  const cancelled = cancelTask(taskId2);
+router16.post("/tasks/:taskId/cancel", optionalUser, (req, res) => {
+  const { taskId } = req.params;
+  const cancelled = cancelTask(taskId);
   if (!cancelled) {
     res.status(404).json({ error: "Task not found or not cancellable" });
     return;
   }
-  res.json({ taskId: taskId2, status: "cancelled" });
+  res.json({ taskId, status: "cancelled" });
 });
 
 // src/violations.ts
-import { Router as Router15 } from "express";
-var router15 = Router15();
+import { Router as Router17 } from "express";
+var router17 = Router17();
 var scanCooldowns = /* @__PURE__ */ new Map();
-router15.get("/violations", requireUser, async (req, res) => {
+router17.get("/violations", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8361,6 +10689,7 @@ router15.get("/violations", requireUser, async (req, res) => {
         suggestedFix: v.suggested_fix ?? "",
         jiraKey: v.jira_key ?? void 0,
         jiraStatus: v.jira_status ?? void 0,
+        railId: v.rail_id ?? void 0,
         recurrenceCount: v.recurrence_count,
         firstSeenAt: v.first_seen_at,
         lastSeenAt: v.last_seen_at,
@@ -8371,7 +10700,7 @@ router15.get("/violations", requireUser, async (req, res) => {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
-router15.post("/violations/scan", requireUser, async (req, res) => {
+router17.post("/violations/scan", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8409,7 +10738,7 @@ router15.post("/violations/scan", requireUser, async (req, res) => {
     });
   }
 });
-router15.post("/violations/:id/dismiss", requireUser, async (req, res) => {
+router17.post("/violations/:id/dismiss", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8441,20 +10770,75 @@ router15.post("/violations/:id/dismiss", requireUser, async (req, res) => {
 });
 
 // src/railsRoutes.ts
-import { Router as Router16 } from "express";
-import * as path30 from "path";
-import * as fs27 from "fs";
-var router16 = Router16();
+import { Router as Router18 } from "express";
+import * as path34 from "path";
+
+// src/apiError.ts
+function sendError(res, status, error, meta) {
+  const payload = { error };
+  if (typeof meta === "string" && meta) {
+    payload.code = meta;
+  } else if (meta && typeof meta === "object") {
+    if (meta.code) payload.code = meta.code;
+    if (meta.railId) payload.railId = meta.railId;
+    if (meta.traceId) payload.traceId = meta.traceId;
+    if (meta.details) payload.details = meta.details;
+    if (meta.retryable !== void 0) payload.retryable = meta.retryable;
+  }
+  return res.status(status).json(payload);
+}
+
+// src/railsRoutes.ts
+import * as fs29 from "fs";
+async function writeRailCompletionMemory(workspaceId, rail) {
+  if (!supabaseAdmin) return;
+  try {
+    const taskCount = rail.tasks?.length ?? 0;
+    const completedCount = rail.tasks?.filter((t) => t.status === "completed").length ?? 0;
+    const parts = [
+      `Rail ${rail.id.slice(0, 8)} archived: ${rail.outcome}`,
+      rail.archetype ? `archetype: ${rail.archetype}` : null,
+      `tasks: ${completedCount}/${taskCount} completed`
+    ].filter(Boolean);
+    const content = parts.join(". ").slice(0, 2e3);
+    await supabaseAdmin.from("workspace_memories").insert({
+      workspace_id: workspaceId,
+      node_id: rail.logicPath?.[0]?.nodeId ?? null,
+      content,
+      memory_type: "rail_completion"
+    });
+  } catch {
+  }
+}
+var router18 = Router18();
+var railEventClients = [];
+function broadcastRailEvent(workspaceId, payload) {
+  const data = `data: ${JSON.stringify(payload)}
+
+`;
+  for (const client of railEventClients.slice()) {
+    if (client.workspaceId !== workspaceId) continue;
+    try {
+      client.res.write(data);
+    } catch {
+      const idx = railEventClients.indexOf(client);
+      if (idx >= 0) railEventClients.splice(idx, 1);
+    }
+  }
+}
+var workspaceExecutionCounts2 = /* @__PURE__ */ new Map();
+var MAX_CONCURRENT_PER_WORKSPACE2 = typeof process.env.RAIL_MAX_CONCURRENT === "string" && !Number.isNaN(Number(process.env.RAIL_MAX_CONCURRENT)) ? Math.max(1, Number(process.env.RAIL_MAX_CONCURRENT)) : 1;
+var STALE_RAIL_MAX_AGE_MS = typeof process.env.RAIL_STALE_MAX_AGE_MS === "string" && !Number.isNaN(Number(process.env.RAIL_STALE_MAX_AGE_MS)) ? Math.max(5 * 6e4, Number(process.env.RAIL_STALE_MAX_AGE_MS)) : 60 * 6e4;
 function walkDir2(dir, base, maxDepth) {
   const out = [];
   if (maxDepth <= 0) return out;
   try {
-    const entries = fs27.readdirSync(dir, { withFileTypes: true });
+    const entries = fs29.readdirSync(dir, { withFileTypes: true });
     for (const e of entries) {
-      const rel = path30.relative(base, path30.join(dir, e.name));
+      const rel = path34.relative(base, path34.join(dir, e.name));
       if (e.isDirectory()) {
         out.push(rel + "/");
-        out.push(...walkDir2(path30.join(dir, e.name), base, maxDepth - 1));
+        out.push(...walkDir2(path34.join(dir, e.name), base, maxDepth - 1));
       } else {
         out.push(rel);
       }
@@ -8463,49 +10847,84 @@ function walkDir2(dir, base, maxDepth) {
   }
   return out.sort();
 }
+function recoverStaleRails(rootPath, workspaceId) {
+  try {
+    const now = Date.now();
+    const rails = getAllRails();
+    for (const rail of rails) {
+      if (!rail.updatedAt) continue;
+      if (!["EXECUTING", "VERIFYING"].includes(rail.state)) continue;
+      if (now - rail.updatedAt < STALE_RAIL_MAX_AGE_MS) continue;
+      updateRailState(rootPath, rail.id, "FAILED");
+      removeSandbox(rootPath, rail.id);
+      if (workspaceId) {
+        broadcastRailEvent(workspaceId, {
+          type: "rail_stale_recovered",
+          railId: rail.id,
+          from: rail.state,
+          to: "FAILED"
+        });
+      }
+    }
+  } catch {
+  }
+}
 function resolveRootPath(raw) {
   if (!raw || typeof raw !== "string" || raw.trim() === "") {
     return { error: "rootPath query is required." };
   }
-  const root = path30.resolve(raw.trim());
+  const root = path34.resolve(raw.trim());
   const baseDir = process.env.PROJECTS_BASE_DIR?.trim();
   if (baseDir) {
-    const baseNorm = path30.resolve(baseDir);
-    if (!root.startsWith(baseNorm + path30.sep) && root !== baseNorm) {
+    const baseNorm = path34.resolve(baseDir);
+    if (!root.startsWith(baseNorm + path34.sep) && root !== baseNorm) {
       return { error: "rootPath must be within the allowed projects directory." };
     }
   }
   return { root };
 }
-async function resolveRootFromWorkspace(workspaceId, ownerId) {
+async function resolveRootFromWorkspace2(workspaceId, ownerId) {
   if (!supabaseAdmin) return null;
   try {
     const { data, error } = await supabaseAdmin.from("workspaces").select("project_root").eq("id", workspaceId).eq("owner_id", ownerId).maybeSingle();
     if (error || !data) return null;
     const pr = data.project_root;
-    return typeof pr === "string" && pr.trim() ? path30.resolve(pr.trim()) : null;
+    return typeof pr === "string" && pr.trim() ? path34.resolve(pr.trim()) : null;
   } catch {
     return null;
   }
 }
-router16.get("/rails", optionalUser, async (req, res) => {
+async function resolveRootAndWorkspace(req) {
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId || !req.user?.id) {
+    return { error: "workspaceId and auth required.", status: 400 };
+  }
+  const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+  if (!root) {
+    return { error: "Workspace has no project_root.", status: 400 };
+  }
+  return { root, workspaceId };
+}
+router18.get("/rails", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
   if (rootPath) {
     resolved = resolveRootPath(rootPath);
   } else if (workspaceId && req.user?.id) {
-    const root = await resolveRootFromWorkspace(workspaceId, req.user.id);
+    const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
     resolved = root ? { root } : { error: "Workspace has no project_root. Set project_root or pass rootPath." };
   } else {
     resolved = { error: "rootPath or workspaceId (with auth) is required." };
   }
   if ("error" in resolved) {
-    res.status(400).json({ error: resolved.error });
+    sendError(res, 400, resolved.error);
     return;
   }
   try {
     loadRails(resolved.root);
+    cleanupOrphanSandboxes(resolved.root, workspaceId);
+    recoverStaleRails(resolved.root, workspaceId);
     const rails = getAllRails();
     res.json({
       rails: rails.map((r) => ({
@@ -8522,6 +10941,7 @@ router16.get("/rails", optionalUser, async (req, res) => {
         lastCritique: r.lastCritique ?? null,
         hallucinationIndex: r.hallucinationIndex ?? null,
         acceptanceCriteria: r.acceptanceCriteria ?? null,
+        attemptHistory: r.attemptHistory ?? null,
         tasks: (r.tasks ?? []).map((t) => ({
           id: t.id,
           kind: t.kind,
@@ -8536,20 +10956,152 @@ router16.get("/rails", optionalUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
-router16.get("/rails/:railId", optionalUser, async (req, res) => {
+router18.post("/rails/from-violation", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    sendError(res, 503, "Auth service not configured.");
+    return;
+  }
+  const workspaceIdBody = req.body?.workspaceId?.trim() || null;
+  const violation = req.body?.violation;
+  if (!violation) {
+    sendError(res, 400, "violation is required in request body.", "VIOLATION_REQUIRED");
+    return;
+  }
+  const violationId = typeof violation.id === "string" && violation.id.trim() ? violation.id.trim() : null;
+  try {
+    let workspaceId = workspaceIdBody;
+    if (violationId) {
+      const { data: row } = await supabaseAdmin.from("violations").select("id, workspace_id").eq("id", violationId).maybeSingle();
+      if (!row) {
+        sendError(res, 404, "Violation not found.", "VIOLATION_NOT_FOUND");
+        return;
+      }
+      workspaceId = row.workspace_id ?? workspaceId;
+    }
+    if (!workspaceId) {
+      sendError(res, 400, "workspaceId is required (in body or via violation record).", "WORKSPACE_REQUIRED");
+      return;
+    }
+    const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).single();
+    if (!ws) {
+      sendError(res, 403, "Access denied.", "WORKSPACE_FORBIDDEN");
+      return;
+    }
+    const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+    if (!root) {
+      sendError(res, 400, "Workspace has no project_root.", "WORKSPACE_NO_PROJECT_ROOT");
+      return;
+    }
+    let repoUrl = null;
+    try {
+      const { data: graphRow } = await supabaseAdmin.from("graphs").select("repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+      repoUrl = graphRow?.repo_url ?? null;
+    } catch {
+    }
+    const now = Date.now();
+    const railId = violationId != null ? `rail-violation-${violationId}-${now}` : `rail-violation-${now.toString(16)}`;
+    const trigger = violationId ? { source: "governance", violationId } : {
+      source: "chat",
+      userMessage: (violation.description ?? violation.suggestedFix ?? "Fix architecture violation").slice(0, 200),
+      sessionId: req.user.id
+    };
+    const sourceNodeId = typeof violation.sourceNodeId === "string" && violation.sourceNodeId.trim() ? violation.sourceNodeId.trim() : "unknown-node";
+    const logicPath = [
+      {
+        step: 1,
+        layer: "Service",
+        nodeId: sourceNodeId,
+        filePath: sourceNodeId,
+        action: typeof violation.suggestedFix === "string" && violation.suggestedFix.trim().slice(0, 120) || "Fix architecture violation"
+      }
+    ];
+    const outcomeParts = [];
+    if (violation.type) outcomeParts.push(String(violation.type));
+    if (violation.severity) outcomeParts.push(String(violation.severity));
+    outcomeParts.push(violation.description ?? "Architecture violation");
+    const rail = {
+      id: railId,
+      version: 1,
+      outcome: outcomeParts.join(" \xB7 ").slice(0, 200),
+      trigger,
+      workspaceId,
+      repoUrl,
+      violationId: violationId ?? void 0,
+      archetype: "analysis-chat",
+      logicPath,
+      state: "PRE_PLANNING",
+      activeAgent: null,
+      tasks: [],
+      jiraKeys: [],
+      traceIds: [],
+      overlaps: [],
+      createdAt: now,
+      updatedAt: now,
+      createdBy: "human",
+      sessionId: req.user.id,
+      originSummary: (violation.description ?? violation.suggestedFix ?? "Fix architecture violation").slice(0, 200)
+    };
+    const task = {
+      id: `task-code-${now.toString(16)}`,
+      railId,
+      kind: "code_change",
+      description: violation.suggestedFix && violation.suggestedFix.trim() || `Fix ${violation.type ?? "violation"} at ${sourceNodeId}`,
+      files: [],
+      autoCapable: true,
+      status: "pending",
+      agent: "executor",
+      logicStep: 1,
+      createdAt: now
+    };
+    createRail(root, rail);
+    createTask(task);
+    if (violationId) {
+      try {
+        await supabaseAdmin.from("violations").update({ rail_id: railId }).eq("id", violationId);
+      } catch {
+      }
+    }
+    res.status(201).json({ railId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, msg, "RAIL_FROM_VIOLATION_ERROR");
+  }
+});
+router18.get("/rails/events", requireUser, async (req, res) => {
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId) {
+    sendError(res, 400, "workspaceId is required.", "WORKSPACE_REQUIRED");
+    return;
+  }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+  res.write(`event: ping
+data: "connected"
+
+`);
+  const client = { workspaceId, res };
+  railEventClients.push(client);
+  req.on("close", () => {
+    const idx = railEventClients.indexOf(client);
+    if (idx >= 0) railEventClients.splice(idx, 1);
+  });
+});
+router18.get("/rails/:railId", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
   if (rootPath) {
     resolved = resolveRootPath(rootPath);
   } else if (workspaceId && req.user?.id) {
-    const root = await resolveRootFromWorkspace(workspaceId, req.user.id);
+    const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
     resolved = root ? { root } : { error: "Workspace has no project_root." };
   } else {
     resolved = { error: "rootPath or workspaceId (with auth) is required." };
   }
   if ("error" in resolved) {
-    res.status(400).json({ error: resolved.error });
+    sendError(res, 400, resolved.error);
     return;
   }
   const railId = req.params.railId;
@@ -8561,7 +11113,7 @@ router16.get("/rails/:railId", optionalUser, async (req, res) => {
     loadRails(resolved.root);
     const rail = getRail(resolved.root, railId);
     if (!rail) {
-      res.status(404).json({ error: "Rail not found." });
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
       return;
     }
     res.json({
@@ -8581,27 +11133,28 @@ router16.get("/rails/:railId", optionalUser, async (req, res) => {
       acceptanceCriteria: rail.acceptanceCriteria ?? null,
       tasks: rail.tasks ?? [],
       traces: rail.traces ?? null,
-      telemetry: rail.telemetry ?? null
+      telemetry: rail.telemetry ?? null,
+      attemptHistory: rail.attemptHistory ?? null
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: msg });
   }
 });
-router16.post("/rails/:railId/state", optionalUser, async (req, res) => {
+router18.post("/rails/:railId/state", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
   if (rootPath) {
     resolved = resolveRootPath(rootPath);
   } else if (workspaceId && req.user?.id) {
-    const root = await resolveRootFromWorkspace(workspaceId, req.user.id);
+    const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
     resolved = root ? { root } : { error: "Workspace has no project_root." };
   } else {
     resolved = { error: "rootPath or workspaceId (with auth) is required." };
   }
   if ("error" in resolved) {
-    res.status(400).json({ error: resolved.error });
+    sendError(res, 400, resolved.error);
     return;
   }
   const railId = req.params.railId;
@@ -8614,15 +11167,49 @@ router16.post("/rails/:railId/state", optionalUser, async (req, res) => {
     loadRails(resolved.root);
     const current = getRail(resolved.root, railId);
     if (!current) {
-      res.status(404).json({ error: "Rail not found." });
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
       return;
     }
     const result = transitionRail(resolved.root, railId, to);
     if (!result.ok || !result.rail) {
-      res.status(400).json({ error: result.error ?? "Invalid transition." });
+      sendError(res, 400, result.error ?? "Invalid transition.", "RAIL_INVALID_TRANSITION");
       return;
     }
     updateRailState(resolved.root, railId, result.rail.state);
+    if (workspaceId) {
+      broadcastRailEvent(workspaceId, {
+        type: "rail_state",
+        railId,
+        from: current?.state ?? null,
+        to: result.rail.state
+      });
+      if (result.rail.state === "AWAITING_HITL") {
+        broadcastRailEvent(workspaceId, {
+          type: "rail_hitl",
+          railId,
+          reason: "awaiting_human_review"
+        });
+      }
+    }
+    if (supabaseAdmin) {
+      try {
+        await supabaseAdmin.from("rail_state_events").insert({
+          rail_id: railId,
+          workspace_id: workspaceId ?? null,
+          from_state: current?.state ?? null,
+          to_state: result.rail.state,
+          actor_id: req.user?.id ?? null,
+          reason: req.body?.reason ?? null
+        });
+      } catch {
+      }
+      if (workspaceId && result.rail.state === "ARCHIVED") {
+        writeRailCompletionMemory(workspaceId, result.rail).catch(() => {
+        });
+        completeTodosForRail(railId).catch(() => {
+        });
+      }
+    }
     res.json({
       id: result.rail.id,
       state: result.rail.state
@@ -8632,40 +11219,80 @@ router16.post("/rails/:railId/state", optionalUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
-router16.post("/rails/:railId/execute", requireUser, async (req, res) => {
+router18.post("/rails/:railId/execute", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
-    res.status(400).json({ error: "workspaceId and auth required." });
+    sendError(res, 400, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
     return;
   }
-  const root = await resolveRootFromWorkspace(workspaceId, req.user.id);
-  if (!root) {
-    res.status(400).json({ error: "Workspace has no project_root." });
+  const currentExec = workspaceExecutionCounts2.get(workspaceId) ?? 0;
+  if (currentExec >= MAX_CONCURRENT_PER_WORKSPACE2) {
+    sendError(
+      res,
+      429,
+      "Execution limit reached for this workspace. Try again later.",
+      "RAIL_EXECUTION_LIMIT"
+    );
     return;
+  }
+  let root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+  if (!root) {
+    if (!supabaseAdmin) {
+      sendError(res, 503, "Auth service not configured.", "SERVICE_UNAVAILABLE");
+      return;
+    }
+    try {
+      const { data: gr } = await supabaseAdmin.from("graphs").select("graph_json, repo_url").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+      const graph = gr?.graph_json ?? { nodes: [], edges: [], generatedAt: Date.now(), projectRoot: "" };
+      const repoUrl = gr?.repo_url ?? null;
+      const { rootPath, error } = await ensureProjectRoot(workspaceId, graph, repoUrl);
+      if (rootPath !== null) {
+        root = rootPath;
+      } else {
+        sendError(
+          res,
+          400,
+          error || "Workspace has no project_root. Please scan the repository first.",
+          "WORKSPACE_NO_PROJECT_ROOT"
+        );
+        return;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      sendError(res, 500, msg, "WORKSPACE_NO_PROJECT_ROOT");
+      return;
+    }
   }
   const railId = req.params.railId;
   if (!railId) {
-    res.status(400).json({ error: "railId required." });
+    sendError(res, 400, "railId required.", "RAIL_ID_REQUIRED");
     return;
   }
   try {
     loadRails(root);
     const rail = getRail(root, railId);
     if (!rail) {
-      res.status(404).json({ error: "Rail not found." });
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
       return;
     }
     if (rail.archetype !== "analysis-chat") {
-      res.status(400).json({ error: "Only analysis-chat rails can be executed." });
+      sendError(res, 400, "Only analysis-chat rails can be executed.", "RAIL_WRONG_ARCHETYPE");
       return;
     }
-    const codeTasks = (rail.tasks ?? []).filter((t) => t.kind === "code_change");
+    const codeTasks = (rail.tasks ?? []).filter(
+      (t) => t.kind === "code_change" && classifyTaskAutoCapable(t)
+    );
     if (codeTasks.length === 0) {
-      res.status(400).json({ error: "Rail has no code_change tasks to run." });
+      sendError(res, 400, "Rail has no code_change tasks to run.", "RAIL_NO_CODE_TASKS");
       return;
     }
     if (!["PRE_PLANNING", "PLANNING", "AWAITING_APPROVAL"].includes(rail.state)) {
-      res.status(400).json({ error: `Rail must be in PRE_PLANNING, PLANNING, or AWAITING_APPROVAL. Current: ${rail.state}` });
+      sendError(
+        res,
+        400,
+        `Rail must be in PRE_PLANNING, PLANNING, or AWAITING_APPROVAL. Current: ${rail.state}`,
+        "RAIL_INVALID_STATE"
+      );
       return;
     }
     const bgTask = createTask2();
@@ -8676,6 +11303,7 @@ router16.post("/rails/:railId/execute", requireUser, async (req, res) => {
       kind: "analysis-execute"
     });
     setTaskRunning(bgTask.taskId);
+    workspaceExecutionCounts2.set(workspaceId, currentExec + 1);
     const sandboxPath = ensureSandbox(root, rail.id);
     const paths = (rail.logicPath ?? []).map((s) => typeof s === "object" && s && "filePath" in s && typeof s.filePath === "string" ? s.filePath : String(s)).filter(Boolean);
     const syncPaths = paths.length > 0 ? paths : ["src"];
@@ -8707,19 +11335,49 @@ router16.post("/rails/:railId/execute", requireUser, async (req, res) => {
         setTaskFailed(bgTask.taskId, tr.error ?? "Invalid transition.");
         return;
       }
-      for (let idx = 0; idx < plan.tasks.length && !isTaskCancelled(bgTask.taskId); idx++) {
-        const railTask = codeTasks[idx];
-        if (railTask) updateTaskStatus(railTask.id, "executing");
-        await runTaskAtIndex(plan, idx, sandboxPath, { apiKey });
-        if (railTask) updateTaskStatus(railTask.id, "completed");
+      const attemptHistory = [];
+      const maxSelfCorrect = rail.telemetry?.retryLimit ?? (typeof process.env.RAIL_SELF_CORRECT_MAX === "string" && !Number.isNaN(Number(process.env.RAIL_SELF_CORRECT_MAX)) ? Math.max(0, Math.min(5, Number(process.env.RAIL_SELF_CORRECT_MAX))) : 2);
+      let lastVerificationFeedback;
+      let verification = null;
+      let attempt = 0;
+      while (attempt <= maxSelfCorrect && !isTaskCancelled(bgTask.taskId)) {
+        for (let idx = 0; idx < plan.tasks.length && !isTaskCancelled(bgTask.taskId); idx++) {
+          const railTask = codeTasks[idx];
+          if (railTask) updateTaskStatus(railTask.id, "executing");
+          const result = await runTaskAtIndex(plan, idx, sandboxPath, {
+            apiKey,
+            errorOutput: lastVerificationFeedback,
+            rail,
+            railHistory: attemptHistory
+          });
+          if (result.error) {
+            attemptHistory.push({
+              role: "assistant",
+              content: `Task ${railTask?.id ?? idx} error: ${result.error}`
+            });
+          }
+          if (railTask) updateTaskStatus(railTask.id, "completed");
+        }
+        const nodeIds = (rail.logicPath ?? []).map((s) => typeof s === "object" && s && "nodeId" in s && typeof s.nodeId === "string" ? s.nodeId : null).filter((x) => !!x);
+        verification = await runVerificationPipeline({
+          projectRoot: root,
+          sandboxPath,
+          railId: rail.id,
+          baseUrl: process.env.APP_URL || "http://127.0.0.1:4173",
+          scope: nodeIds.length > 0 ? { nodeIds } : void 0
+        });
+        const passed2 = verification.passed;
+        lastVerificationFeedback = verification.errorFeedback || void 0;
+        if (passed2) break;
+        attempt++;
       }
-      const lint = runLint(root, void 0, sandboxPath);
-      const vitest = runVitest(root, void 0, sandboxPath);
-      const passed = lint.passed && vitest.passed;
-      const errorOutput = [
-        !lint.passed ? `Lint: ${JSON.stringify(lint.errors.slice(0, 5))}` : "",
-        !vitest.passed ? `Vitest: ${JSON.stringify(vitest.failures.slice(0, 3))}` : ""
-      ].filter(Boolean).join("\n");
+      const { passed, lint, vitest, playwright: playwrightResult } = verification ?? {
+        passed: false,
+        lint: { passed: false, errors: [] },
+        vitest: { passed: false, summary: { total: 0, passed: 0, failed: 0, skipped: 0 }, failures: [] },
+        playwright: null
+      };
+      const errorOutput = lastVerificationFeedback ?? "Verification failed.";
       const verificationTaskId = `verify-${Date.now()}`;
       createTask({
         id: verificationTaskId,
@@ -8734,13 +11392,28 @@ router16.post("/rails/:railId/execute", requireUser, async (req, res) => {
         createdAt: Date.now(),
         resolvedAt: Date.now()
       });
-      updateTaskEvidence(verificationTaskId, JSON.stringify({ lint, vitest }));
+      updateTaskEvidence(verificationTaskId, JSON.stringify({ lint, vitest, playwright: playwrightResult }));
+      const attemptNumber = (rail.telemetry?.retryCount ?? 0) + 1;
+      const attemptSummary = passed ? "Verification passed." : errorOutput || "Verification failed.";
       updateRailPartial(root, railId, {
         lastCritique: {
           source: passed ? "test" : "lint",
-          message: passed ? "Lint and Vitest passed." : errorOutput,
-          createdAt: Date.now()
-        }
+          message: passed ? "Lint, Vitest, and Playwright passed." : errorOutput || "Verification failed.",
+          createdAt: Date.now(),
+          attempt: attemptNumber,
+          totalAttempts: rail.telemetry?.retryLimit ?? 1
+        },
+        telemetry: {
+          ...rail.telemetry ?? {},
+          retryCount: (rail.telemetry?.retryCount ?? 0) + (passed ? 0 : 1)
+        },
+        attemptHistory: [
+          ...rail.attemptHistory ?? [],
+          {
+            timestamp: Date.now(),
+            summary: attemptSummary.slice(0, 5e3)
+          }
+        ]
       });
       const toState = passed ? "VERIFYING" : "SELF_CORRECTING";
       transitionRail(root, railId, toState);
@@ -8749,27 +11422,52 @@ router16.post("/rails/:railId/execute", requireUser, async (req, res) => {
         railId: rail.id,
         verificationPassed: passed,
         lint: { passed: lint.passed, errors: lint.errors.length },
-        vitest: { passed: vitest.passed, failures: vitest.failures.length }
+        vitest: { passed: vitest.passed, failures: vitest.failures.length },
+        playwright: playwrightResult ? { passed: playwrightResult.passed, failures: playwrightResult.failures.length } : null
       });
+      if (supabaseAdmin && workspaceId) {
+        try {
+          await supabaseAdmin.from("workspace_memories").insert({
+            workspace_id: workspaceId,
+            content: passed ? `Rail ${rail.id} verification passed. Outcome: ${rail.outcome ?? ""}` : `Rail ${rail.id} verification failed. See lint, vitest, and Playwright results.`,
+            memory_type: "rail_result",
+            rail_id: rail.id
+          });
+        } catch {
+        }
+      }
+      if (!passed && workspaceId) {
+        broadcastRailEvent(workspaceId, {
+          type: "rail_hitl",
+          railId: rail.id,
+          reason: "verification_failed"
+        });
+      }
     }).catch((err) => {
       const msg = err instanceof Error ? err.message : String(err);
       setTaskFailed(bgTask.taskId, msg);
       updateRailPartial(root, railId, {
         lastCritique: { source: "unknown", message: msg, createdAt: Date.now() }
       });
+    }).finally(() => {
+      const cur = workspaceExecutionCounts2.get(workspaceId) ?? 0;
+      const next = Math.max(0, cur - 1);
+      if (next === 0) workspaceExecutionCounts2.delete(workspaceId);
+      else workspaceExecutionCounts2.set(workspaceId, next);
+      broadcastRailEvent(workspaceId, { type: "rail_execute_complete", railId });
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ error: msg });
+    sendError(res, 500, msg, "RAIL_EXECUTE_ERROR");
   }
 });
-router16.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
+router18.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     res.status(401).json({ error: "workspaceId and auth required." });
     return;
   }
-  const root = await resolveRootFromWorkspace(workspaceId, req.user.id);
+  const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
   if (!root) {
     res.status(400).json({ error: "Workspace has no project_root." });
     return;
@@ -8787,7 +11485,7 @@ router16.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
       return;
     }
     const sandboxPath = getSandboxPath(root, railId);
-    if (!fs27.existsSync(sandboxPath)) {
+    if (!fs29.existsSync(sandboxPath)) {
       res.json({ paths: [] });
       return;
     }
@@ -8798,18 +11496,359 @@ router16.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
+router18.get("/rails/:railId/diff", requireUser, async (req, res) => {
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId || !req.user?.id) {
+    res.status(401).json({ error: "workspaceId and auth required." });
+    return;
+  }
+  const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+  if (!root) {
+    res.status(400).json({ error: "Workspace has no project_root." });
+    return;
+  }
+  const railId = req.params.railId;
+  if (!railId) {
+    res.status(400).json({ error: "railId required." });
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      res.status(404).json({ error: "Rail not found." });
+      return;
+    }
+    const sandboxPath = getSandboxPath(root, railId);
+    if (!fs29.existsSync(sandboxPath)) {
+      res.json({ files: [] });
+      return;
+    }
+    const relFiles = walkDir2(sandboxPath, sandboxPath, 6).filter((p) => !p.endsWith("/"));
+    const diffs = [];
+    for (const rel of relFiles) {
+      const sandboxFile = path34.join(sandboxPath, rel);
+      const rootFile = path34.join(root, rel);
+      let before;
+      let after;
+      try {
+        if (fs29.existsSync(rootFile) && fs29.statSync(rootFile).isFile()) {
+          before = fs29.readFileSync(rootFile, "utf-8");
+        }
+      } catch {
+      }
+      try {
+        after = fs29.readFileSync(sandboxFile, "utf-8");
+      } catch {
+      }
+      if (before === after) continue;
+      diffs.push({ path: rel, before, after });
+    }
+    res.json({ files: diffs });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+router18.get("/rails/:railId/impact", requireUser, async (req, res) => {
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId || !req.user?.id) {
+    res.status(401).json({ error: "workspaceId and auth required." });
+    return;
+  }
+  const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+  if (!root) {
+    res.status(400).json({ error: "Workspace has no project_root." });
+    return;
+  }
+  const railId = req.params.railId;
+  if (!railId) {
+    res.status(400).json({ error: "railId required." });
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      res.status(404).json({ error: "Rail not found." });
+      return;
+    }
+    const sandboxPath = getSandboxPath(root, railId);
+    const changedFiles = [];
+    if (fs29.existsSync(sandboxPath)) {
+      const relFiles = walkDir2(sandboxPath, sandboxPath, 6).filter((p) => !p.endsWith("/"));
+      for (const rel of relFiles) {
+        const sandboxFile = path34.join(sandboxPath, rel);
+        const rootFile = path34.join(root, rel);
+        let before;
+        let after;
+        try {
+          if (fs29.existsSync(rootFile) && fs29.statSync(rootFile).isFile()) {
+            before = fs29.readFileSync(rootFile, "utf-8");
+          }
+        } catch {
+        }
+        try {
+          after = fs29.readFileSync(sandboxFile, "utf-8");
+        } catch {
+        }
+        if (before !== after) {
+          changedFiles.push(rel);
+        }
+      }
+    }
+    let nodesToPaths = {};
+    const logicNodeIds = (rail.logicPath ?? []).map((s) => typeof s === "object" && s && "nodeId" in s ? s.nodeId : null).filter((id) => !!id);
+    const allNodeIds = [.../* @__PURE__ */ new Set([...rail.baselineNodeIds ?? [], ...logicNodeIds])];
+    if (supabaseAdmin && allNodeIds.length > 0) {
+      const { data: graphRow } = await supabaseAdmin.from("graphs").select("graph_json").eq("workspace_id", workspaceId).order("updated_at", { ascending: false }).limit(1).maybeSingle();
+      if (graphRow?.graph_json) {
+        const graph = graphRow.graph_json;
+        const nodeMap = buildNodeFileMap(graph);
+        for (const nodeId of allNodeIds) {
+          const entry = nodeMap.get(nodeId);
+          if (entry?.files?.length) nodesToPaths[nodeId] = entry.files;
+        }
+      }
+    }
+    res.json({
+      railId,
+      baselineNodeIds: rail.baselineNodeIds ?? null,
+      changedFiles,
+      nodesToPaths: Object.keys(nodesToPaths).length > 0 ? nodesToPaths : void 0
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+router18.get("/rails/:railId/trace", requireUser, async (req, res) => {
+  const workspaceId = req.query.workspaceId?.trim();
+  if (!workspaceId || !req.user?.id) {
+    sendError(res, 401, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
+    return;
+  }
+  const root = await resolveRootFromWorkspace2(workspaceId, req.user.id);
+  if (!root) {
+    sendError(res, 400, "Workspace has no project_root.", "WORKSPACE_NO_PROJECT_ROOT");
+    return;
+  }
+  const railId = req.params.railId;
+  if (!railId) {
+    sendError(res, 400, "railId required.", "RAIL_ID_REQUIRED");
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
+      return;
+    }
+    let stateEvents = null;
+    if (supabaseAdmin) {
+      const { data } = await supabaseAdmin.from("rail_state_events").select("*").eq("rail_id", railId).order("created_at", { ascending: true });
+      stateEvents = data ?? [];
+    }
+    res.json({
+      railId,
+      rail,
+      stateEvents
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, msg);
+  }
+});
+router18.post("/rails/:railId/cancel", requireUser, async (req, res) => {
+  const resolved = await resolveRootAndWorkspace(req);
+  if ("error" in resolved) {
+    sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
+    return;
+  }
+  const { root, workspaceId } = resolved;
+  const railId = req.params.railId;
+  if (!railId) {
+    sendError(res, 400, "railId required.", "RAIL_ID_REQUIRED");
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
+      return;
+    }
+    if (!["EXECUTING", "VERIFYING", "SELF_CORRECTING", "AWAITING_HITL"].includes(rail.state)) {
+      sendError(
+        res,
+        400,
+        `Rail is not cancellable from state ${rail.state}.`,
+        "RAIL_INVALID_STATE"
+      );
+      return;
+    }
+    const result = transitionRail(root, railId, "SUSPENDED");
+    if (!result.ok || !result.rail) {
+      sendError(res, 400, result.error ?? "Invalid state transition.", "RAIL_INVALID_TRANSITION");
+      return;
+    }
+    updateRailState(root, railId, result.rail.state);
+    broadcastRailEvent(workspaceId, {
+      type: "rail_state",
+      railId,
+      from: rail.state,
+      to: result.rail.state
+    });
+    res.json({ id: railId, state: result.rail.state });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, msg, { code: "RAIL_CANCEL_ERROR", railId });
+  }
+});
+router18.post("/rails/:railId/materialize", requireUser, async (req, res) => {
+  const resolved = await resolveRootAndWorkspace(req);
+  if ("error" in resolved) {
+    sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
+    return;
+  }
+  const { root, workspaceId } = resolved;
+  const railId = req.params.railId;
+  if (!railId) {
+    sendError(res, 400, "railId required.", "RAIL_ID_REQUIRED");
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
+      return;
+    }
+    if (rail.archetype === "greenfield-materialize") {
+      sendError(
+        res,
+        400,
+        "Use /materialize/approve for greenfield materialize rails.",
+        "RAIL_WRONG_ARCHETYPE"
+      );
+      return;
+    }
+    const verifTasks = (rail.tasks ?? []).filter((t) => t.kind === "verification");
+    const passed = verifTasks.length > 0 && verifTasks.every((t) => t.status === "completed");
+    if (!passed) {
+      sendError(
+        res,
+        409,
+        "Verification has not passed yet. Approval is blocked until verification is completed successfully.",
+        { code: "RAIL_VERIFICATION_REQUIRED", railId }
+      );
+      return;
+    }
+    const sandboxPath = getSandboxPath(root, railId);
+    if (!fs29.existsSync(sandboxPath)) {
+      sendError(res, 400, "Sandbox not found for this rail.", "RAIL_SANDBOX_MISSING");
+      return;
+    }
+    const relFiles = walkDir2(sandboxPath, sandboxPath, 6).filter((p) => !p.endsWith("/"));
+    for (const rel of relFiles) {
+      const srcFile = path34.join(sandboxPath, rel);
+      const rootFile = path34.join(root, rel);
+      try {
+        const dir = path34.dirname(rootFile);
+        if (!fs29.existsSync(dir)) {
+          fs29.mkdirSync(dir, { recursive: true });
+        }
+        const content = fs29.readFileSync(srcFile, "utf-8");
+        fs29.writeFileSync(rootFile, content, "utf-8");
+      } catch {
+      }
+    }
+    const tr = transitionRail(root, railId, "ARCHIVED");
+    if (!tr.ok || !tr.rail) {
+      sendError(res, 500, tr.error ?? "Failed to archive rail after materialize.", "RAIL_MATERIALIZE_ERROR");
+      return;
+    }
+    updateRailState(root, railId, tr.rail.state);
+    broadcastRailEvent(workspaceId, {
+      type: "rail_state",
+      railId,
+      from: rail.state,
+      to: tr.rail.state
+    });
+    if (supabaseAdmin) {
+      writeRailCompletionMemory(workspaceId, tr.rail).catch(() => {
+      });
+      completeTodosForRail(railId).catch(() => {
+      });
+    }
+    res.json({ railId, state: tr.rail.state });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, msg, { code: "RAIL_MATERIALIZE_ERROR", railId });
+  }
+});
+router18.post("/rails/:railId/rollback", requireUser, async (req, res) => {
+  const resolved = await resolveRootAndWorkspace(req);
+  if ("error" in resolved) {
+    sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
+    return;
+  }
+  const { root, workspaceId } = resolved;
+  const railId = req.params.railId;
+  if (!railId) {
+    sendError(res, 400, "railId required.", "RAIL_ID_REQUIRED");
+    return;
+  }
+  try {
+    loadRails(root);
+    const rail = getRail(root, railId);
+    if (!rail) {
+      sendError(res, 404, "Rail not found.", "RAIL_NOT_FOUND");
+      return;
+    }
+    const sandboxPath = getSandboxPath(root, railId);
+    if (!fs29.existsSync(sandboxPath)) {
+      res.status(400).json({ error: "Sandbox not found for this rail." });
+      return;
+    }
+    const relFiles = walkDir2(sandboxPath, sandboxPath, 6).filter((p) => !p.endsWith("/"));
+    for (const rel of relFiles) {
+      const srcFile = path34.join(sandboxPath, rel);
+      const rootFile = path34.join(root, rel);
+      try {
+        if (fs29.existsSync(rootFile) && fs29.statSync(rootFile).isFile()) {
+          const before = fs29.readFileSync(rootFile, "utf-8");
+          const after = fs29.readFileSync(srcFile, "utf-8");
+          if (before !== after) {
+            fs29.writeFileSync(rootFile, before, "utf-8");
+          }
+        }
+      } catch {
+      }
+    }
+    broadcastRailEvent(workspaceId, {
+      type: "rail_rollback",
+      railId
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    sendError(res, 500, msg, { code: "RAIL_ROLLBACK_ERROR", railId });
+  }
+});
 
 // src/greenfieldRoutes.ts
-import { Router as Router17 } from "express";
+import { Router as Router19 } from "express";
 import { randomUUID as randomUUID3 } from "node:crypto";
-var router17 = Router17();
-router17.post("/greenfield/session", requireUser, (req, res) => {
+var router19 = Router19();
+router19.post("/greenfield/session", requireUser, (req, res) => {
   const sessionId2 = randomUUID3();
   const { workspaceId } = req.body ?? {};
   saveDraft(sessionId2, { nodes: [], edges: [], workspaceId });
   res.status(201).json({ sessionId: sessionId2, mode: "greenfield" });
 });
-router17.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router19.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   if (!sessionId2) {
     res.status(400).json({ error: "sessionId is required." });
@@ -8822,7 +11861,7 @@ router17.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router17.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router19.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   const body = req.body;
   if (!sessionId2) {
@@ -8836,7 +11875,7 @@ router17.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   });
   res.json(draft);
 });
-router17.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router19.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   if (!sessionId2) {
     res.status(400).json({ error: "sessionId is required." });
@@ -8845,7 +11884,7 @@ router17.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const deleted = deleteDraft(sessionId2);
   res.json({ deleted });
 });
-router17.post("/greenfield/nodes", requireUser, (req, res) => {
+router19.post("/greenfield/nodes", requireUser, (req, res) => {
   const { sessionId: sessionId2, node } = req.body;
   if (!sessionId2 || !node?.id) {
     res.status(400).json({ error: "sessionId and node (with id) are required." });
@@ -8854,7 +11893,7 @@ router17.post("/greenfield/nodes", requireUser, (req, res) => {
   const draft = appendDraftNode(sessionId2, node);
   res.status(201).json({ draftNodeId: node.id, draft });
 });
-router17.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
+router19.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   const nodeId = req.params.nodeId;
   const { sessionId: sessionId2, ...updates } = req.body;
   if (!sessionId2 || !nodeId) {
@@ -8868,7 +11907,7 @@ router17.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router17.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
+router19.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   const nodeId = req.params.nodeId;
   const sessionId2 = req.query.sessionId?.trim();
   if (!sessionId2 || !nodeId) {
@@ -8882,7 +11921,7 @@ router17.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router17.post("/greenfield/edges", requireUser, (req, res) => {
+router19.post("/greenfield/edges", requireUser, (req, res) => {
   const { sessionId: sessionId2, edge } = req.body;
   if (!sessionId2 || !edge?.source || !edge?.target) {
     res.status(400).json({ error: "sessionId and edge (source, target) are required." });
@@ -8891,17 +11930,112 @@ router17.post("/greenfield/edges", requireUser, (req, res) => {
   const draft = appendDraftEdge(sessionId2, edge);
   res.status(201).json({ draft });
 });
+router19.post("/greenfield/nodes/:nodeId/to-todo", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const nodeId = req.params.nodeId;
+  const { sessionId: sessionId2, workspaceId } = req.body;
+  if (!sessionId2 || !nodeId || !workspaceId) {
+    res.status(400).json({ error: "sessionId, workspaceId, and nodeId are required." });
+    return;
+  }
+  const draft = loadDraft(sessionId2);
+  if (!draft) {
+    res.status(404).json({ error: "Draft not found." });
+    return;
+  }
+  const node = draft.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    res.status(404).json({ error: "Node not found in draft." });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).maybeSingle();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const title = node.label || node.id;
+  const description = node.description ?? null;
+  const { data, error } = await supabaseAdmin.from("todos").insert({
+    workspace_id: workspaceId,
+    title,
+    description,
+    phase: null,
+    depends_on: null,
+    status: "pending",
+    source: "greenfield",
+    source_path: node.archNodeId ?? node.id
+  }).select("*").single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.status(201).json({ todo: data });
+});
+router19.post("/greenfield/nodes/:nodeId/to-rail", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const nodeId = req.params.nodeId;
+  const { sessionId: sessionId2, workspaceId } = req.body;
+  if (!sessionId2 || !nodeId || !workspaceId) {
+    res.status(400).json({ error: "sessionId, workspaceId, and nodeId are required." });
+    return;
+  }
+  const draft = loadDraft(sessionId2);
+  if (!draft) {
+    res.status(404).json({ error: "Draft not found." });
+    return;
+  }
+  const node = draft.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    res.status(404).json({ error: "Node not found in draft." });
+    return;
+  }
+  const { data: ws } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", req.user.id).maybeSingle();
+  if (!ws) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const title = node.label || node.id;
+  const description = node.description ?? null;
+  const { data: todoRow, error: todoErr } = await supabaseAdmin.from("todos").insert({
+    workspace_id: workspaceId,
+    title,
+    description,
+    phase: null,
+    depends_on: null,
+    status: "pending",
+    source: "greenfield",
+    source_path: node.archNodeId ?? node.id
+  }).select("id").single();
+  if (todoErr || !todoRow) {
+    res.status(500).json({ error: todoErr?.message ?? "Failed to create todo." });
+    return;
+  }
+  const todoId = String(todoRow.id);
+  try {
+    const { railId } = await todoToRailCore(todoId, req.user.id);
+    res.status(201).json({ railId, todoId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to create rail.";
+    res.status(500).json({ error: msg });
+  }
+});
 
 // src/chatThreads.ts
-import { Router as Router18 } from "express";
-var router18 = Router18();
+import { Router as Router20 } from "express";
+var router20 = Router20();
 var MESSAGES_LIMIT = 100;
 async function verifyWorkspace(workspaceId, ownerId) {
   if (!supabaseAdmin) return false;
   const { data } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", ownerId).single();
   return !!data;
 }
-router18.get("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
+router20.get("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8929,7 +12063,7 @@ router18.get("/workspaces/:workspaceId/threads", requireUser, async (req, res) =
   }
   res.json({ threads: data ?? [] });
 });
-router18.post("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
+router20.post("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8953,7 +12087,7 @@ router18.post("/workspaces/:workspaceId/threads", requireUser, async (req, res) 
   }
   res.status(201).json(data);
 });
-router18.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
+router20.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -8983,7 +12117,7 @@ router18.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser,
   }
   res.json({ messages: data ?? [] });
 });
-router18.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
+router20.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -9027,7 +12161,7 @@ router18.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser
   await supabaseAdmin.from("chat_threads").update({ updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", threadId);
   res.status(201).json({ messages: data ?? [] });
 });
-router18.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, async (req, res) => {
+router20.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -9052,13 +12186,13 @@ router18.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, async 
   }
   res.json(data);
 });
-var chatThreadRoutes = router18;
+var chatThreadRoutes = router20;
 
 // src/userMemories.ts
-import { Router as Router19 } from "express";
-var router19 = Router19();
+import { Router as Router21 } from "express";
+var router21 = Router21();
 var CONTENT_MAX = 2e3;
-router19.get("/user/memories", requireUser, async (req, res) => {
+router21.get("/user/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -9072,7 +12206,7 @@ router19.get("/user/memories", requireUser, async (req, res) => {
   }
   res.json({ memories: data ?? [] });
 });
-router19.post("/user/memories", requireUser, async (req, res) => {
+router21.post("/user/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -9099,7 +12233,7 @@ router19.post("/user/memories", requireUser, async (req, res) => {
   }
   res.status(201).json(data);
 });
-router19.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
+router21.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -9121,12 +12255,12 @@ router19.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
   }
   res.status(204).send();
 });
-var userMemoriesRoutes = router19;
+var userMemoriesRoutes = router21;
 
 // src/index.ts
-var __dirname5 = path31.dirname(fileURLToPath5(import.meta.url));
-var distPath = path31.resolve(__dirname5, "../../client/dist");
-if (!fs28.existsSync(distPath)) {
+var __dirname5 = path35.dirname(fileURLToPath5(import.meta.url));
+var distPath = path35.resolve(__dirname5, "../../client/dist");
+if (!fs30.existsSync(distPath)) {
   console.warn(`[static] dist not found at ${distPath} \u2014 run 'npm run build' in the client`);
 }
 var app = express();
@@ -9139,31 +12273,38 @@ app.use(
 );
 var PORT = process.env.PORT ?? 4e3;
 app.use("/api", router);
-app.use("/api", router3);
 app.use("/api", router4);
 app.use("/api", router5);
-app.use("/api", router2);
 app.use("/api", router6);
+app.use("/api", router2);
 app.use("/api", router7);
-app.use("/api", router15);
 app.use("/api", router8);
+app.use("/api", router17);
 app.use("/api", router9);
 app.use("/api", router10);
 app.use("/api", router11);
+app.use("/api", router12);
+app.use("/api", router3);
+app.use("/api", router13);
 app.use("/api", chatThreadRoutes);
 app.use("/api", userMemoriesRoutes);
-app.use("/api", router12);
-app.use("/api", router13);
 app.use("/api", router14);
+app.use("/api", router15);
 app.use("/api", router16);
-app.use("/api", router17);
+app.use("/api", router19);
+app.use("/api", router18);
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 app.use(express.static(distPath));
 app.get("*", (_req, res) => {
-  res.sendFile(path31.join(distPath, "index.html"));
+  res.sendFile(path35.join(distPath, "index.html"));
 });
-app.listen(PORT, () => {
-  console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
-});
+if (!process.env.VITEST) {
+  app.listen(PORT, () => {
+    console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
+  });
+}
+export {
+  app
+};

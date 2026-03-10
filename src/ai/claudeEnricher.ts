@@ -870,7 +870,9 @@ export async function askAboutArchitecture(
   rootPath?: string,
   jiraConfig?: { baseUrl: string; email: string; apiToken: string },
   jiraProjectKey?: string,
-  rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null
+  rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null,
+  pdfBase64?: string,
+  pdfFileName?: string
 ): Promise<AskResult> {
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
@@ -1016,9 +1018,24 @@ export async function askAboutArchitecture(
     contextText = trimTextToBudget(contextText, Math.max(0, contextEst - toTrim));
   }
 
+  const userContent: Anthropic.MessageParam["content"] =
+    pdfBase64 && pdfBase64.length > 0
+      ? [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf" as const,
+              data: pdfBase64,
+            },
+          },
+          { type: "text", text: contextText },
+        ]
+      : contextText;
+
   const messages: Anthropic.MessageParam[] = [
     ...railPriorTurns,
-    { role: "user", content: contextText },
+    { role: "user", content: userContent },
   ];
 
   const MAX_STEPS = 6;

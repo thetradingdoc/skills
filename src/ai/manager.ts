@@ -39,6 +39,8 @@ export interface ManagerResult {
   acceptanceCriteria?: { functional: string[]; visual: string[]; architectural: string[] };
   /** Greenfield: inferred archetype for template/anti-pattern routing */
   archetype?: string;
+  /** Optional rails created/updated during this interaction (for UI linkback). */
+  rails?: Array<{ id: string; outcome?: string; state?: string; archetype?: string }>;
 }
 
 /** Pluggable mode interface — enables future modes without touching orchestrator */
@@ -63,6 +65,9 @@ export async function runArchitectureTask(params: {
   jiraProjectKey?: string;
   /** Section 9.1: Optional rail for buildRailContext (plan-scoped Q&A) */
   rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null;
+  /** Optional PDF attachment (base64) for analysis chat */
+  pdfBase64?: string;
+  pdfFileName?: string;
 }): Promise<ManagerResult> {
   const { mode, rootPath, ...rest } = params;
   const traceId = crypto.randomUUID();
@@ -127,6 +132,8 @@ async function runAnalysisTask(params: {
   jiraConfig?: { baseUrl: string; email: string; apiToken: string };
   jiraProjectKey?: string;
   rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null;
+  pdfBase64?: string;
+  pdfFileName?: string;
 }): Promise<ManagerResult> {
   const {
     question,
@@ -141,6 +148,8 @@ async function runAnalysisTask(params: {
     jiraConfig,
     jiraProjectKey,
     rail,
+    pdfBase64,
+    pdfFileName,
   } = params;
 
   const resolvedRoot = path.resolve(rootPath);
@@ -248,7 +257,9 @@ async function runAnalysisTask(params: {
       rootPath,
       jiraConfig,
       jiraProjectKey,
-      rail ?? undefined
+      rail ?? undefined,
+      pdfBase64,
+      pdfFileName
     );
 
     lastAnswer = claudeResult.answer;

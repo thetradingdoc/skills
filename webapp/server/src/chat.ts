@@ -26,15 +26,20 @@ import {
   setTaskFailed,
   isTaskCancelled,
 } from "./tasks.js";
-import { getUserJiraConfig } from "./jiraConfig.js";
+import { getUserJiraConfig, JiraDecryptError } from "./jiraConfig.js";
 import { getWorkspaceProjectKey } from "./jira.js";
 import { saveDraft } from "./greenfieldDraft.js";
 import type { Rail, RailTrigger, Task as RailTask } from "../../../src/agent/types.js";
 import { createRail } from "../../../src/agent/rail/manager.js";
 import { createTask as createRailTask } from "../../../src/agent/rail/manager.js";
+import { ensureProjectRoot } from "./cloneRepo.js";
+import { runAutoRailsAndExecute } from "./todos.js";
+import { addRailsToSession, getSessionRails, parseRailIntent } from "./chatSessionRails.js";
+import { cancelRail, retryRail } from "./railActions.js";
 
 const router = Router();
 
+/** Returns created railId or null if no rail created. */
 function maybeCreateAnalysisRail(params: {
   mode: AgentMode;
   rootPath: string | null;
@@ -48,9 +53,11 @@ function maybeCreateAnalysisRail(params: {
     proposal?: unknown;
   };
   userId: string | undefined;
+  workspaceId?: string | null;
+  repoUrl?: string | null;
 }) {
-  if (params.mode !== "analysis") return;
-  if (!params.rootPath) return;
+  if (params.mode !== "analysis") return null;
+  if (!params.rootPath) return null;
   const now = Date.now();
   const railId = `rail-analysis-${now}-${Math.random().toString(16).slice(2, 8)}`;
   const trigger: RailTrigger = {
@@ -116,6 +123,8 @@ function maybeCreateAnalysisRail(params: {
           : params.question.slice(0, 200))
       : params.question.slice(0, 200),
     trigger,
+    workspaceId: params.workspaceId ?? null,
+    repoUrl: params.repoUrl ?? null,
     archetype: "analysis-chat",
     logicPath,
     state: hasProposalNodes ? "PRE_PLANNING" : "ARCHIVED",
@@ -144,7 +153,7 @@ function maybeCreateAnalysisRail(params: {
     },
   };
   try {
-    const created = createRail(params.rootPath, rail);
+    const created = createRail(params.rootPath, rail) as { id: string };
   const taskId = `task-meta-${randomUUID()}`;
   const task: RailTask = {
     id: taskId,
@@ -201,6 +210,7 @@ function maybeCreateAnalysisRail(params: {
       createRailTask(codeTask);
     });
   }
+  return created.id;
   } catch (err) {
     console.error("[chat] maybeCreateAnalysisRail failed", {
       rootPath: params.rootPath,
@@ -208,18 +218,22 @@ function maybeCreateAnalysisRail(params: {
       stack: err instanceof Error ? err.stack : undefined,
     });
   }
+  return null;
 }
 
 router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId } = req.body as {
-    question?: string;
-    graph?: ArchGraph;
-    nodeId?: string;
-    history?: Array<{ role: "user" | "assistant"; content: string }>;
-    workspaceId?: string | null;
-    greenfieldSessionId?: string | null;
-    threadId?: string | null;
-  };
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } =
+    req.body as {
+      question?: string;
+      graph?: ArchGraph;
+      nodeId?: string;
+      history?: Array<{ role: "user" | "assistant"; content: string }>;
+      workspaceId?: string | null;
+      greenfieldSessionId?: string | null;
+      threadId?: string | null;
+      pdfBase64?: string | null;
+      pdfFileName?: string | null;
+    };
 
   if (!question || typeof question !== "string") {
     res.status(400).json({ error: "question is required" });
@@ -243,6 +257,72 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
     return;
   }
 
+  if (pdfBase64 != null && (typeof pdfBase64 !== "string" || pdfBase64.length > 50_000_000)) {
+    res.status(400).json({ error: "PDF too large. Max ~25MB." });
+    return;
+  }
+
+  const railIntent = parseRailIntent(question);
+  if (railIntent && workspaceId && req.user?.id) {
+    const sessionRailsList = getSessionRails(threadId ?? undefined, workspaceId, req.user.id);
+    const railId = sessionRailsList[railIntent.index];
+    if (railId) {
+      try {
+        if (railIntent.action === "cancel") {
+          const out = await cancelRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Cancelled rail ${railIntent.index + 1}.`,
+              railAction: { action: "cancel", railId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Cancel failed." });
+          return;
+        }
+        if (railIntent.action === "retry") {
+          const out = await retryRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Retrying rail ${railIntent.index + 1}. Execution started.`,
+              railAction: { action: "retry", railId, taskId: out.taskId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+              boardHint: { workspaceId },
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Retry failed." });
+          return;
+        }
+      } catch {
+        // fall through to normal chat
+      }
+    }
+  }
+
+  const lowered = question.toLowerCase();
+  const isExecutionIntent =
+    lowered.includes("start implementing") ||
+    lowered.includes("run the tasks") ||
+    lowered.includes("go fix these") ||
+    lowered.includes("apply the plan") ||
+    lowered.includes("execute the rail");
+
+  const looksLikeTodoLine = (line: string) =>
+    /^(\d+\.\s+|-|\*)\s+.+/.test(line.trim());
+  const lines = question.split(/\r?\n/);
+  const todoLines = lines
+    .filter(looksLikeTodoLine)
+    .map((l) => l.replace(/^(\d+\.\s+|-|\*)\s+/, "").trim());
+  const isTodoIntent =
+    !!workspaceId &&
+    todoLines.length > 0 &&
+    (lowered.includes("todo list") ||
+      lowered.includes("todos:") ||
+      lowered.includes("backlog") ||
+      lowered.includes("tasks:"));
+
   // Greenfield mode: empty graph allowed — agent designs from scratch
   // Backwards compatibility: if client sends mode, use it; else derive from graph
   const clientMode = req.body?.mode;
@@ -252,10 +332,34 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       : null;
   const isEmptyGraph = graph.nodes.length === 0;
   const mode: AgentMode = explicitMode ?? (isEmptyGraph ? "greenfield" : "analysis");
-  const rootPath =
+
+  let rootPath: string | null =
     mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== ""
-      ? graph.projectRoot
+      ? graph.projectRoot.trim()
       : null;
+
+  let repoUrl: string | null = null;
+
+  if (mode === "analysis" && workspaceId && supabaseAdmin) {
+    const { data: gr } = await supabaseAdmin
+      .from("graphs")
+      .select("repo_url")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    repoUrl = (gr?.repo_url as string | null) ?? null;
+    const { rootPath: resolved, error } = await ensureProjectRoot(
+      workspaceId,
+      graph,
+      repoUrl
+    );
+    if (resolved !== null) rootPath = resolved;
+    else if (error && rootPath === null) {
+      res.status(400).json({ error });
+      return;
+    }
+  }
 
   try {
     const findings: ContractFinding[] = []; // TODO: wire real findings if available
@@ -284,8 +388,9 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
     let jiraConfig: { baseUrl: string; email: string; apiToken: string } | undefined;
     let jiraProjectKey: string | undefined;
     if (req.user?.id) {
-      const userJira = await getUserJiraConfig(req.user.id);
-      if (userJira) {
+      try {
+        const userJira = await getUserJiraConfig(req.user.id);
+        if (userJira) {
         jiraConfig = {
           baseUrl: userJira.baseUrl,
           email: userJira.email,
@@ -295,6 +400,76 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
           (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ??
           userJira.project ??
           undefined;
+        }
+      } catch (e) {
+        if (e instanceof JiraDecryptError) {
+          res.status(400).json({ error: e.message, code: "jira_decrypt_failed" });
+          return;
+        }
+        throw e;
+      }
+    }
+
+    // Fast path: chat → todos (no full analysis run).
+    if (isTodoIntent && workspaceId && supabaseAdmin && todoLines.length > 0) {
+      try {
+        const { data: ws } = await supabaseAdmin
+          .from("workspaces")
+          .select("id")
+          .eq("id", workspaceId)
+          .eq("owner_id", req.user!.id)
+          .single();
+        if (!ws) {
+          res.status(403).json({ error: "Access denied for workspace." });
+          return;
+        }
+
+        // Mirror /todos/from-chat logic to dedupe and insert todos.
+        const { data: existing } = await supabaseAdmin
+          .from("todos")
+          .select("title")
+          .eq("workspace_id", workspaceId)
+          .in("title", todoLines);
+        const existingTitles = new Set<string>((existing ?? []).map((r: any) => String(r.title)));
+
+        const rows = todoLines
+          .filter((title) => !existingTitles.has(title))
+          .map((title) => ({
+            workspace_id: workspaceId,
+            title,
+            description: null,
+            phase: null,
+            depends_on: null,
+            status: "pending",
+            source: "chat",
+            source_path: null,
+          }));
+
+        if (rows.length === 0) {
+          res.json({
+            answer: "Todos already exist for each item in your list.",
+            todos: [],
+          });
+          return;
+        }
+
+        const { data, error } = await supabaseAdmin
+          .from("todos")
+          .insert(rows)
+          .select("*");
+
+        if (error) {
+          res.status(500).json({ error: error.message });
+          return;
+        }
+
+        res.json({
+          answer: "Created todos from your list.",
+          todos: data ?? [],
+        });
+        return;
+      } catch {
+        // fall through to normal chat if something goes wrong
       }
     }
 
@@ -310,35 +485,58 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       rootPath,
       jiraConfig,
       jiraProjectKey: jiraProjectKey ?? undefined,
+      ...(pdfBase64 && typeof pdfBase64 === "string"
+        ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" }
+        : {}),
     });
     const latencyMs = Date.now() - startMs;
 
-    setImmediate(() => {
-      try {
-        maybeCreateAnalysisRail({
-          mode,
-          rootPath,
-          question,
-          result: {
-            answer: result.answer,
-            criticScore: result.criticScore ?? null,
-            criticReport: result.criticReport ?? null,
-            violations: (result.violations ?? []) as CriticViolation[],
-            traceId: result.traceId ?? null,
-            proposal: result.proposal,
-          },
-          userId: req.user?.id,
-        });
-      } catch (err) {
-        console.error("[chat] maybeCreateAnalysisRail failed", {
-          rootPath,
-          error: err instanceof Error ? err.message : String(err),
-          stack: err instanceof Error ? err.stack : undefined,
-        });
-      }
+    const analysisRailId = maybeCreateAnalysisRail({
+      mode,
+      rootPath,
+      question,
+      result: {
+        answer: result.answer,
+        criticScore: result.criticScore ?? null,
+        criticReport: result.criticReport ?? null,
+        violations: (result.violations ?? []) as CriticViolation[],
+        traceId: result.traceId ?? null,
+        proposal: result.proposal,
+      },
+      userId: req.user?.id,
+      workspaceId: workspaceId ?? null,
+      repoUrl,
     });
 
     const violations = (result.violations ?? []) as CriticViolation[];
+
+    // Optional orchestration: auto-execute dependency-ready todos when user explicitly asks.
+    let autoExecution:
+      | {
+          pickedTodoIds: string[];
+          startedRails: string[];
+        }
+      | null = null;
+
+    let railsFromExecution: Array<{ id: string }> | undefined;
+    if (isExecutionIntent && workspaceId && req.user?.id) {
+      try {
+        const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, 3);
+        if (startedRails.length > 0) {
+          railsFromExecution = startedRails;
+          autoExecution = {
+            pickedTodoIds: startedRails.map((r) => r.id),
+            startedRails: startedRails.map((r) => r.id),
+          };
+          addRailsToSession(threadId ?? undefined, workspaceId, req.user.id, startedRails.map((r) => r.id));
+        }
+      } catch {
+        // best-effort; chat should still return a normal answer
+      }
+    }
+    if (analysisRailId) {
+      addRailsToSession(threadId ?? undefined, workspaceId ?? undefined, req.user!.id, [analysisRailId]);
+    }
 
     if (supabaseAdmin && workspaceId) {
       const client = supabaseAdmin;
@@ -346,7 +544,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
         workspaceId,
         violations,
         rulesVersion: ARCH_RULESET_VERSION,
-        markAbsent: true,
+        markAbsent: false, // Chat returns question-scoped violations only; do not clear others.
       })
         .then(() =>
           recordScanSnapshot(client, workspaceId, ARCH_RULESET_VERSION)
@@ -448,7 +646,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
           result.answer?.trim().length > 50
         ) {
           try {
-            await supabaseAdmin
+            await supabaseAdmin!
               .from("workspace_memories")
               .insert({
                 workspace_id: workspaceId,
@@ -458,9 +656,8 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
               })
               .throwOnError();
             if (supabaseAdmin) {
-              const client = supabaseAdmin;
               setImmediate(() => {
-                void maybePruneWorkspaceMemories(client, workspaceId).catch(() => {});
+                void maybePruneWorkspaceMemories(supabaseAdmin as any, workspaceId).catch(() => {});
               });
             }
           } catch {
@@ -582,6 +779,14 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       const out_ = tokenUsage.agentOutput ?? 0;
       console.log(`[chat] tokens in=${in_} out=${out_} total=${in_ + out_}`);
     }
+    const allRails = [
+      ...(analysisRailId ? [{ id: analysisRailId }] : []),
+      ...(railsFromExecution ?? []),
+      ...(Array.isArray((result as any).rails) ? (result as any).rails : []),
+    ];
+    const railsDeduped = Array.from(new Map(allRails.map((r) => [r.id, r])).values());
+    const boardHint = workspaceId && railsDeduped.length > 0 ? { workspaceId } : undefined;
+
     res.json({
       answer: result.answer,
       graphCommands: result.graphCommands,
@@ -603,6 +808,10 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
             },
           }
         : {}),
+      rails: railsDeduped.length > 0 ? railsDeduped : undefined,
+      railIds: railsDeduped.map((r) => r.id),
+      boardHint,
+      autoExecution: autoExecution ?? undefined,
     });
   } catch (err) {
     const traceId = err instanceof ArchError ? err.traceId : undefined;
@@ -614,15 +823,18 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
 
 /** Async chat — returns 202 with taskId, client polls GET /api/tasks/:taskId */
 router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId } = req.body as {
-    question?: string;
-    graph?: ArchGraph;
-    nodeId?: string;
-    history?: Array<{ role: "user" | "assistant"; content: string }>;
-    workspaceId?: string | null;
-    greenfieldSessionId?: string | null;
-    threadId?: string | null;
-  };
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } =
+    req.body as {
+      question?: string;
+      graph?: ArchGraph;
+      nodeId?: string;
+      history?: Array<{ role: "user" | "assistant"; content: string }>;
+      workspaceId?: string | null;
+      greenfieldSessionId?: string | null;
+      threadId?: string | null;
+      pdfBase64?: string | null;
+      pdfFileName?: string | null;
+    };
 
   if (!question || typeof question !== "string") {
     res.status(400).json({ error: "question is required" });
@@ -646,6 +858,58 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
     return;
   }
 
+  if (pdfBase64 != null && (typeof pdfBase64 !== "string" || pdfBase64.length > 50_000_000)) {
+    res.status(400).json({ error: "PDF too large. Max ~25MB." });
+    return;
+  }
+
+  const railIntent = parseRailIntent(question);
+  if (railIntent && workspaceId && req.user?.id) {
+    const sessionRailsList = getSessionRails(threadId ?? undefined, workspaceId, req.user.id);
+    const railId = sessionRailsList[railIntent.index];
+    if (railId) {
+      try {
+        if (railIntent.action === "cancel") {
+          const out = await cancelRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Cancelled rail ${railIntent.index + 1}.`,
+              railAction: { action: "cancel", railId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Cancel failed." });
+          return;
+        }
+        if (railIntent.action === "retry") {
+          const out = await retryRail(railId, workspaceId, req.user.id);
+          if (out.ok) {
+            res.json({
+              answer: `Retrying rail ${railIntent.index + 1}. Execution started.`,
+              railAction: { action: "retry", railId, taskId: out.taskId, index: railIntent.index + 1 },
+              rails: [{ id: railId }],
+              boardHint: { workspaceId },
+            });
+            return;
+          }
+          res.status(400).json({ error: out.error ?? "Retry failed." });
+          return;
+        }
+      } catch {
+        // fall through to normal chat
+      }
+    }
+  }
+
+  const lowered = question.toLowerCase();
+  const isExecutionIntent =
+    lowered.includes("start implementing") ||
+    lowered.includes("run the tasks") ||
+    lowered.includes("go fix these") ||
+    lowered.includes("apply the plan") ||
+    lowered.includes("execute the rail");
+
   const clientMode = req.body?.mode;
   const explicitMode =
     clientMode === "greenfield" || clientMode === "analysis"
@@ -653,10 +917,6 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
       : null;
   const isEmptyGraph = graph.nodes.length === 0;
   const mode: AgentMode = explicitMode ?? (isEmptyGraph ? "greenfield" : "analysis");
-  const rootPath =
-    mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== ""
-      ? graph.projectRoot
-      : null;
 
   const task = createTask();
   res.status(202).json({ taskId: task.taskId, status: "pending" });
@@ -667,19 +927,56 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
   let jiraConfig: { baseUrl: string; email: string; apiToken: string } | undefined;
   let jiraProjectKey: string | undefined;
   if (req.user?.id) {
-    const userJira = await getUserJiraConfig(req.user.id);
-    if (userJira) {
-      jiraConfig = {
-        baseUrl: userJira.baseUrl,
-        email: userJira.email,
-        apiToken: userJira.apiToken,
-      };
-      jiraProjectKey =
-        (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ??
-        userJira.project ??
-        undefined;
+    try {
+      const userJira = await getUserJiraConfig(req.user.id);
+      if (userJira) {
+        jiraConfig = {
+          baseUrl: userJira.baseUrl,
+          email: userJira.email,
+          apiToken: userJira.apiToken,
+        };
+        jiraProjectKey =
+          (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ??
+          userJira.project ??
+          undefined;
+      }
+    } catch (e) {
+      if (e instanceof JiraDecryptError) {
+        setTaskFailed(task.taskId, e.message);
+        return;
+      }
+      throw e;
     }
   }
+
+  (async () => {
+    let rootPath: string | null =
+      mode === "analysis" && graph.projectRoot && graph.projectRoot.trim() !== ""
+        ? graph.projectRoot.trim()
+        : null;
+
+    let repoUrl: string | null = null;
+
+    if (mode === "analysis" && workspaceId && supabaseAdmin) {
+      const { data: gr } = await supabaseAdmin
+        .from("graphs")
+        .select("repo_url")
+        .eq("workspace_id", workspaceId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      repoUrl = (gr?.repo_url as string | null) ?? null;
+      const { rootPath: resolved, error } = await ensureProjectRoot(
+        workspaceId,
+        graph,
+        repoUrl
+      );
+      if (resolved !== null) rootPath = resolved;
+      else if (error && rootPath === null) {
+        setTaskFailed(task.taskId, error);
+        return;
+      }
+    }
 
   const sessionIdForDraft = greenfieldSessionId;
   runArchitectureTask({
@@ -694,6 +991,9 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
     rootPath,
     jiraConfig,
     jiraProjectKey: jiraProjectKey ?? undefined,
+    ...(pdfBase64 && typeof pdfBase64 === "string"
+      ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" }
+      : {}),
   })
     .then(async (result) => {
       if (isTaskCancelled(task.taskId)) return;
@@ -734,6 +1034,42 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         const out_ = tu.agentOutput ?? 0;
         console.log(`[chat-async] tokens in=${in_} out=${out_} total=${in_ + out_}`);
       }
+      let railsForResult: Array<{ id: string }> | undefined = (result as any).rails;
+      if (isExecutionIntent && workspaceId && req.user?.id) {
+        try {
+          const { startedRails } = await runAutoRailsAndExecute(workspaceId, req.user.id, 3);
+          if (startedRails.length > 0) {
+            railsForResult = startedRails;
+            addRailsToSession(threadId ?? undefined, workspaceId, req.user.id, startedRails.map((r) => r.id));
+          }
+        } catch {
+          // best-effort
+        }
+      }
+      const analysisRailIdAsync = maybeCreateAnalysisRail({
+        mode,
+        rootPath,
+        question,
+        result: {
+          answer: result.answer,
+          criticScore: result.criticScore ?? null,
+          criticReport: result.criticReport ?? null,
+          violations: (result.violations ?? []) as CriticViolation[],
+          traceId: result.traceId ?? null,
+          proposal: result.proposal,
+        },
+        userId: req.user?.id,
+        workspaceId: workspaceId ?? null,
+        repoUrl,
+      });
+      const allRailsAsync = [
+        ...(analysisRailIdAsync ? [{ id: analysisRailIdAsync }] : []),
+        ...(railsForResult ?? []),
+      ];
+      const railsDedupedAsync = Array.from(new Map(allRailsAsync.map((r) => [r.id, r])).values());
+      if (analysisRailIdAsync && workspaceId && req.user?.id) {
+        addRailsToSession(threadId ?? undefined, workspaceId, req.user.id, [analysisRailIdAsync]);
+      }
       setTaskCompleted(task.taskId, {
         answer: result.answer,
         graphCommands: result.graphCommands,
@@ -745,32 +1081,25 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         violations: result.violations ?? [],
         traceId: result.traceId,
         tokenUsage: tu,
+        rails: railsDedupedAsync.length > 0 ? railsDedupedAsync : railsForResult,
+        railIds: railsDedupedAsync.map((r) => r.id),
+        boardHint: workspaceId && railsDedupedAsync.length > 0 ? { workspaceId } : undefined,
       });
 
-      setImmediate(() => {
-        try {
-          maybeCreateAnalysisRail({
-            mode,
-            rootPath,
-            question,
-            result: {
-              answer: result.answer,
-              criticScore: result.criticScore ?? null,
-              criticReport: result.criticReport ?? null,
-              violations: (result.violations ?? []) as CriticViolation[],
-              traceId: result.traceId ?? null,
-              proposal: result.proposal,
-            },
-            userId: req.user?.id,
+      if (supabaseAdmin && workspaceId && (result.violations ?? []).length > 0) {
+        upsertViolations(supabaseAdmin as any, {
+          workspaceId,
+          violations: result.violations ?? [],
+          rulesVersion: ARCH_RULESET_VERSION,
+          markAbsent: false, // Chat returns question-scoped violations only; do not clear others.
+        })
+          .then(() => recordScanSnapshot(supabaseAdmin as any, workspaceId, ARCH_RULESET_VERSION))
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error("[chat-async] violationStore upsert failed:", err);
           });
-        } catch (err) {
-          console.error("[chat] maybeCreateAnalysisRail failed (async)", {
-            rootPath,
-            error: err instanceof Error ? err.message : String(err),
-            stack: err instanceof Error ? err.stack : undefined,
-          });
-        }
-      });
+      }
+
 
       if (supabaseAdmin && workspaceId && result.answer?.trim()) {
         try {
@@ -835,6 +1164,7 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         // Task store failure shouldn't crash the process
       }
     });
+  })();
 });
 
 export { router as chatRoutes };

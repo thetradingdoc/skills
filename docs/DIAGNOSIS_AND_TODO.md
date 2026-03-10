@@ -1,5 +1,7 @@
 # Architecture Diagnosis & Fix Plan
 
+> **See also:** [PRODUCT_STATUS.md](./PRODUCT_STATUS.md) for sprint work, API status, and prioritized pending backlog.
+
 ## Review of Original Diagnosis
 
 ### Problem 1: `deriveProjectKey` produces invalid keys — **CONFIRMED**
@@ -40,9 +42,9 @@ The system uses per-user credentials in `integrations` and per-workspace `jira_p
 
 ---
 
-### Problem 4: Violation pipeline is one-way and manual — **CONFIRMED**
+### Problem 4: Violation pipeline is one-way and manual — **PARTIALLY FIXED**
 
-- `markAbsent` is always `false` in `chat.ts` → old violations never marked absent when code changes.
+- Chat flow now uses `markAbsent: false` (fixed 2025-03: chat returns question-scoped violations only; must not clear others).
 - `recordScanSnapshot()` is called from chat — that part works.
 - Violations are only written during chat/critic runs, not on a schedule.
 - `bump_violation` RPC with escalation exists, but recurrence rarely bumps in practice.
@@ -155,7 +157,7 @@ Any fix must be applied consistently. Consider a shared utility or ensuring both
 | **p2a** | Write `arch-fingerprint` + `arch-module` in Jira descriptions | In `jiraViolation.ts` when creating issues |
 | **p2b** | Wire `staleMismatches` into `runGateCheck` | Fetch issues + run detector; set `hasStaleJiraMismatch` from result |
 | **p3** | Per-user Jira in `tools.ts` create ticket | Pass userId/workspaceId; use `getUserJiraConfig`, workspace `jira_project_key` |
-| **p4a** | Pass `markAbsent: true` when appropriate | In chat.ts or scan flow when violations not in current set |
+| **p4a** | ~~Pass `markAbsent: true` when appropriate~~ | DONE: chat uses `markAbsent: false`; only runViolationScan uses true |
 | **p4b** | Scheduled/triggered violation re-scan | Beyond chat; e.g. on scan, webhook, or cron |
 | **p5** | Agent orchestrator loop | Schedule/trigger → critic → checkGates → act on gate |
 | **p6** | Trace "No context" source | Verify where `health.hasContext` is set; add Anthropic fallback if needed |
@@ -187,3 +189,12 @@ Any fix must be applied consistently. Consider a shared utility or ensuring both
 6. **Pipeline (p4a, p4b):** markAbsent and re-scan triggers.
 7. **UX (p16, p18–p20):** Loading state, clear project key, addLabel rollback, persist filter.
 8. **Orchestration (p5, p6):** Agent loop and enricher/context handling.
+
+---
+
+## Environment variables
+
+- See **[docs/ops/ENV.md](ops/ENV.md)** for full documentation and enforcement.
+- `APP_URL`: Base URL where the web app is reachable (e.g. `http://localhost:4173` in development, or the deployed URL in production).  
+  - Used by Playwright (`runPlaywrightTrace` / `runPlaywrightForRail`) and the verification pipeline to run UI tests against the correct host.  
+  - Must be set in the webapp server environment; missing or incorrect values will cause UI verification steps to fail or hit the wrong origin.

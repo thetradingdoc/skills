@@ -37,6 +37,19 @@ Connect a GitHub repo and visualize its architecture with a chat assistant.
 
 Add `OPENAI_API_KEY` to `.env` to enable the chat. Without it, the chat will show an error when you try to ask a question.
 
+## Violation Re-Scan Trigger (Cron/Webhook)
+
+To trigger violation re-scans externally (e.g. from cron or GitHub Actions):
+
+1. Set `VIOLATION_SCAN_TRIGGER_SECRET` in your environment.
+2. `POST /api/violations/scan-trigger` with:
+   - Header: `X-Scan-Trigger-Secret: <secret>` or `Authorization: Bearer <secret>`
+   - Body: `{ "workspaceId": "<workspace-uuid>" }`
+3. Cron example:
+   ```bash
+   curl -X POST -H "X-Scan-Trigger-Secret: $SECRET" -H "Content-Type: application/json" -d '{"workspaceId":"..."}' https://your-api/api/violations/scan-trigger
+   ```
+
 ## Public Repos Only
 
 Currently only **public** GitHub repositories work (no auth). Private repos will fail to clone.

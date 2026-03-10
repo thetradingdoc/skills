@@ -852,7 +852,14 @@ export default function App() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [jiraStaleMismatches, setJiraStaleMismatches] = useState<JiraSyncMismatch[]>([]);
   const [jiraBaseUrl, setJiraBaseUrl] = useState<string | undefined>();
-  const [jiraFilterByRepo, setJiraFilterByRepo] = useState(true);
+  const [jiraFilterByRepo, setJiraFilterByRepo] = useState(() => {
+    try {
+      const v = localStorage.getItem("jiraFilterByRepo");
+      return v === "false" ? false : true;
+    } catch {
+      return true;
+    }
+  });
   const [jiraRepoName, setJiraRepoName] = useState<string | null>(null);
   const [jiraResolvePrompt, setJiraResolvePrompt] = useState<
     Array<{ key: string; summary: string; module: string; baseUrl: string }>
@@ -1408,7 +1415,7 @@ export default function App() {
   }, [fetchJiraTests]);
 
   const handleAsk = useCallback(
-    (message: string, history: ChatMessage[]) => {
+    (message: string, history: ChatMessage[], pdfAttachment?: { name: string; base64: string }) => {
       setArchitectureProposal(null);
       setChatLoading(true);
       setChats((prev) =>
@@ -1423,6 +1430,7 @@ export default function App() {
         question: message,
         nodeId: selectedNode ?? undefined,
         history,
+        ...(pdfAttachment ? { pdfBase64: pdfAttachment.base64, pdfFileName: pdfAttachment.name } : {}),
       });
     },
     [activeChatId, selectedNode]
@@ -1869,6 +1877,9 @@ export default function App() {
         onToggleFilter={() => {
           setJiraFilterByRepo((v) => {
             const next = !v;
+            try {
+              localStorage.setItem("jiraFilterByRepo", String(next));
+            } catch { /* ignore */ }
             fetchJiraTests(next);
             return next;
           });
@@ -3370,6 +3381,9 @@ export default function App() {
                 onToggleFilter={() => {
                   setJiraFilterByRepo((v) => {
                     const next = !v;
+                    try {
+                      localStorage.setItem("jiraFilterByRepo", String(next));
+                    } catch { /* ignore */ }
                     fetchJiraTests(next);
                     return next;
                   });

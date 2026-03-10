@@ -19,6 +19,18 @@ export interface UserJiraConfigWithSource {
   source: JiraConfigSource;
 }
 
+/** Thrown when stored Jira token cannot be decrypted (rotated key, corrupted data). */
+export class JiraDecryptError extends Error {
+  constructor(userId?: string) {
+    super(
+      userId
+        ? `Jira token decrypt failed for user ${userId.slice(0, 8)}… — reconnect Jira in Governance panel.`
+        : "Jira token could not be decrypted. Please reconnect Jira in the Governance panel."
+    );
+    this.name = "JiraDecryptError";
+  }
+}
+
 /** Get Jira config for a user from their integrations row. */
 export async function getUserJiraConfigWithSource(
   userId: string | undefined
@@ -54,8 +66,19 @@ export async function getUserJiraConfigWithSource(
       },
       source: "db",
     };
-  } catch {
-    return null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn("[jira] Decrypt failed; marking integration unverified:", msg);
+    try {
+      await supabaseAdmin
+        .from("integrations")
+        .update({ verified: false })
+        .eq("user_id", userId)
+        .eq("provider", "jira");
+    } catch {
+      /* ignore */
+    }
+    throw new JiraDecryptError(userId);
   }
 }
 
@@ -64,5 +87,11 @@ export async function getUserJiraConfig(
   userId: string | undefined
 ): Promise<UserJiraConfig | null> {
   const result = await getUserJiraConfigWithSource(userId);
+  if (!result?.config) {
+    console.warn(
+      "[jira] getUserJiraConfig returned null",
+      userId ? `(userId=${userId.slice(0, 8)}…)` : "(no userId)"
+    );
+  }
   return result?.config ?? null;
 }

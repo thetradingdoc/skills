@@ -3,6 +3,9 @@ import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
 import { isValidProjectKey } from "./utils/deriveProjectKey.js";
+import { deleteWorkspaceClone } from "./cloneRepo.js";
+import { buildNodeFileMappingArray } from "./nodeFileMapping.js";
+import type { ArchGraph } from "../../../src/types.js";
 
 const router = Router();
 
@@ -67,7 +70,7 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
 
   const { data: ws, error: wsErr } = await supabaseAdmin
     .from("workspaces")
-    .select("id, jira_project_key")
+    .select("id, jira_project_key, auto_execute_enabled")
     .eq("id", workspaceId)
     .eq("owner_id", ownerId)
     .single();
@@ -119,7 +122,92 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     graph: graph as Record<string, unknown>,
     repoUrl: graphRow.repo_url ?? "",
     jiraProjectKey: (ws as { jira_project_key?: string | null }).jira_project_key ?? null,
+    autoExecuteEnabled: (ws as { auto_execute_enabled?: boolean }).auto_execute_enabled ?? false,
   });
+});
+
+/** Node→file mapping for workspace graph. Reusable for rails impact, violation resolution, etc. */
+router.get("/workspaces/:workspaceId/node-file-mapping", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { data: graphRow, error: gErr } = await supabaseAdmin
+    .from("graphs")
+    .select("graph_json")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (gErr || !graphRow?.graph_json) {
+    res.status(404).json({ error: "No graph saved for this workspace." });
+    return;
+  }
+  const graph = graphRow.graph_json as ArchGraph;
+  const mapping = buildNodeFileMappingArray(graph);
+  res.json({ mapping });
+});
+
+/** Update workspace auto-execute flag. */
+router.patch("/workspaces/:workspaceId/auto-execute", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { enabled } = req.body ?? {};
+  if (typeof enabled !== "boolean") {
+    res.status(400).json({ error: "enabled (boolean) is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { error: uErr } = await supabaseAdmin
+    .from("workspaces")
+    .update({ auto_execute_enabled: enabled })
+    .eq("id", workspaceId);
+
+  if (uErr) {
+    res.status(500).json({ error: uErr.message });
+    return;
+  }
+
+  res.json({ success: true, autoExecuteEnabled: enabled });
 });
 
 /** Get workspace memories (optionally filtered by node_id). */
@@ -331,6 +419,36 @@ router.delete("/workspaces/:workspaceId/memories/:memoryId", requireUser, async 
   return res.status(204).send();
 });
 
+/** Delete the workspace's cloned repo on disk (frees disk space). Next chat will reclone. */
+router.delete("/workspaces/:workspaceId/clone", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  if (!ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  deleteWorkspaceClone(workspaceId);
+  res.json({ success: true });
+});
+
 /** Permanently delete a workspace and all associated data. */
 router.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
@@ -369,6 +487,8 @@ router.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
       res.status(404).json({ error: "Workspace not found or access denied." });
       return;
     }
+
+    deleteWorkspaceClone(workspaceId);
 
     // Delete workspace row; ON DELETE CASCADE should clean up graphs, share_links, violations, etc.
     const { error: delErr } = await supabaseAdmin
@@ -547,6 +667,13 @@ router.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
   if (gErr) {
     res.status(500).json({ error: gErr.message });
     return;
+  }
+
+  if (repoUrl && repoUrl.trim()) {
+    await supabaseAdmin
+      .from("workspaces")
+      .update({ project_root: null, repo_url: repoUrl.trim() })
+      .eq("id", workspaceId);
   }
 
   res.json({ success: true });

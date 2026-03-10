@@ -1,6 +1,8 @@
 # Architecture Visualizer
 
-Live architecture map for your codebase — static analysis, AI enrichment, drift detection.
+Live architecture map for your codebase — static analysis, AI enrichment, drift detection, and AI-assisted code changes via rails.
+
+**New to the codebase?** See [docs/CODEBASE.md](docs/CODEBASE.md) for structure, data flow, and conventions.
 
 ## Quick Start
 
@@ -23,11 +25,11 @@ Live architecture map for your codebase — static analysis, AI enrichment, drif
 
 4. **Run**
 
-   **Web app (GitHub repo visualization):**
+   **Web app:**
    ```bash
    npm run webapp
    ```
-   Then open http://localhost:5174, paste a GitHub repo URL, and click **Scan repository**. Add `OPENAI_API_KEY` to `.env` for chat.
+   Open the URL shown (e.g. http://localhost:5174). Sign in, create a workspace, scan a repo, use chat and rails. Add `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for AI.
 
    **VS Code extension:**
    - Run `npm run compile` (or `npm run build`) so `out/extension.js` exists
@@ -101,3 +103,12 @@ npm test
 ```
 
 Uses MockEnricher by default. Set `ARCH_TEST_MODE=1` in CI.
+
+## Docs for Contributors
+
+| Doc | Purpose |
+|-----|---------|
+| [docs/CODEBASE.md](docs/CODEBASE.md) | Structure, entry points, data flow |
+| [docs/PRODUCT_STATUS.md](docs/PRODUCT_STATUS.md) | Features, APIs |
+| [docs/TODO_AUDIT.md](docs/TODO_AUDIT.md) | Tracked work |
+| [docs/ops/ENV.md](docs/ops/ENV.md) | Environment variables |

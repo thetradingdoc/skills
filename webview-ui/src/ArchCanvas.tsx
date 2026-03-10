@@ -15,6 +15,8 @@ import { NodePopup } from "./NodePopup";
 import { StatusBar } from "./StatusBar";
 import { computeLayerLayout, sortLayerByConnectivity } from "./analysis/layerLayout";
 import { filterEdges, type EdgeFilter } from "./analysis/graphAnalyser";
+import { LAYER_CFG, LAYER_COLORS } from "./layerPalette";
+import { NODE_W } from "./canvasConstants";
 
 interface Props {
   graph: ArchGraph;
@@ -119,6 +121,8 @@ export function ArchCanvas({
         type: "default" as const,
         position: pos,
         data: {
+          layer: node.layer,
+          isDrift: node.isDrift,
           label: (
             <div style={{ textAlign: "center" }}>
               <div
@@ -178,9 +182,9 @@ export function ArchCanvas({
                 }}
               >
                 {[
-                  node.health.hasDocs,
-                  node.health.hasTests,
-                  node.health.hasContext,
+                  node.health?.hasDocs ?? false,
+                  node.health?.hasTests ?? false,
+                  node.health?.hasContext ?? false,
                 ].map((ok, j) => (
                   <span
                     key={j}
@@ -194,25 +198,30 @@ export function ArchCanvas({
           ),
         },
         style: {
-          background: node.isDrift ? "#1a0e0e" : "#1c2128",
+          background: node.isDrift
+            ? "linear-gradient(150deg,#1a0606,#150c0c)"
+            : `linear-gradient(150deg,${(LAYER_CFG[(node.layer ?? "Uncategorized") as string] ?? LAYER_CFG["Uncategorized"]).dim},#0c1220)`,
           border: `1px solid ${
             selectedNode === node.id
-              ? "#58a6ff"
+              ? (LAYER_CFG[(node.layer ?? "Uncategorized") as string] ?? LAYER_CFG["Uncategorized"]).color
               : node.isDrift
-                ? "#f85149"
+                ? "#ef4444"
                 : node.status === "error"
-                  ? "#f85149"
+                  ? "#ef4444"
                   : node.status === "warning"
-                    ? "#f0883e"
+                    ? "#f59e0b"
                     : node.status === "deprecated"
                       ? "#6e7681"
-                      : "#30363d"
+                      : `${(LAYER_CFG[(node.layer ?? "Uncategorized") as string] ?? LAYER_CFG["Uncategorized"]).accent}88`
           }`,
           borderRadius: 8,
           color: "#e6edf3",
-          width: 170,
+          width: NODE_W,
           padding: 10,
           opacity: highlighted ? 1 : 0.35,
+          boxShadow: node.isDrift
+            ? "0 4px 12px rgba(239,68,68,0.2)"
+            : "0 4px 0 rgba(0,0,0,0.2), 0 8px 16px rgba(0,0,0,0.3)",
         },
       };
     });
@@ -282,6 +291,8 @@ export function ArchCanvas({
         selectable: false,
         draggable: false,
         data: {
+          layer: pn.layer,
+          isDrift: false,
           label: (
             <div style={{ textAlign: "center" }}>
               <div style={{ fontWeight: 650, fontSize: 12 }}>{pn.label}</div>
@@ -292,11 +303,11 @@ export function ArchCanvas({
           ),
         },
         style: {
-          background: "transparent",
-          border: "1px dashed #7d8590",
+          background: "linear-gradient(150deg,#0d1117,#0c1220)",
+          border: "2px dashed #a78bfa88",
           borderRadius: 8,
           color: "#e6edf3",
-          width: 170,
+          width: NODE_W,
           padding: 10,
           opacity: 0.95,
         },
@@ -332,15 +343,16 @@ export function ArchCanvas({
         target: edge.target,
         style: {
           stroke: edge.isDrift
-            ? "#f85149"
+            ? "#ef4444"
             : edge.isLayerViolation
               ? "#f59e0b"
               : isArch
-                ? "#58a6ff"
-                : "#30363d",
+                ? "#60a5fa"
+                : "#94a3b8",
           strokeWidth:
             edge.isDrift ? 2 : edge.isLayerViolation ? 1.5 : importanceToWidth(edge.importance),
-          opacity: edge.importance === "utility" ? 0.6 : 1,
+          opacity: edge.importance === "utility" ? 0.55 : 1,
+          strokeDasharray: edge.isDrift || edge.isLayerViolation ? "6 3" : undefined,
         },
         animated: edge.isDrift || edge.isLayerViolation,
         label: edge.isDrift ? "⚠" : edge.isLayerViolation ? "↑" : undefined,
@@ -380,12 +392,19 @@ export function ArchCanvas({
             top: 16,
             left: "50%",
             transform: "translateX(-50%)",
-            color: "#7d8590",
-            fontSize: 13,
-            zIndex: 10,
+            zIndex: 20,
+            background: "linear-gradient(150deg, #0c1220, #070d1a)",
+            border: "1px solid #1d4ed866",
+            borderRadius: 10,
+            padding: "8px 20px",
+            color: "#60a5fa",
+            fontSize: 11,
+            fontFamily: "monospace",
+            backdropFilter: "blur(12px)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(96,165,250,0.2)",
           }}
         >
-          ⟳ Laying out graph...
+          ◌ Laying out graph…
         </div>
       )}
       {selectedNodeData && onSaveContext && (
@@ -410,21 +429,24 @@ export function ArchCanvas({
         onPaneClick={() => onNodeSelect(null)}
         fitView
       >
-        <Background variant={BackgroundVariant.Dots} color="#21262d" />
+        <Background variant={BackgroundVariant.Dots} color="#1e3a5f" gap={16} size={1} />
         <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view, lock">
           <Controls
             style={{
-              background: "#1c2128",
-              border: "1px solid #30363d",
-              borderRadius: 6,
+              background: "#0a111f",
+              border: "1px solid #1e3a5f",
+              borderRadius: 8,
             }}
           />
         </div>
         <MiniMap
-          style={{ background: "#161b22" }}
-          nodeColor={(n) =>
-            (typeof n.style?.border === "string" && n.style.border.includes("#f85149")) ? "#f85149" : "#30363d"
-          }
+          style={{ background: "#070d1a", border: "1px solid #1e3a5f", borderRadius: 8 }}
+          nodeColor={(n) => {
+            const d = n.data as { layer?: string; isDrift?: boolean };
+            if (d?.isDrift) return "#ef4444";
+            return LAYER_COLORS[(d?.layer as string) ?? "Uncategorized"]?.top ?? "#475569";
+          }}
+          maskColor="rgba(6,12,26,0.75)"
         />
       </ReactFlow>
     </div>
