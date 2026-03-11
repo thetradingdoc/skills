@@ -130,6 +130,7 @@ router.post("/scan", optionalUser, async (req, res) => {
         .select("id")
         .eq("id", candidate)
         .eq("owner_id", ownerId)
+        .is("archived_at", null)
         .maybeSingle();
       if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
     }

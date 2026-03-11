@@ -5,7 +5,7 @@ import { useSpring } from "@react-spring/web";
 import * as THREE from "three";
 import { useSceneAnimation } from "./SceneAnimations";
 
-export const DEFAULT_CAM_POS: [number, number, number] = [0, 14, 22];
+export const DEFAULT_CAM_POS: [number, number, number] = [18, 18, 24];
 export const DEFAULT_TARGET: [number, number, number] = [0, 7, 0];
 const MIN_DISTANCE = 4;
 const MAX_DISTANCE = 60;
@@ -146,9 +146,11 @@ export function CameraControls3D({ selectedNodePos, snapPreset, onSnapComplete }
 interface SnapButtons3DProps {
   onSnap: (preset: ViewPreset) => void;
   onExport?: () => void;
+  onSavePreset?: (slot: number) => void;
+  presetSlots?: Record<number, ViewPreset | undefined>;
 }
 
-export function SnapButtons3D({ onSnap, onExport }: SnapButtons3DProps) {
+export function SnapButtons3D({ onSnap, onExport, onSavePreset, presetSlots }: SnapButtons3DProps) {
   return (
     <div
       style={{
@@ -186,6 +188,41 @@ export function SnapButtons3D({ onSnap, onExport }: SnapButtons3DProps) {
           {p}
         </button>
       ))}
+      {onSavePreset && (
+        <>
+          <div
+            style={{
+              width: 1,
+              alignSelf: "stretch",
+              background: "rgba(148,163,184,0.3)",
+              margin: "0 2px",
+            }}
+          />
+          {[1, 2, 3, 4, 5].map((slot) => {
+            const has = presetSlots && presetSlots[slot];
+            return (
+              <button
+                key={slot}
+                type="button"
+                title={has ? `Go to preset ${slot}` : `Save current view as preset ${slot}`}
+                onClick={() => onSavePreset(slot)}
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 9,
+                  fontFamily: "monospace",
+                  borderRadius: 6,
+                  border: has ? "1px solid #60a5fa66" : "1px solid transparent",
+                  background: has ? "#0b1220" : "transparent",
+                  color: has ? "#60a5fa" : "#94a3b8",
+                  cursor: "pointer",
+                }}
+              >
+                {slot}
+              </button>
+            );
+          })}
+        </>
+      )}
       {onExport && (
         <button
           type="button"

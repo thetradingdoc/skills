@@ -41,14 +41,18 @@ function isExcluded(moduleId: string): boolean {
   return segments.some((s) => EXCLUDED_BASENAMES.has(s));
 }
 
-// ── Module boundary: max 2 path segments from root ──────────────────────────
-// e.g. src/payment/handlers/refund.ts → "src/payment", lib/http.ts → "lib"
+// ── Module boundary: max N path segments from root (drilldown configurable) ──
+// e.g. depth=2: src/payment/handlers/refund.ts → "src/payment", lib/http.ts → "lib"
 function getModuleId(rootPath: string, filePath: string): string {
   const rel = path.relative(rootPath, filePath);
   const parts = rel.split(path.sep).filter(Boolean);
   if (parts.length <= 1) return ".";
   const dirParts = parts.slice(0, -1);
-  const depth = 2;
+  const depthEnv = process.env.ARCH_MODULE_DEPTH;
+  const depth =
+    typeof depthEnv === "string"
+      ? Math.min(4, Math.max(1, Number.parseInt(depthEnv, 10) || 2))
+      : 2;
   return dirParts.slice(0, depth).join("/") || ".";
 }
 
@@ -224,6 +228,7 @@ function discoverDevOpsNodes(rootPath: string): ArchNode[] {
       ? raw.filter((f) => typeof f === "string" && /\.(yml|yaml)$/i.test(f))
       : [];
     if (yamlFiles.length > 0) {
+      // Aggregate "k8s" node for quick overview.
       nodes.push({
         id: "k8s",
         label: "k8s",
@@ -235,6 +240,103 @@ function discoverDevOpsNodes(rootPath: string): ArchNode[] {
         semanticSignals: { exports: [], externalImports: [], fileCount: yamlFiles.length },
         kind: "infra",
         layer: "Infrastructure",
+        tags: ["k8s"],
+      });
+
+      // Parse individual resources for drilldown (kind/name).
+      for (const rel of yamlFiles) {
+        if (typeof rel !== "string") continue;
+        const relPath = path.join("k8s", rel);
+        const fullPath = path.join(rootPath, relPath);
+        let text = "";
+        try {
+          text = fs.readFileSync(fullPath, "utf-8");
+        } catch {
+          continue;
+        }
+        const kindMatch = text.match(/^\s*kind:\s*([A-Za-z0-9]+)/m);
+        const nameMatch = text.match(/^\s*name:\s*([A-Za-z0-9._-]+)/m);
+        const kind = kindMatch?.[1] ?? "Resource";
+        const name = nameMatch?.[1] ?? path.basename(rel, path.extname(rel));
+        const id = `k8s/${kind}/${name}`;
+        if (nodes.some((n) => n.id === id)) continue;
+        nodes.push({
+          id,
+          label: `${name}`,
+          path: path.dirname(fullPath),
+          files: [relPath],
+          health: baseHealth,
+          status: "unknown",
+          isDrift: false,
+          semanticSignals: { exports: [], externalImports: [], fileCount: 1 },
+          kind: "infra",
+          layer: "Infrastructure",
+          tags: ["k8s", kind.toLowerCase()],
+        });
+      }
+    }
+  }
+
+  // Terraform / Bicep / Helm detection (coarse infra entities).
+  const terraformDir = path.join(rootPath, "terraform");
+  if (fs.existsSync(terraformDir) && fs.statSync(terraformDir).isDirectory()) {
+    const raw = fs.readdirSync(terraformDir, { recursive: true }) as string[];
+    const tfFiles = Array.isArray(raw)
+      ? raw.filter((f) => typeof f === "string" && f.endsWith(".tf"))
+      : [];
+    if (tfFiles.length > 0) {
+      const files = tfFiles.map((f) => path.join("terraform", f));
+      const fullFirst = path.join(rootPath, files[0]);
+      let sample = "";
+      try {
+        sample = fs.readFileSync(fullFirst, "utf-8");
+      } catch {
+        // ignore
+      }
+      let cloud: ArchNode["cloudProvider"] = "unknown";
+      if (/azurerm_/i.test(sample)) cloud = "azure";
+      else if (/aws_/i.test(sample)) cloud = "aws";
+      else if (/google_/i.test(sample)) cloud = "gcp";
+
+      nodes.push({
+        id: "infra/terraform",
+        label: "terraform",
+        path: terraformDir,
+        files,
+        health: baseHealth,
+        status: "unknown",
+        isDrift: false,
+        semanticSignals: { exports: [], externalImports: [], fileCount: files.length },
+        kind: "infra",
+        layer: "Infrastructure",
+        cloudProvider: cloud,
+        tags: ["terraform", cloud !== "unknown" ? cloud : undefined].filter(
+          Boolean
+        ) as string[],
+      });
+    }
+  }
+
+  const bicepDir = path.join(rootPath, "infra");
+  if (fs.existsSync(bicepDir) && fs.statSync(bicepDir).isDirectory()) {
+    const raw = fs.readdirSync(bicepDir, { recursive: true }) as string[];
+    const bicepFiles = Array.isArray(raw)
+      ? raw.filter((f) => typeof f === "string" && f.endsWith(".bicep"))
+      : [];
+    if (bicepFiles.length > 0) {
+      nodes.push({
+        id: "infra/bicep",
+        label: "bicep",
+        path: bicepDir,
+        files: bicepFiles.map((f) => path.join("infra", f)),
+        health: baseHealth,
+        status: "unknown",
+        isDrift: false,
+        semanticSignals: { exports: [], externalImports: [], fileCount: bicepFiles.length },
+        kind: "infra",
+        layer: "Infrastructure",
+        cloudProvider: "azure",
+        tags: ["bicep", "azure"],
       });
     }
   }
@@ -363,6 +465,147 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
     }
   }
 
+  function applyTechMetadata(rootPathForNode: string, node: ArchNode): void {
+    // Allow per-node overrides via .arch-node.json placed in the module directory.
+    try {
+      const overridePath = path.join(
+        typeof node.path === "string" ? node.path : rootPathForNode,
+        ".arch-node.json",
+      );
+      if (fs.existsSync(overridePath) && fs.statSync(overridePath).isFile()) {
+        const raw = fs.readFileSync(overridePath, "utf-8");
+        const parsed = JSON.parse(raw) as Partial<
+          Pick<ArchNode, "techKind" | "cloudProvider" | "tags" | "iconKey">
+        >;
+        node.techKind = parsed.techKind ?? node.techKind;
+        node.cloudProvider = parsed.cloudProvider ?? node.cloudProvider;
+        if (Array.isArray(parsed.tags)) {
+          node.tags = parsed.tags;
+        }
+        node.iconKey = parsed.iconKey ?? node.iconKey;
+        // If overrides are present we trust them and skip heuristics.
+        if (parsed.techKind || parsed.cloudProvider || parsed.tags || parsed.iconKey) {
+          return;
+        }
+      }
+    } catch {
+      // Ignore malformed override files.
+    }
+
+    const tags = new Set<string>(node.tags ?? []);
+    const label = (node.suggestedLabel ?? node.role ?? node.label ?? "").toLowerCase();
+    const id = (node.id ?? "").toLowerCase();
+    const pathLower = (node.path ?? "").toLowerCase();
+    const filesJoined = (node.files ?? []).join(" ").toLowerCase();
+    const externals = (node.semanticSignals?.externalImports ?? []).map((x) =>
+      x.toLowerCase(),
+    );
+
+    const text = [label, id, pathLower, filesJoined].join(" ");
+
+    let techKind = node.techKind;
+    let cloudProvider = node.cloudProvider;
+
+    const setKind = (kind: ArchNode["techKind"], tag?: string) => {
+      techKind = kind;
+      if (tag) tags.add(tag);
+      if (!node.iconKey) {
+        node.iconKey = kind ?? undefined;
+      }
+    };
+
+    if (!techKind) {
+      // Kubernetes / container orchestration
+      if (text.includes("k8s") || text.includes("kubernetes") || id === "k8s") {
+        setKind("kubernetes", "k8s");
+      } else if (text.includes("docker") || text.includes("compose")) {
+        setKind("container-service", "container");
+      }
+    }
+
+    if (!techKind) {
+      // Databases
+      const dbLibs = ["pg", "typeorm", "prisma", "mongoose", "mysql2", "pg-promise"];
+      const hitsDb = externals.some((e) => dbLibs.includes(e)) || /db|database|repo\b/.test(text);
+      if (hitsDb) {
+        setKind("database", "db");
+      }
+    }
+
+    if (!techKind) {
+      // Caches
+      if (externals.some((e) => e.includes("redis")) || text.includes("cache")) {
+        setKind("cache", "cache");
+      }
+    }
+
+    if (!techKind) {
+      // Message queues / buses
+      const mqLibs = ["kafkajs", "bull", "bullmq", "amqplib", "sqs", "sns"];
+      const hitsMq =
+        externals.some((e) => mqLibs.includes(e)) ||
+        text.includes("queue") ||
+        text.includes("eventbus") ||
+        text.includes("event-bus");
+      if (hitsMq) {
+        setKind("message-bus", "queue");
+      }
+    }
+
+    if (!techKind) {
+      // HTTP APIs / routes / controllers
+      const httpWords = ["api", "controller", "routes", "router", "endpoint"];
+      const hitsHttp = httpWords.some((w) => text.includes(w));
+      if (hitsHttp) {
+        setKind("http-api", "api");
+      }
+    }
+
+    if (!techKind) {
+      // Web UI
+      const uiWords = ["component", "page", "ui", "view", "screen", "client"];
+      const hitsUi =
+        text.includes("frontend") ||
+        text.includes("web") ||
+        uiWords.some((w) => text.includes(`/src/${w}`) || text.includes(`/${w}/`));
+      if (hitsUi) {
+        setKind("web-ui", "ui");
+      }
+    }
+
+    if (!techKind) {
+      // Serverless / functions
+      if (text.includes("lambda") || text.includes("functions") || text.includes("serverless")) {
+        setKind("serverless", "fn");
+      }
+    }
+
+    if (!techKind && text.includes("auth")) {
+      setKind("generic-service", "auth");
+    }
+
+    if (!techKind && externals.length > 0) {
+      setKind("generic-service", "service");
+    }
+
+    if (!techKind) {
+      techKind = "unknown";
+    }
+
+    // Cloud provider hints (very coarse).
+    if (!cloudProvider) {
+      if (externals.some((e) => e.includes("aws"))) cloudProvider = "aws";
+      else if (externals.some((e) => e.includes("gcp") || e.includes("google-cloud")))
+        cloudProvider = "gcp";
+      else if (externals.some((e) => e.includes("azure"))) cloudProvider = "azure";
+      else cloudProvider = "unknown";
+    }
+
+    node.techKind = techKind;
+    node.cloudProvider = cloudProvider;
+    node.tags = Array.from(tags);
+  }
+
   const nodes: ArchNode[] = [];
   for (const [, entry] of moduleMap) {
     const { _exports, _externals, ...rest } = entry;
@@ -385,7 +628,54 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
     }
   }
 
-  const filteredEdges = edges.filter(
+  // Infer coarse-grained tech metadata for richer visualization.
+  for (const node of nodes) {
+    applyTechMetadata(rootPath, node);
+  }
+
+  // Runtime / cloud-provider edges: connect nodes with cloudProvider hints to provider hubs.
+  const runtimeEdges: ArchEdge[] = [];
+  const providerIds = new Set<string>();
+  function ensureProviderNode(provider: ArchNode["cloudProvider"]): string {
+    const id = `cloud:${provider}`;
+    if (!nodeIds.has(id)) {
+      nodes.push({
+        id,
+        label: provider.toUpperCase(),
+        path: rootPath,
+        files: [],
+        health: { hasDocs: false, hasTests: false, hasContext: false },
+        status: "unknown",
+        isDrift: false,
+        semanticSignals: { exports: [], externalImports: [], fileCount: 0 },
+        kind: "infra",
+        layer: "Infrastructure",
+        cloudProvider: provider,
+        tags: ["cloud", provider],
+      });
+      nodeIds.add(id);
+    }
+    providerIds.add(id);
+    return id;
+  }
+
+  for (const node of nodes) {
+    if (!node.cloudProvider || node.cloudProvider === "unknown") continue;
+    const providerNodeId = ensureProviderNode(node.cloudProvider);
+    const edgeId = `runtime:${node.id}->${providerNodeId}`;
+    runtimeEdges.push({
+      id: edgeId,
+      source: node.id,
+      target: providerNodeId,
+      type: "runtime",
+      isDrift: false,
+      importance: "architectural",
+      isLayerViolation: false,
+    });
+  }
+
+  const allEdges = [...edges, ...runtimeEdges];
+  const filteredEdges = allEdges.filter(
     (e) => nodeIds.has(e.source) && nodeIds.has(e.target)
   );
 

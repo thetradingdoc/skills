@@ -92,3 +92,14 @@ So yes, it runs through the code and shows an architecture graph — modules and
 | Chat with repo context | ✅ Chat + rails; agent has read_file/write_file |
 | AI model | Claude (Anthropic) or MockEnricher |
 | 3D / layered styling | 2D ReactFlow + optional 3D (Three.js) |
+
+## 7. UX Review Loop
+
+- **References:** iCraft README and player docs.
+- **Target repos:** `doclittle-platform` and a small sample OSS backend.
+- **Cadence:** run a visual UX review at least monthly.
+- **Checklist per review:**
+  - Compare 2D canvas layout against the iCraft-style reference screenshot.
+  - Validate node density and readability at default zoom (no overlaps, icons legible).
+  - Verify 3D scene readability for ~50, ~200, and ~500-node graphs (fps, clutter, selection clarity).
+  - Capture at least 3–5 qualitative notes and 1–2 screenshots for before/after comparisons.

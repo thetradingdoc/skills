@@ -7,7 +7,10 @@ import type {
   CriticViolation,
   ArchNode,
   BackgroundTask,
+  WorkspaceSceneDoc,
+  WorkspaceAnnotation,
 } from "./types";
+import type { CanvasDensity } from "./theme";
 import { analyseGraph, type EdgeFilter } from "./analysis/graphAnalyser";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -765,6 +768,95 @@ function DesignTicker() {
   );
 }
 
+// ── Dashboard UI helpers ───────────────────────────────────────────────────────
+
+type DashboardCardProps = {
+  title: string;
+  children: React.ReactNode;
+  rightHeaderContent?: React.ReactNode;
+  style?: React.CSSProperties;
+};
+
+function DashboardCard({ title, children, rightHeaderContent, style }: DashboardCardProps) {
+  return (
+    <div
+      style={{
+        background: "#1c2128",
+        borderRadius: 8,
+        border: "1px solid #30363d",
+        padding: 12,
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+          gap: 8,
+        }}
+      >
+        <div
+          style={{
+            color: "#7d8590",
+            fontSize: 11,
+            textTransform: "uppercase",
+            letterSpacing: 1,
+          }}
+        >
+          {title}
+        </div>
+        {rightHeaderContent}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+type DashboardMetricProps = {
+  value: number | string;
+  label: string;
+  color?: string;
+  subLabel?: string;
+  subColor?: string;
+};
+
+function DashboardMetric({ value, label, color, subLabel, subColor }: DashboardMetricProps) {
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: 20,
+          fontWeight: 700,
+          color: color ?? "#e6edf3",
+        }}
+      >
+        {value}
+      </div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "#7d8590",
+        }}
+      >
+        {label}
+      </div>
+      {subLabel && (
+        <div
+          style={{
+            fontSize: 10,
+            color: subColor ?? "#7d8590",
+            marginTop: 2,
+          }}
+        >
+          {subLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState<string>("");
@@ -776,6 +868,8 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [graph, setGraph] = useState<ArchGraph | null>(null);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [workspaceScene, setWorkspaceScene] = useState<WorkspaceSceneDoc | null>(null);
+  const [workspaceAnnotations, setWorkspaceAnnotations] = useState<WorkspaceAnnotation[]>([]);
   const [loading, setLoading] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState("");
@@ -1125,9 +1219,30 @@ export default function App() {
   const [showReplaceDraftPrompt, setShowReplaceDraftPrompt] = useState(false);
   const [showWorkspaceDropUp, setShowWorkspaceDropUp] = useState(false);
   const [savedWorkspaces, setSavedWorkspaces] = useState<
-    Array<{ id: string; name: string; created_at: string }>
+    Array<{
+      id: string;
+      name: string;
+      created_at: string;
+      thumbnail_base64?: string | null;
+      last_scan_at?: string | null;
+      node_count?: number;
+      violation_count?: number;
+    }>
+  >([]);
+  const [archivedWorkspaces, setArchivedWorkspaces] = useState<
+    Array<{
+      id: string;
+      name: string;
+      created_at: string;
+      archived_at?: string | null;
+      thumbnail_base64?: string | null;
+      last_scan_at?: string | null;
+      node_count?: number;
+      violation_count?: number;
+    }>
   >([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
+  const [loadingArchived, setLoadingArchived] = useState(false);
   const [loadingWorkspaceId, setLoadingWorkspaceId] = useState<string | null>(null);
   const [showMaterializeModal, setShowMaterializeModal] = useState(false);
   const [materializeTargetPath, setMaterializeTargetPath] = useState("");
@@ -1149,6 +1264,19 @@ export default function App() {
       edges: Array<{ fromId: string; toId: string; edgeType?: string }>;
     }>
   >([]);
+  const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
+  const [canvasDensity, setCanvasDensity] = useState<CanvasDensity>("standard");
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
+  const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [workspaceTitleEditing, setWorkspaceTitleEditing] = useState(false);
+  const [workspaceTitleDraft, setWorkspaceTitleDraft] = useState("");
+  const saveStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shareCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [panelWidth, setPanelWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -1759,6 +1887,23 @@ export default function App() {
     }
   }, [accessToken]);
 
+  const fetchArchivedWorkspaces = useCallback(async () => {
+    if (!accessToken) return;
+    setLoadingArchived(true);
+    try {
+      const res = await fetch(`${API_BASE}/workspaces/archived`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setArchivedWorkspaces(data.workspaces ?? []);
+      else setArchivedWorkspaces([]);
+    } catch {
+      setArchivedWorkspaces([]);
+    } finally {
+      setLoadingArchived(false);
+    }
+  }, [accessToken]);
+
   const handleShare = useCallback(async (): Promise<{ url: string } | null> => {
     if (!activeWorkspaceId || !accessToken) return null;
     try {
@@ -1802,6 +1947,11 @@ export default function App() {
       const now = Date.now();
       const graphToSave = { ...graph, lastSavedAt: now } as ArchGraph;
       setGraph(graphToSave);
+      try {
+        localStorage.setItem(`workspaceGraph:${activeWorkspaceId}`, JSON.stringify(graphToSave));
+      } catch {
+        // ignore storage issues
+      }
       const res = await fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/save`, {
         method: "POST",
         headers: {
@@ -1839,12 +1989,15 @@ export default function App() {
         setError(msg);
         return;
       }
+      // Remove from saved list immediately (server also filters archived).
+      setSavedWorkspaces((prev) => prev.filter((w) => w.id !== activeWorkspaceId));
       // Clear local state and autosave pointer.
       try {
         const last = localStorage.getItem("lastWorkspaceId");
         if (last && last === activeWorkspaceId) {
           localStorage.removeItem("lastWorkspaceId");
         }
+        localStorage.removeItem(`workspaceGraph:${activeWorkspaceId}`);
       } catch {
         // ignore storage issues
       }
@@ -1893,6 +2046,47 @@ export default function App() {
     [accessToken]
   );
 
+  const fetchLatestScene = useCallback(
+    async (workspaceId: string, tokenOverride?: string): Promise<WorkspaceSceneDoc | null> => {
+      const token = tokenOverride ?? accessToken;
+      if (!token) return null;
+      try {
+        const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/scenes/latest`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          // No scene yet is not an error; just return null.
+          if (res.status === 404) return null;
+          console.warn("[scene] load latest failed:", data.error ?? res.statusText);
+          return null;
+        }
+        const scene = data.scene?.scene_json as WorkspaceSceneDoc | undefined;
+        return scene && typeof scene === "object" ? scene : null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[scene] load latest failed:", msg);
+        return null;
+      }
+    },
+    [accessToken]
+  );
+
+  const fetchAnnotations = useCallback(async () => {
+    const wsId = activeWorkspaceId;
+    const token = accessToken;
+    if (!wsId || !token) return;
+    try {
+      const res = await fetch(`${API_BASE}/workspaces/${wsId}/annotations`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setWorkspaceAnnotations((data.annotations ?? []) as WorkspaceAnnotation[]);
+    } catch {
+      // ignore
+    }
+  }, [activeWorkspaceId, accessToken]);
+
   const loadWorkspace = useCallback(
     async (workspaceId: string, tokenOverride?: string) => {
       const token = tokenOverride ?? accessToken;
@@ -1904,8 +2098,41 @@ export default function App() {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          // If the workspace is gone or access is denied, clear local pointer and surface a clear message.
+          // If the workspace is gone or access is denied, clear local pointer and fall back to a fresh workspace.
           if (res.status === 404 || res.status === 403) {
+            const msg = typeof data.error === "string" ? data.error : "";
+            // If the server can't load this workspace but we have a local snapshot, restore from that instead
+            // so the user doesn't lose their graph just because persistence failed.
+            try {
+              const local = localStorage.getItem(`workspaceGraph:${workspaceId}`);
+              if (local) {
+                const parsed = JSON.parse(local) as ArchGraph;
+                const analysed = analyseGraph(parsed);
+                setGraph(analysed);
+                setActiveWorkspaceId(workspaceId);
+                setRepoUrl(parsed.projectRoot ?? repoUrl ?? "");
+                setError(
+                  "Restored workspace from local snapshot because the server copy could not be loaded."
+                );
+                setLoadingWorkspaceId(null);
+                return;
+              }
+            } catch {
+              // ignore malformed local snapshot
+            }
+            // Special case: workspace exists but has no saved graph yet.
+            if (res.status === 404 && msg.includes("No graph saved for this workspace.")) {
+              try {
+                localStorage.setItem("lastWorkspaceId", workspaceId);
+              } catch {
+                // ignore storage errors
+              }
+              setActiveWorkspaceId(workspaceId);
+              setGraph(null);
+              setRepoUrl("");
+              setError("This workspace has no saved graph yet. Scan this workspace to create a graph.");
+              return;
+            }
             try {
               const last = localStorage.getItem("lastWorkspaceId");
               if (last && last === workspaceId) {
@@ -1914,12 +2141,26 @@ export default function App() {
             } catch {
               // ignore storage errors
             }
+            // Keep the "Saved" list in sync: if this workspace was deleted or access revoked,
+            // optimistically remove it from the in-memory list so the UI doesn't offer a broken entry.
+            setSavedWorkspaces((prev) => prev.filter((ws) => ws.id !== workspaceId));
+
+            // Start the user in a clean, empty workspace instead of leaving them in a broken state.
             setActiveWorkspaceId(null);
-            setGraph(null);
+            setRepoUrl("");
+            setActiveViolations([]);
+            setViolationsRestoreError(null);
+            setGraph({
+              nodes: [],
+              edges: [],
+              generatedAt: Date.now(),
+              projectRoot: "",
+              projectName: "My workspace",
+            });
             setError(
               res.status === 404
-                ? "This workspace no longer exists."
-                : "You no longer have access to this workspace."
+                ? "The previous workspace was removed. You’re now in a new empty workspace."
+                : "You no longer have access to that workspace. You’re now in a new empty workspace."
             );
             return;
           }
@@ -1936,6 +2177,11 @@ export default function App() {
           setActiveViolations(violations);
           setRepoUrl(repo);
           setActiveWorkspaceId(workspaceId);
+          // Best-effort: load authored scene document (if any).
+          const scene = await fetchLatestScene(workspaceId, token);
+          setWorkspaceScene(scene);
+          const annotations = (data.annotations ?? []) as WorkspaceAnnotation[];
+          setWorkspaceAnnotations(annotations);
           const jiraKey = data.jiraProjectKey as string | null | undefined;
           setJiraProjectKey(jiraKey ?? (repo ? deriveProjectKey(repo) : null));
           setJiraProjectKeyReady(true);
@@ -1969,8 +2215,12 @@ export default function App() {
         setLoadingWorkspaceId(null);
       }
     },
-    [accessToken, fetchViolationsRaw]
+    [accessToken, fetchViolationsRaw, repoUrl]
   );
+
+  useEffect(() => {
+    if (!activeWorkspaceId) setWorkspaceAnnotations([]);
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     if (!showWorkspaceDropUp) return;
@@ -1982,6 +2232,14 @@ export default function App() {
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [showWorkspaceDropUp]);
+
+  useEffect(
+    () => () => {
+      if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
+      if (shareCopiedTimeoutRef.current) clearTimeout(shareCopiedTimeoutRef.current);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!isResizing) return;
@@ -2373,6 +2631,14 @@ export default function App() {
               localStorage.setItem("lastWorkspaceId", data.workspaceId);
               // New signed-in workspace should clear any anonymous graph snapshot.
               localStorage.removeItem("anonGraph");
+              try {
+                localStorage.setItem(
+                  `workspaceGraph:${data.workspaceId}`,
+                  JSON.stringify(data as ArchGraph)
+                );
+              } catch {
+                // ignore
+              }
             }
           } catch {
             // ignore storage issues
@@ -5720,529 +5986,178 @@ export default function App() {
             </div>
           )}
 
-        {/* Dashboard content: project overview, edges, focus, violations, governance, proposed nodes */}
+        {/* Dashboard content: project overview, health, execution, violations, governance, proposed nodes */}
         {sidebarTab === "dashboard" && (
           <div
             style={{
-              background: "#1c2128",
-              borderRadius: 8,
-              padding: 12,
-              border: "1px solid #30363d",
+              display: "grid",
+              gridTemplateColumns: "minmax(0, 1.1fr) minmax(0, 1.1fr)",
+              gap: 12,
             }}
           >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 8,
-          }}
-        >
-          <div
-            style={{
-              color: "#7d8590",
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: 1,
-            }}
-          >
-            Project Overview
-            </div>
-            <button
-              onClick={() => fetchJiraTests()}
-              disabled={jiraLoading}
-              style={{
-                padding: "4px 8px",
-                fontSize: 11,
-                height: 24,
-                background: "#21262d",
-                color: "#e6edf3",
-                border: "1px solid #30363d",
-                borderRadius: 6,
-                cursor: jiraLoading ? "wait" : "pointer",
-              }}
+            {/* System Overview */}
+            <DashboardCard
+              title="System Overview"
+              rightHeaderContent={
+                <button
+                  onClick={() => fetchJiraTests()}
+                  disabled={jiraLoading}
+                  style={{
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    height: 24,
+                    background: "#21262d",
+                    color: "#e6edf3",
+                    border: "1px solid #30363d",
+                    borderRadius: 6,
+                    cursor: jiraLoading ? "wait" : "pointer",
+                  }}
+                >
+                  {jiraLoading ? "⟳" : "↻"} Refresh
+                </button>
+              }
             >
-              {jiraLoading ? "⟳" : "↻"} Refresh
-            </button>
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
-            {[
-              { val: graph!.nodes.length + (virtualNodes?.length ?? 0), label: "Modules" },
-              { val: graph!.edges.length + (virtualEdges?.length ?? 0), label: "Connections" },
-              {
-                val: driftEdges.length,
-                label: "Drift",
-                color: driftEdges.length > 0 ? "#f85149" : "#3fb950",
-              },
-              {
-                val: missingContextNodes.length,
-                label: "No context",
-                color: missingContextNodes.length > 0 ? "#f0883e" : "#3fb950",
-              },
-            ].map(({ val, label, color }) => (
-              <div key={label}>
-                <div
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 700,
-                    color: color ?? "#e6edf3",
-                  }}
-                >
-                  {val}
-                </div>
-                <div style={{ fontSize: 11, color: "#7d8590" }}>{label}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+                <DashboardMetric
+                  value={graph!.nodes.length + (virtualNodes?.length ?? 0)}
+                  label="Modules"
+                />
+                <DashboardMetric
+                  value={graph!.edges.length + (virtualEdges?.length ?? 0)}
+                  label="Connections"
+                />
+                <DashboardMetric
+                  value={driftEdges.length}
+                  label="Drift"
+                  color={driftEdges.length > 0 ? "#f85149" : "#3fb950"}
+                />
+                <DashboardMetric
+                  value={missingContextNodes.length}
+                  label="No context"
+                  color={missingContextNodes.length > 0 ? "#f0883e" : "#3fb950"}
+                />
               </div>
-            ))}
-          </div>
+            </DashboardCard>
 
-          {/* Health metrics from violations */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 12 }}>
-            {[
-              {
-                val: criticalViolationsCount,
-                label: "Critical",
-                color: criticalViolationsCount > 0 ? "#f85149" : "#3fb950",
-                sub:
-                  criticalViolationsCount > 0
-                    ? `↑ ${criticalViolationsCount} active`
-                    : "none",
-                subColor: "#f85149",
-              },
-              {
-                val: highViolationsCount,
-                label: "High severity",
-                color: highViolationsCount > 0 ? "#d29922" : "#3fb950",
-                sub:
-                  highViolationsCount > 0
-                    ? `↑ ${highViolationsCount} open`
-                    : "none",
-                subColor: "#d29922",
-              },
-              {
-                val: activeViolations.length,
-                label: "Total violations",
-                color: "#e6edf3",
-                sub: "— all time",
-                subColor: "#7d8590",
-              },
-              {
-                val: trackedViolationsCount,
-                label: "Tracked in Jira",
-                color: "#3fb950",
-                sub:
-                  untrackedViolationsCount > 0
-                    ? `↓ ${untrackedViolationsCount} untracked`
-                    : "all tracked",
-                subColor: "#3fb950",
-              },
-            ].map(({ val, label, color, sub, subColor }) => (
-              <div key={label}>
-                <div
-                  style={{
-                    fontSize: 20,
-                    fontWeight: 700,
-                    color: color ?? "#e6edf3",
-                  }}
-                >
-                  {val}
-                </div>
-                <div style={{ fontSize: 11, color: "#7d8590" }}>{label}</div>
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: subColor,
-                    marginTop: 2,
-                  }}
-                >
-                  {sub}
-                </div>
+            {/* Health & Risk */}
+            <DashboardCard title="Health & Risk">
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
+                <DashboardMetric
+                  value={criticalViolationsCount}
+                  label="Critical"
+                  color={criticalViolationsCount > 0 ? "#f85149" : "#3fb950"}
+                  subLabel={criticalViolationsCount > 0 ? `↑ ${criticalViolationsCount} active` : "none"}
+                  subColor="#f85149"
+                />
+                <DashboardMetric
+                  value={highViolationsCount}
+                  label="High severity"
+                  color={highViolationsCount > 0 ? "#d29922" : "#3fb950"}
+                  subLabel={highViolationsCount > 0 ? `↑ ${highViolationsCount} open` : "none"}
+                  subColor="#d29922"
+                />
+                <DashboardMetric
+                  value={activeViolations.length}
+                  label="Total violations"
+                  color="#e6edf3"
+                  subLabel="— all time"
+                  subColor="#7d8590"
+                />
+                <DashboardMetric
+                  value={trackedViolationsCount}
+                  label="Tracked in Jira"
+                  color="#3fb950"
+                  subLabel={
+                    untrackedViolationsCount > 0
+                      ? `↓ ${untrackedViolationsCount} untracked`
+                      : "all tracked"
+                  }
+                  subColor="#3fb950"
+                />
               </div>
-            ))}
-          </div>
+            </DashboardCard>
 
-          {/* Agent tasks card — zero-height when no tasks */}
-          {tasksForWorkspace.filter((t) => t.dismissed !== true).length > 0 && (
-          <div
-            style={{
-              marginTop: 16,
-              paddingTop: 12,
-              borderTop: "1px solid #30363d",
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "#7d8590",
-                  textTransform: "uppercase",
-                  letterSpacing: 1,
-                }}
-              >
-                Agent Tasks
-              </div>
-              {(() => {
-                const wsTasks = tasksForWorkspace;
-                const running = wsTasks.filter((t) => t.status === "running").length;
-                const needsReview = wsTasks.filter((t) => t.status === "needs_review").length;
-                const completed = wsTasks.filter((t) => t.status === "completed").length;
-                if (wsTasks.length === 0) {
-                  return (
-                    <span style={{ fontSize: 10, color: "#6b7280" }}>
-                      No tasks yet
-                    </span>
-                  );
-                }
-                return (
-                  <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
-                    {running} running ·{" "}
-                    <span style={{ color: needsReview > 0 ? "#f59e0b" : "#6b7280" }}>
-                      {needsReview} needs review
-                    </span>{" "}
-                    · {completed} completed
-                  </span>
-                );
-              })()}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {tasksForWorkspace
-                .filter((t) => t.dismissed !== true)
-                .slice()
-                .sort((a, b) => b.createdAt - a.createdAt)
-                .slice(0, 5)
-                .map((t) => {
-                  const isAttention = t.status === "failed" || t.status === "needs_review";
-                  const border = isAttention ? "1px solid rgba(245,158,11,0.6)" : "1px solid #30363d";
-                  const bg = isAttention ? "rgba(245,158,11,0.06)" : "#111827";
-                  return (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => {
-                        setSidebarTab("chat");
-                        setActiveTaskId(t.id);
-                        setBackgroundTasks((prev) =>
-                          prev.map((x) =>
-                            x.id === t.id ? { ...x, reviewed: true } : x
-                          )
-                        );
-                      }}
-                      style={{
-                        width: "100%",
-                        padding: "6px 8px",
-                        borderRadius: 6,
-                        background: bg,
-                        border,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        cursor: "pointer",
-                        textAlign: "left",
-                      }}
-                    >
-                      <span
-                        style={{
-                          padding: "2px 6px",
-                          borderRadius: 999,
-                          border: "1px solid #30363d",
-                          fontSize: 9,
-                          textTransform: "uppercase",
-                          letterSpacing: 0.5,
-                          color: "#cbd5f5",
-                        }}
-                      >
-                        {t.mode}
-                      </span>
-                      <span
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          fontSize: 11,
-                          color: "#e5e7eb",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                      >
-                        {t.label}
-                      </span>
-                      <span
-                        style={{
-                          fontSize: 10,
-                          color:
-                            t.status === "running"
-                              ? "#60a5fa"
-                              : t.status === "completed"
-                                ? "#4ade80"
-                                : "#f59e0b",
-                        }}
-                      >
-                        {t.status === "needs_review" ? "needs review" : t.status}
-                      </span>
-                      {(t.retryAttempt != null && t.retryMax != null) && (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            fontFamily: "monospace",
-                            color: (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
-                          }}
-                        >
-                          {t.retryAttempt}/{t.retryMax}
+            {/* Agent Tasks (full width) */}
+            {tasksForWorkspace.filter((t) => t.dismissed !== true).length > 0 && (
+              <div style={{ gridColumn: "1 / span 2" }}>
+                <DashboardCard
+                  title="Agent Tasks"
+                  rightHeaderContent={(() => {
+                    const wsTasks = tasksForWorkspace;
+                    const running = wsTasks.filter((t) => t.status === "running").length;
+                    const needsReview = wsTasks.filter((t) => t.status === "needs_review").length;
+                    const completed = wsTasks.filter((t) => t.status === "completed").length;
+                    if (wsTasks.length === 0) {
+                      return (
+                        <span style={{ fontSize: 10, color: "#6b7280" }}>
+                          No tasks yet
                         </span>
-                      )}
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-          )}
-
-          <div
-            style={{
-              marginTop: 16,
-              paddingTop: 12,
-              borderTop: "1px solid #30363d",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                marginBottom: 6,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 11,
-                  color: "#e5e7eb",
-                  textTransform: "uppercase",
-                  letterSpacing: 1,
-                }}
-              >
-                Execution todos
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (!accessToken || !activeWorkspaceId) return;
-                    try {
-                      setTodoError(null);
-                      const res = await fetch(`${API_BASE}/todos/auto-execute-ready`, {
-                        method: "POST",
-                        headers: {
-                          "Content-Type": "application/json",
-                          Authorization: `Bearer ${accessToken}`,
-                        },
-                        body: JSON.stringify({ workspaceId: activeWorkspaceId }),
-                      });
-                      const data = await res.json().catch(() => ({}));
-                      if (!res.ok) {
-                        const msg =
-                          typeof data.error === "string"
-                            ? data.error
-                            : "Auto-execute failed.";
-                        setTodoError(msg);
-                        return;
-                      }
-                      const msg =
-                        typeof data.message === "string"
-                          ? data.message
-                          : data.startedRails && Array.isArray(data.startedRails)
-                            ? `Queued ${data.startedRails.length} tasks for execution.`
-                            : "Auto-execution triggered.";
-                      setTodoError(msg);
-                    } catch (err) {
-                      const msg = err instanceof Error ? err.message : String(err);
-                      setTodoError(msg);
+                      );
                     }
-                  }}
-                  style={{
-                    padding: "2px 6px",
-                    fontSize: 10,
-                    borderRadius: 6,
-                    border: "1px solid #4b5563",
-                    background: "#0f172a",
-                    color: "#e5e7eb",
-                    cursor: "pointer",
-                  }}
-                >
-                  Auto-implement ready
-                </button>
-                <select
-                  value={todoPhaseFilter}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setTodoPhaseFilter(v === "all" ? "all" : Number(v));
-                  }}
-                  style={{
-                    fontSize: 10,
-                    padding: "2px 6px",
-                    borderRadius: 6,
-                    border: "1px solid #374151",
-                    background: "#020617",
-                    color: "#9ca3af",
-                  }}
-                >
-                  <option value="all">All phases</option>
-                  {Array.from(
-                    new Set(
-                      todos
-                        .map((t) => t.phase)
-                        .filter((p): p is number => typeof p === "number")
-                    )
-                  )
-                    .sort((a, b) => a - b)
-                    .map((p) => (
-                      <option key={p} value={p}>
-                        Phase {p}
-                      </option>
-                    ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTodoImportMarkdown("");
-                    setTodoImportPreview(null);
-                    setTodoError(null);
-                    setTodoImportOpen(true);
-                  }}
-                  style={{
-                    padding: "2px 6px",
-                    fontSize: 10,
-                    borderRadius: 6,
-                    border: "1px solid #4b5563",
-                    background: "#0f172a",
-                    color: "#e5e7eb",
-                    cursor: "pointer",
-                  }}
-                >
-                  Import DocLittle
-                </button>
-              </div>
-            </div>
-            {todoError && (
-              <div
-                style={{
-                  marginBottom: 6,
-                  padding: 6,
-                  borderRadius: 6,
-                  background: "rgba(248,113,113,0.12)",
-                  border: "1px solid rgba(248,113,113,0.4)",
-                  fontSize: 10,
-                  color: "#fecaca",
-                }}
-              >
-                {todoError}
-              </div>
-            )}
-            {todos.length === 0 ? (
-              <div style={{ fontSize: 11, color: "#6b7280" }}>
-                No execution todos yet. Import DocLittle markdown or create tasks from greenfield.
-              </div>
-            ) : (
-              <div
-                style={{
-                  maxHeight: 220,
-                  overflowY: "auto",
-                  paddingRight: 2,
-                  fontSize: 11,
-                  color: "#e5e7eb",
-                }}
-              >
-                {todos
-                  .filter((t) =>
-                    todoPhaseFilter === "all" ? true : t.phase === todoPhaseFilter
-                  )
-                  .map((t) => {
-                    const deps = t.dependsOn ?? [];
-                    const byId = new Map(todos.map((x) => [x.id, x]));
-                    const hasBlockingDep = deps.some((id) => {
-                      const dep = byId.get(id);
-                      return dep && dep.status !== "completed";
-                    });
-                    const isReady =
-                      t.status === "pending" && (!deps.length || !hasBlockingDep);
                     return (
-                      <div
-                        key={t.id}
-                        style={{
-                          padding: "6px 0",
-                          borderBottom: "1px solid #111827",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 2,
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }}
-                        >
-                          <span
+                      <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
+                        {running} running ·{" "}
+                        <span style={{ color: needsReview > 0 ? "#f59e0b" : "#6b7280" }}>
+                          {needsReview} needs review
+                        </span>{" "}
+                        · {completed} completed
+                      </span>
+                    );
+                  })()}
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {tasksForWorkspace
+                      .filter((t) => t.dismissed !== true)
+                      .slice()
+                      .sort((a, b) => b.createdAt - a.createdAt)
+                      .slice(0, 5)
+                      .map((t) => {
+                        const isAttention = t.status === "failed" || t.status === "needs_review";
+                        const border = isAttention ? "1px solid rgba(245,158,11,0.6)" : "1px solid #30363d";
+                        const bg = isAttention ? "rgba(245,158,11,0.06)" : "#111827";
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => {
+                              setSidebarTab("chat");
+                              setActiveTaskId(t.id);
+                              setBackgroundTasks((prev) =>
+                                prev.map((x) =>
+                                  x.id === t.id ? { ...x, reviewed: true } : x
+                                )
+                              );
+                            }}
                             style={{
-                              fontSize: 10,
-                              padding: "2px 6px",
-                              borderRadius: 4,
-                              border: "1px solid #374151",
-                              background:
-                                t.status === "completed"
-                                  ? "rgba(34,197,94,0.15)"
-                                  : t.status === "in_progress"
-                                    ? "rgba(59,130,246,0.15)"
-                                    : "rgba(15,23,42,1)",
-                              color:
-                                t.status === "completed"
-                                  ? "#4ade80"
-                                  : t.status === "in_progress"
-                                    ? "#bfdbfe"
-                                    : "#9ca3af",
+                              width: "100%",
+                              padding: "6px 8px",
+                              borderRadius: 6,
+                              background: bg,
+                              border,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
+                              cursor: "pointer",
+                              textAlign: "left",
                             }}
                           >
-                            {t.status}
-                          </span>
-                          {typeof t.phase === "number" && (
                             <span
                               style={{
-                                fontSize: 10,
                                 padding: "2px 6px",
-                                borderRadius: 4,
-                                background: "#111827",
-                                color: "#9ca3af",
+                                borderRadius: 999,
+                                border: "1px solid #30363d",
+                                fontSize: 9,
+                                textTransform: "uppercase",
+                                letterSpacing: 0.5,
+                                color: "#cbd5f5",
                               }}
                             >
-                              Phase {t.phase}
+                              {t.mode}
                             </span>
-                          )}
-                          {isReady && (
                             <span
                               style={{
-                                fontSize: 10,
-                                padding: "2px 6px",
-                                borderRadius: 4,
-                                background: "rgba(34,197,94,0.18)",
-                                color: "#4ade80",
-                              }}
-                            >
-                              Ready
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div
-                              style={{
+                                flex: 1,
+                                minWidth: 0,
                                 fontSize: 11,
                                 color: "#e5e7eb",
                                 whiteSpace: "nowrap",
@@ -6250,986 +6165,1269 @@ export default function App() {
                                 textOverflow: "ellipsis",
                               }}
                             >
-                              {t.title}
-                            </div>
-                            {t.description && (
-                              <div style={{ fontSize: 10, color: "#9ca3af" }}>
-                                {t.description}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ display: "flex", gap: 4 }}>
-                            <button
-                              type="button"
-                              style={{
-                                padding: "2px 4px",
-                                fontSize: 9,
-                                borderRadius: 4,
-                                border: "1px solid #4b5563",
-                                background: "#020617",
-                                color: "#e5e7eb",
-                                cursor: "pointer",
-                              }}
-                              onClick={async () => {
-                                if (!accessToken || !activeWorkspaceId) return;
-                                const nextTitle = window.prompt("Edit title", t.title);
-                                if (!nextTitle) return;
-                                const nextDescription = window.prompt(
-                                  "Edit description (optional)",
-                                  t.description ?? ""
-                                );
-                                try {
-                                  const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
-                                    method: "PATCH",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                      Authorization: `Bearer ${accessToken}`,
-                                    },
-                                    body: JSON.stringify({
-                                      title: nextTitle,
-                                      description: nextDescription ?? "",
-                                    }),
-                                  });
-                                  const data = await res.json().catch(() => ({}));
-                                  if (!res.ok) {
-                                    const msg = typeof data.error === "string" ? data.error : "Update failed.";
-                                    setTodoError(msg);
-                                    return;
-                                  }
-                                  setTodos((prev) =>
-                                    prev.map((x) =>
-                                      x.id === t.id
-                                        ? {
-                                            ...x,
-                                            title: nextTitle,
-                                            description: nextDescription ?? null,
-                                          }
-                                        : x
-                                    )
-                                  );
-                                  setTodoError(null);
-                                } catch (err) {
-                                  const msg = err instanceof Error ? err.message : String(err);
-                                  setTodoError(msg);
-                                }
-                              }}
-                            >
-                              Edit
-                            </button>
-                            <button
-                              type="button"
-                              style={{
-                                padding: "2px 4px",
-                                fontSize: 9,
-                                borderRadius: 4,
-                                border: "1px solid #7f1d1d",
-                                background: "#450a0a",
-                                color: "#fecaca",
-                                cursor: "pointer",
-                              }}
-                              onClick={async () => {
-                                if (!accessToken || !activeWorkspaceId) return;
-                                if (!window.confirm("Delete this todo?")) return;
-                                try {
-                                  const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
-                                    method: "DELETE",
-                                    headers: {
-                                      Authorization: `Bearer ${accessToken}`,
-                                    },
-                                  });
-                                  if (!res.ok && res.status !== 204) {
-                                    const data = await res.json().catch(() => ({}));
-                                    const msg = typeof data.error === "string" ? data.error : "Delete failed.";
-                                    setTodoError(msg);
-                                    return;
-                                  }
-                                  setTodos((prev) => prev.filter((x) => x.id !== t.id));
-                                  setTodoError(null);
-                                } catch (err) {
-                                  const msg = err instanceof Error ? err.message : String(err);
-                                  setTodoError(msg);
-                                }
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                        {deps.length > 0 && (
-                          <div style={{ fontSize: 10, color: "#9ca3af" }}>
-                            Depends on {deps.length} todo
-                            {deps.length !== 1 ? "s" : ""} —{" "}
-                            {hasBlockingDep ? "blocked" : "all completed"}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-              </div>
-            )}
-          </div>
-
-          {/* Edges */}
-          <div
-            style={{
-              color: "#7d8590",
-              fontSize: 11,
-              textTransform: "uppercase",
-              letterSpacing: 1,
-              marginTop: 12,
-              marginBottom: 6,
-            }}
-          >
-            Edges
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
-            {(
-              [
-                { v: "all" as const, l: "All" },
-                { v: "architectural" as const, l: "Arch" },
-                { v: "violations" as const, l: "Violations" },
-                { v: "drift" as const, l: "Drift" },
-                { v: "jira" as const, l: "Jira" },
-              ] as const
-            ).map(({ v, l }) => {
-              const isActive =
-                v === "all"
-                  ? activeFilters.has("all") || activeFilters.size === 0
-                  : activeFilters.has(v);
-              return (
-                <button
-                  key={v}
-                  onClick={() => toggleFilter(v)}
-                  style={{
-                    padding: "4px 8px",
-                    fontSize: 10,
-                    background: isActive ? "#238636" : "#21262d",
-                    color: isActive ? "white" : "#7d8590",
-                    border: `1px solid ${isActive ? "#238636" : "#30363d"}`,
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                  }}
-                >
-                  {l}
-                </button>
-              );
-            })}
-          </div>
-
-          {selectedNode && (
-            <div
-              style={{
-                marginBottom: 12,
-                padding: "8px 10px",
-                background: "rgba(34,197,94,0.12)",
-                border: "1px solid #22c55e44",
-                borderRadius: 6,
-                fontSize: 11,
-                color: "#22c55e",
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-              }}
-            >
-              <span>Focus:</span>
-              <span style={{ fontWeight: 600 }} title={selectedNode}>{selectedNode}</span>
-              <button
-                onClick={() => setSelectedNode(null)}
-                style={{
-                  marginLeft: "auto",
-                  padding: "2px 6px",
-                  fontSize: 10,
-                  background: "transparent",
-                  color: "#7d8590",
-                  border: "1px solid #30363d",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                }}
-              >
-                Clear
-              </button>
-            </div>
-          )}
-
-          {/* Violations — always visible so users know where to find them */}
-          <div
-            style={{
-              background: activeViolations.length > 0 ? "transparent" : "#161b22",
-              borderRadius: 8,
-              border: activeViolations.length > 0 ? "1px solid #f8514944" : "1px solid #30363d",
-              marginBottom: 8,
-              flexShrink: 0,
-            }}
-          >
-            <div
-              onClick={() => activeViolations.length > 0 && setViolationsCollapsed((v) => !v)}
-              style={{
-                padding: "8px 12px",
-                cursor: activeViolations.length > 0 ? "pointer" : "default",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                userSelect: "none",
-              }}
-            >
-              <span style={{ fontSize: 11, color: activeViolations.length > 0 ? "#f85149" : "#7d8590", textTransform: "uppercase", letterSpacing: 1 }}>
-                Active violations
-              </span>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {activeViolations.length > 0 ? (
-                  <>
-                    <span style={{
-                      fontSize: 9,
-                      padding: "1px 6px",
-                      borderRadius: 9,
-                      background: "#f8514922",
-                      color: "#f85149",
-                      fontWeight: 700,
-                    }}>
-                      {activeViolations.length}
-                    </span>
-                    <span style={{ fontSize: 10, color: "#7d8590" }}>
-                      {violationsCollapsed ? "▸" : "▾"}
-                    </span>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 10, color: "#7d8590" }}>0</span>
-                )}
-              </div>
-            </div>
-            {violationsRestoreError && (
-              <div
-                style={{
-                  padding: "6px 12px",
-                  margin: "0 12px 8px",
-                  background: "rgba(248,81,73,0.12)",
-                  border: "1px solid rgba(248,81,73,0.3)",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  color: "#f87171",
-                }}
-              >
-                Could not restore violations: {violationsRestoreError}
-              </div>
-            )}
-            {jiraError && activeViolations.length > 0 && jiraProjectKeyReady && (
-              <div
-                style={{
-                  padding: "6px 12px",
-                  margin: "0 12px 8px",
-                  background: "rgba(248,81,73,0.12)",
-                  border: "1px solid rgba(248,81,73,0.3)",
-                  borderRadius: 6,
-                  fontSize: 10,
-                  color: "#f87171",
-                }}
-              >
-                {jiraError}
-              </div>
-            )}
-            {activeViolations.length === 0 && !violationsRestoreError ? (
-              <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
-                No active violations. Ask the agent about your architecture to find issues.
-              </div>
-            ) : activeViolations.length === 0 && violationsRestoreError ? (
-              <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
-                Violations could not be loaded. Try refreshing the workspace.
-              </div>
-            ) : !violationsCollapsed && (
-                <div
-                  style={{
-                    maxHeight: 220,
-                    overflowY: "auto",
-                    padding: "0 12px 12px",
-                  }}
-                >
-                  {[...activeViolations]
-                    .sort((a, b) => {
-                      const o = { critical: 0, high: 1, medium: 2, low: 3 };
-                      return (o[a.severity as keyof typeof o] ?? 4) - (o[b.severity as keyof typeof o] ?? 4);
-                    })
-                    .map((v) => (
-                      <div
-                        key={violationKey(v)}
-                        onClick={() => handleFocusViolation(v)}
-                        style={{
-                          padding: "8px 0",
-                          borderBottom: "1px solid #21262d",
-                          marginBottom: 6,
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            marginBottom: 4,
-                          }}
-                        >
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDismissViolation(v);
-                            }}
-                            style={{
-                              padding: 2,
-                              background: "none",
-                              border: "none",
-                              color: "#7d8590",
-                              cursor: "pointer",
-                              fontSize: 12,
-                              lineHeight: 1,
-                            }}
-                            title="Dismiss"
-                          >
-                            ✕
-                          </button>
-                          <span
-                            style={{
-                              fontSize: 9,
-                              padding: "2px 6px",
-                              borderRadius: 3,
-                              fontWeight: 700,
-                              letterSpacing: "0.1em",
-                              textTransform: "uppercase",
-                              background:
-                                v.severity === "critical"
-                                  ? "#f8514922"
-                                  : v.severity === "high"
-                                    ? "#f9731622"
-                                    : "#eab30822",
-                              color:
-                                v.severity === "critical"
-                                  ? "#f85149"
-                                  : v.severity === "high"
-                                    ? "#f97316"
-                                    : "#eab308",
-                            }}
-                          >
-                            {v.severity}
-                          </span>
-                          <span
-                            style={{
-                              fontSize: 9,
-                              padding: "2px 6px",
-                              borderRadius: 3,
-                              background: "#1e2d4544",
-                              color: "#94a3b8",
-                              whiteSpace: "nowrap",
-                            }}
-                            title="Jira priority"
-                          >
-                            {v.severity === "critical"
-                              ? "Highest"
-                              : v.severity === "high"
-                                ? "High"
-                                : v.severity === "medium"
-                                  ? "Medium"
-                                  : "Low"}
-                          </span>
-                          <span style={{ fontSize: 10, color: "#8b949e", flex: 1 }}>
-                            {v.sourceNodeId}
-                            {v.targetNodeId ? ` → ${v.targetNodeId}` : ""}
-                          </span>
-                          {v.jiraKey && (
+                              {t.label}
+                            </span>
                             <span
                               style={{
-                                fontSize: 9,
-                                padding: "2px 6px",
-                                borderRadius: 3,
-                                background: "#1f6feb33",
-                                color: "#58a6ff",
-                                fontWeight: 600,
-                                whiteSpace: "nowrap",
+                                fontSize: 10,
+                                color:
+                                  t.status === "running"
+                                    ? "#60a5fa"
+                                    : t.status === "completed"
+                                      ? "#4ade80"
+                                      : "#f59e0b",
                               }}
                             >
-                              {v.jiraKey}
+                              {t.status === "needs_review" ? "needs review" : t.status}
                             </span>
-                          )}
-                        </div>
-                        <div
-                          style={{
-                            fontSize: 11,
-                            color: "#c9d1d9",
-                            marginBottom: 6,
-                            lineHeight: 1.4,
-                          }}
-                        >
-                          {v.description}
-                        </div>
-                        {!v.jiraKey && (
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {violationRailStatus[violationKey(v)] ? (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSidebarTab("dashboard");
-                                  setMainViewMode("board");
-                                  setSelectedRailId(violationRailStatus[violationKey(v)].railId);
-                                }}
+                            {t.retryAttempt != null && t.retryMax != null && (
+                              <span
                                 style={{
-                                  flex: 1,
-                                  padding: "5px 0",
                                   fontSize: 10,
-                                  background: "#1e3a5f",
-                                  color: "#58a6ff",
-                                  border: "1px solid #2563eb",
-                                  borderRadius: 4,
-                                  cursor: "pointer",
-                                  letterSpacing: "0.08em",
-                                  textTransform: "uppercase",
+                                  fontFamily: "monospace",
+                                  color: (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
                                 }}
                               >
-                                Rail: {violationRailStatus[violationKey(v)].state} · View
-                              </button>
-                            ) : (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleFixViolation(v);
-                                }}
-                                disabled={violationBeingFixed === violationKey(v)}
-                                style={{
-                                  flex: 1,
-                                  padding: "5px 0",
-                                  fontSize: 10,
-                                  background: violationBeingFixed === violationKey(v) ? "#388934" : "#238636",
-                                  color: "white",
-                                  border: "none",
-                                  borderRadius: 4,
-                                  cursor: violationBeingFixed === violationKey(v) ? "wait" : "pointer",
-                                  opacity: violationBeingFixed === violationKey(v) ? 0.9 : 1,
-                                  letterSpacing: "0.08em",
-                                  textTransform: "uppercase",
-                                }}
-                              >
-                                {violationBeingFixed === violationKey(v) ? "Creating rail…" : "✦ Fix now"}
-                              </button>
+                                {t.retryAttempt}/{t.retryMax}
+                              </span>
                             )}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (!jiraProjectKey && activeWorkspaceId) {
-                                  setJiraProjectKeyDraft("");
-                                  setEditingJiraProjectKey(true);
-                                  return;
-                                }
-                                handleTrackViolation(v);
-                              }}
-                              disabled={jiraConfigured !== true}
-                              title={
-                                jiraConfigured !== true
-                                  ? "Connect Jira to track violations"
-                                  : !jiraProjectKey && activeWorkspaceId
-                                    ? "Select project above"
-                                    : "Track in Jira"
-                              }
-                              style={{
-                                flex: 1,
-                                padding: "5px 0",
-                                fontSize: 10,
-                                background: "#21262d",
-                                color: "#58a6ff",
-                                border: "1px solid #1f6feb",
-                                borderRadius: 4,
-                                cursor: jiraConfigured === true ? "pointer" : "not-allowed",
-                                opacity: jiraConfigured === true ? 1 : 0.5,
-                                letterSpacing: "0.08em",
-                                textTransform: "uppercase",
-                              }}
-                            >
-                              {jiraProjectKey ? "⬡ Track in Jira" : "Select project"}
-                            </button>
-                          </div>
-                        )}
-                        {v.jiraKey && (
-                          <div style={{ fontSize: 10, color: "#7d8590", marginTop: 4 }}>
-                            Tracked as {v.jiraKey}
-                            {v.jiraStatus ? ` · ${v.jiraStatus}` : ""}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                </div>
-              )}
-          </div>
-
-          {/* Governance */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 6,
-              marginTop: 12,
-              marginBottom: 8,
-            }}
-          >
-            <div>
-              <div style={{ color: "#7d8590", fontSize: 11, textTransform: "uppercase", letterSpacing: 1 }}>
-                Governance
-              </div>
-              {jiraConfigured === null && (
-                <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>Checking…</div>
-              )}
-              {jiraConfigured === true && jiraConnectedEmail && (
-                <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>
-                  Connected as {jiraConnectedEmail}
-                </div>
-              )}
-              {jiraConfigured === true && activeWorkspaceId && (
-                <div style={{ marginTop: 6, fontSize: 10 }}>
-                  <div style={{ color: "#7d8590", marginBottom: 4 }}>Project</div>
-                  {editingJiraProjectKey ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {jiraProjectsLoading ? (
-                        <div style={{ color: "#7d8590", fontSize: 11 }}>Loading projects…</div>
-                      ) : jiraProjects.length > 0 ? (
-                        <select
-                          value={jiraProjectKeyDraft === "__clear__" ? "" : (jiraProjects.some((p) => p.key === jiraProjectKeyDraft) ? jiraProjectKeyDraft : "")}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (v === "__clear__") {
-                              clearProjectKey();
-                              setEditingJiraProjectKey(false);
-                              return;
-                            }
-                            setJiraProjectKeyDraft(v);
-                          }}
-                          style={{
-                            padding: "6px 8px",
-                            fontSize: 11,
-                            background: "#0d1117",
-                            border: "1px solid #30363d",
-                            borderRadius: 4,
-                            color: "#e6edf3",
-                            outline: "none",
-                          }}
-                        >
-                          <option value="">Select a project</option>
-                          <option value="__clear__">— Clear project —</option>
-                          {jiraProjects.map((p) => (
-                            <option key={p.key} value={p.key}>
-                              {p.key} — {p.name}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                            <input
-                              value={jiraProjectKeyDraft}
-                              onChange={(e) => setJiraProjectKeyDraft(e.target.value.toUpperCase())}
-                              placeholder={jiraProjects.length > 0 ? "Or type key" : "e.g. DOCLITTLE"}
-                              style={{
-                                flex: 1,
-                                padding: "4px 8px",
-                                fontSize: 11,
-                                background: "#0d1117",
-                                border: "1px solid #30363d",
-                                borderRadius: 4,
-                                color: "#e6edf3",
-                                outline: "none",
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") saveProjectKey(jiraProjectKeyDraft);
-                                else if (e.key === "Escape") cancelProjectKeyEdit();
-                              }}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => saveProjectKey(jiraProjectKeyDraft)}
-                              style={{
-                                padding: "4px 8px",
-                                fontSize: 10,
-                                background: "#238636",
-                                color: "white",
-                                border: "none",
-                                borderRadius: 4,
-                                cursor: "pointer",
-                              }}
-                            >
-                              ✓
-                            </button>
-                            <button
-                              type="button"
-                              onClick={cancelProjectKeyEdit}
-                              style={{
-                                padding: "4px 6px",
-                                fontSize: 10,
-                                background: "transparent",
-                                color: "#8b949e",
-                                border: "1px solid #30363d",
-                                borderRadius: 4,
-                                cursor: "pointer",
-                              }}
-                              title="Cancel and return to list"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                          {jiraProjectKeyDraft && !isValidProjectKey(jiraProjectKeyDraft) && (
-                            <div style={{ fontSize: 10, color: "#f85149" }}>
-                              Invalid key (no trailing hyphen, 2–10 chars)
-                            </div>
-                          )}
-                        </div>
-                    </div>
-                  ) : (
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "4px 8px",
-                        background: "#0d1117",
-                        borderRadius: 4,
-                        border: "1px solid #30363d",
-                        cursor: "pointer",
-                        color: jiraProjectKey ? "#e6edf3" : "#7d8590",
-                      }}
-                      onClick={() => {
-                        setJiraProjectKeyDraft(jiraProjectKey ?? "");
-                        setEditingJiraProjectKey(true);
-                        setJiraProjectsLoading(true);
-                        fetch(`${API_BASE}/jira-projects`, { headers: { Authorization: `Bearer ${accessToken}` } })
-                          .then((r) => r.json())
-                          .then((d: { projects?: Array<{ key: string; name: string }> }) => setJiraProjects(d?.projects ?? []))
-                          .catch(() => setJiraProjects([]))
-                          .finally(() => setJiraProjectsLoading(false));
-                      }}
-                      title="Select which Jira project to fetch issues from"
-                    >
-                      <span style={{ flex: 1 }}>{jiraProjectKey ?? "Select project"}</span>
-                      {jiraProjectKey && (
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); clearProjectKey(); }}
-                          style={{
-                            padding: "2px 6px",
-                            fontSize: 9,
-                            background: "transparent",
-                            color: "#8b949e",
-                            border: "1px solid #30363d",
-                            borderRadius: 4,
-                            cursor: "pointer",
-                          }}
-                          title="Clear project key"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            {jiraConfigured === true && activeWorkspaceId && !jiraProjectKey && (
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 10,
-                  color: "#d29922",
-                  maxWidth: 420,
-                }}
-              >
-                No project set. Select one to scope Jira searches.
-              </div>
-            )}
-            {activeWorkspaceId && (
-              <div
-                style={{
-                  marginTop: 8,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                  flexWrap: "wrap",
-                }}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 420 }}>
-                  <div style={{ fontSize: 11, color: "#e6edf3" }}>Auto-implement ready todos</div>
-                  <div style={{ fontSize: 10, color: "#7d8590" }}>
-                    When enabled, this workspace can start auto-executing dependency-ready todos from chat or
-                    the board. Auto-execution is still subject to safety limits.
+                          </button>
+                        );
+                      })}
                   </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={toggleAutoExecute}
-                  disabled={autoExecuteSaving}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    height: 22,
-                    background: autoExecuteEnabled ? "#238636" : "#21262d",
-                    color: autoExecuteEnabled ? "white" : "#7d8590",
-                    border: `1px solid ${autoExecuteEnabled ? "#238636" : "#30363d"}`,
-                    borderRadius: 999,
-                    cursor: autoExecuteSaving ? "wait" : "pointer",
-                    minWidth: 80,
-                  }}
-                >
-                  {autoExecuteEnabled ? "Enabled" : "Disabled"}
-                </button>
+                </DashboardCard>
               </div>
             )}
-            {jiraConfigured !== true ? (
-              <button
-                onClick={() => setShowJiraConnectModal(true)}
-                style={{
-                  padding: "4px 10px",
-                  fontSize: 10,
-                  height: 22,
-                  background: "#21262d",
-                  color: "#7d8590",
-                  border: "1px solid #30363d",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                }}
-              >
-                Connect Jira
-              </button>
-            ) : (
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <button
-                  onClick={() => {
-                    setJiraFilterByRepo((v) => {
-                      const next = !v;
-                      try {
-                        localStorage.setItem("jiraFilterByRepo", String(next));
-                      } catch { /* ignore */ }
-                      fetchJiraTests(next);
-                      return next;
-                    });
-                  }}
-                  disabled={jiraLoading}
-                  style={{
-                    padding: "4px 6px",
-                    fontSize: 10,
-                    height: 22,
-                    background: jiraFilterByRepo ? "#238636" : "#21262d",
-                    color: jiraFilterByRepo ? "white" : "#7d8590",
-                    border: `1px solid ${jiraFilterByRepo ? "#238636" : "#30363d"}`,
-                    borderRadius: 6,
-                    cursor: jiraLoading ? "wait" : "pointer",
-                  }}
-                title={jiraFilterByRepo ? "Filter: show only issues labeled with this repo" : "Filter: show all unresolved issues in the project"}
-                >
-                  {jiraFilterByRepo ? "This repo" : "Show all"}
-                </button>
-                <button
-                  onClick={() => setShowJiraDisconnectConfirm(true)}
-                  style={{
-                    padding: "4px 6px",
-                    fontSize: 10,
-                    height: 22,
-                    background: "transparent",
-                    color: "#8b949e",
-                    border: "1px solid #30363d",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                  }}
-                  title="Disconnect Jira"
-                >
-                  Disconnect
-                </button>
-              </div>
-            )}
-          </div>
-          {staleMismatches.length > 0 && jiraConfigured === true && (
-            <div
-              style={{
-                marginBottom: 8,
-                padding: "8px 10px",
-                background: "rgba(210, 153, 34, 0.1)",
-                border: "1px solid rgba(210, 153, 34, 0.4)",
-                borderRadius: 6,
-                fontSize: 11,
-              }}
-            >
-              <div style={{ color: "#d29922", fontWeight: 600, marginBottom: 6 }}>
-                {staleMismatches.length} issue{staleMismatches.length !== 1 ? "s" : ""} may be stale
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {staleMismatches.map((m) => {
-                  const baseUrl =
-                    jiraIssues.find((i) => i.key === m.key)?.baseUrl ??
-                    jiraIssues[0]?.baseUrl;
-                  return (
-                    <div
-                      key={m.key}
-                      style={{
-                        padding: "4px 6px",
-                        background: "#0d1117",
-                        borderRadius: 4,
-                        borderLeft: "2px solid #d29922",
-                      }}
-                    >
-                      {baseUrl ? (
-                        <a
-                          href={`${baseUrl}/browse/${m.key}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          style={{ color: "#58a6ff", textDecoration: "none", fontWeight: 500 }}
-                        >
-                          {m.key}
-                        </a>
-                      ) : (
-                        <span style={{ color: "#e6edf3", fontWeight: 500 }}>{m.key}</span>
-                      )}
-                      <span style={{ color: "#7d8590", marginLeft: 4 }}>— {m.summary}</span>
-                      <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
-                        {m.reason === "orphaned"
-                          ? "Module deleted"
-                          : m.reason === "changed"
-                            ? "Module fingerprint changed"
-                            : m.reason}
-                        {m.storedModule && (
-                          <span style={{ marginLeft: 4 }}>({m.storedModule})</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-          {jiraError && (
-            jiraError === "No project selected" ? (
-              <div
-                style={{
-                  fontSize: 11,
-                  marginBottom: 8,
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid #30363d",
-                  background: "#111827",
-                  color: "#9ca3af",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 6,
-                }}
-              >
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: "#4b5563",
-                  }}
-                />
-                <span>{jiraError}</span>
-              </div>
-            ) : (
-              <div style={{ fontSize: 11, color: "#f85149", marginBottom: 8 }}>{jiraError}</div>
-            )
-          )}
-          <div style={{ maxHeight: 400, overflowY: "auto", fontSize: 11 }}>
-            {jiraIssues.length === 0 && !jiraLoading && !jiraError && (
-              <div
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  padding: "4px 8px",
-                  borderRadius: 999,
-                  border: "1px solid #30363d",
-                  background: "#0d1117",
-                  color: "#7d8590",
-                  marginBottom: 4,
-                }}
-              >
-                {jiraConfigured !== true
-                  ? "Connect Jira to link architecture violations to issues"
-                  : activeWorkspaceId && !jiraProjectKeyReady
-                    ? "Loading Jira issues…"
-                    : !jiraProjectKey && activeWorkspaceId
-                      ? "Choose a project above to view Jira issues"
-                      : "No unresolved Jira issues for this project"}
-              </div>
-            )}
-            {jiraIssues.map((j) => {
-              const canAddToRepo =
-                !jiraFilterByRepo &&
-                jiraRepoName &&
-                !(j.labels ?? []).includes(jiraRepoName);
-              return (
+
+            {/* Execution Engine + Todos */}
+            <div style={{ gridColumn: "1 / span 2", display: "flex", flexDirection: "column", gap: 12 }}>
+              <DashboardCard title="Execution Engine">
                 <div
-                  key={j.key}
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    gap: 6,
-                    padding: "4px 0",
-                    borderBottom: "1px solid #21262d",
+                    gap: 8,
+                    flexWrap: "wrap",
                   }}
                 >
-                  {j.priority && (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        fontWeight: 600,
-                        textTransform: "uppercase",
-                        letterSpacing: "0.05em",
-                        background:
-                          /high|critical|highest|high/i.test(j.priority)
-                            ? "#f8514922"
-                            : /medium|medium/i.test(j.priority)
-                              ? "#eab30822"
-                              : "#1e2d4544",
-                        color:
-                          /high|critical|highest|high/i.test(j.priority)
-                            ? "#f85149"
-                            : /medium|medium/i.test(j.priority)
-                              ? "#eab308"
-                              : "#94a3b8",
-                        flexShrink: 0,
-                      }}
-                    >
-                      {j.priority}
-                    </span>
-                  )}
-                  <a
-                    href={`${j.baseUrl}/browse/${j.key}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!accessToken || !activeWorkspaceId) return;
+                      try {
+                        setTodoError(null);
+                        const res = await fetch(`${API_BASE}/todos/auto-execute-ready`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${accessToken}`,
+                          },
+                          body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                          const msg =
+                            typeof data.error === "string"
+                              ? data.error
+                              : "Auto-execute failed.";
+                          setTodoError(msg);
+                          return;
+                        }
+                        const msg =
+                          typeof data.message === "string"
+                            ? data.message
+                            : data.startedRails && Array.isArray(data.startedRails)
+                              ? `Queued ${data.startedRails.length} tasks for execution.`
+                              : "Auto-execution triggered.";
+                        setTodoError(msg);
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        setTodoError(msg);
+                      }
+                    }}
                     style={{
-                      flex: 1,
-                      minWidth: 0,
-                      color: "#58a6ff",
-                      textDecoration: "none",
+                      padding: "6px 10px",
+                      fontSize: 11,
+                      borderRadius: 6,
+                      border: "1px solid #22c55e",
+                      background: "#16a34a",
+                      color: "white",
+                      cursor: "pointer",
                     }}
                   >
-                    <span style={{ color: "#8b949e" }}>{j.key}</span> {j.summary}
-                    <span style={{ color: "#7d8590", marginLeft: 6 }}>{j.status}</span>
-                  </a>
-                  {canAddToRepo && (
+                    Auto-implement
+                  </button>
+                  <select
+                    value={todoPhaseFilter}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setTodoPhaseFilter(v === "all" ? "all" : Number(v));
+                    }}
+                    style={{
+                      fontSize: 10,
+                      padding: "4px 8px",
+                      borderRadius: 6,
+                      border: "1px solid #374151",
+                      background: "#020617",
+                      color: "#9ca3af",
+                    }}
+                  >
+                    <option value="all">All phases</option>
+                    {Array.from(
+                      new Set(
+                        todos
+                          .map((t) => t.phase)
+                          .filter((p): p is number => typeof p === "number")
+                      )
+                    )
+                      .sort((a, b) => a - b)
+                      .map((p) => (
+                        <option key={p} value={p}>
+                          Phase {p}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTodoImportMarkdown("");
+                      setTodoImportPreview(null);
+                      setTodoError(null);
+                      setTodoImportOpen(true);
+                    }}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      borderRadius: 6,
+                      border: "1px solid #4b5563",
+                      background: "#0f172a",
+                      color: "#e5e7eb",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Import todos
+                  </button>
+                </div>
+                {todoError && (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      padding: 6,
+                      borderRadius: 6,
+                      background: "rgba(248,113,113,0.12)",
+                      border: "1px solid rgba(248,113,113,0.4)",
+                      fontSize: 10,
+                      color: "#fecaca",
+                    }}
+                  >
+                    {todoError}
+                  </div>
+                )}
+              </DashboardCard>
+
+              <DashboardCard title="Execution todos">
+                {todos.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.5 }}>
+                    No execution todos yet. Import DocLittle markdown or let the agent
+                    create a plan from greenfield chat, then run ready tasks above.
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      maxHeight: 220,
+                      overflowY: "auto",
+                      paddingRight: 2,
+                      fontSize: 11,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {todos
+                      .filter((t) =>
+                        todoPhaseFilter === "all" ? true : t.phase === todoPhaseFilter
+                      )
+                      .map((t) => {
+                        const deps = t.dependsOn ?? [];
+                        const byId = new Map(todos.map((x) => [x.id, x]));
+                        const hasBlockingDep = deps.some((id) => {
+                          const dep = byId.get(id);
+                          return dep && dep.status !== "completed";
+                        });
+                        const isReady =
+                          t.status === "pending" && (!deps.length || !hasBlockingDep);
+                        return (
+                          <div
+                            key={t.id}
+                            style={{
+                              padding: "6px 0",
+                              borderBottom: "1px solid #111827",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 2,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  border: "1px solid #374151",
+                                  background:
+                                    t.status === "completed"
+                                      ? "rgba(34,197,94,0.15)"
+                                      : t.status === "in_progress"
+                                        ? "rgba(59,130,246,0.15)"
+                                        : "rgba(15,23,42,1)",
+                                  color:
+                                    t.status === "completed"
+                                      ? "#4ade80"
+                                      : t.status === "in_progress"
+                                        ? "#bfdbfe"
+                                        : "#9ca3af",
+                                }}
+                              >
+                                {t.status}
+                              </span>
+                              {typeof t.phase === "number" && (
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "2px 6px",
+                                    borderRadius: 4,
+                                    background: "#111827",
+                                    color: "#9ca3af",
+                                  }}
+                                >
+                                  Phase {t.phase}
+                                </span>
+                              )}
+                              {isReady && (
+                                <span
+                                  style={{
+                                    fontSize: 10,
+                                    padding: "2px 6px",
+                                    borderRadius: 4,
+                                    background: "rgba(34,197,94,0.18)",
+                                    color: "#4ade80",
+                                  }}
+                                >
+                                  Ready
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div
+                                  style={{
+                                    fontSize: 11,
+                                    color: "#e5e7eb",
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                  }}
+                                >
+                                  {t.title}
+                                </div>
+                                {t.description && (
+                                  <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                                    {t.description}
+                                  </div>
+                                )}
+                              </div>
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button
+                                  type="button"
+                                  style={{
+                                    padding: "2px 4px",
+                                    fontSize: 9,
+                                    borderRadius: 4,
+                                    border: "1px solid #4b5563",
+                                    background: "#020617",
+                                    color: "#e5e7eb",
+                                    cursor: "pointer",
+                                  }}
+                                  onClick={async () => {
+                                    if (!accessToken || !activeWorkspaceId) return;
+                                    const nextTitle = window.prompt("Edit title", t.title);
+                                    if (!nextTitle) return;
+                                    const nextDescription = window.prompt(
+                                      "Edit description (optional)",
+                                      t.description ?? ""
+                                    );
+                                    try {
+                                      const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
+                                        method: "PATCH",
+                                        headers: {
+                                          "Content-Type": "application/json",
+                                          Authorization: `Bearer ${accessToken}`,
+                                        },
+                                        body: JSON.stringify({
+                                          title: nextTitle,
+                                          description: nextDescription ?? "",
+                                        }),
+                                      });
+                                      const data = await res.json().catch(() => ({}));
+                                      if (!res.ok) {
+                                        const msg = typeof data.error === "string" ? data.error : "Update failed.";
+                                        setTodoError(msg);
+                                        return;
+                                      }
+                                      setTodos((prev) =>
+                                        prev.map((x) =>
+                                          x.id === t.id
+                                            ? {
+                                                ...x,
+                                                title: nextTitle,
+                                                description: nextDescription ?? null,
+                                              }
+                                            : x
+                                        )
+                                      );
+                                      setTodoError(null);
+                                    } catch (err) {
+                                      const msg = err instanceof Error ? err.message : String(err);
+                                      setTodoError(msg);
+                                    }
+                                  }}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  style={{
+                                    padding: "2px 4px",
+                                    fontSize: 9,
+                                    borderRadius: 4,
+                                    border: "1px solid #7f1d1d",
+                                    background: "#450a0a",
+                                    color: "#fecaca",
+                                    cursor: "pointer",
+                                  }}
+                                  onClick={async () => {
+                                    if (!accessToken || !activeWorkspaceId) return;
+                                    if (!window.confirm("Delete this todo?")) return;
+                                    try {
+                                      const res = await fetch(`${API_BASE}/todos/${encodeURIComponent(t.id)}`, {
+                                        method: "DELETE",
+                                        headers: {
+                                          Authorization: `Bearer ${accessToken}`,
+                                        },
+                                      });
+                                      if (!res.ok && res.status !== 204) {
+                                        const data = await res.json().catch(() => ({}));
+                                        const msg = typeof data.error === "string" ? data.error : "Delete failed.";
+                                        setTodoError(msg);
+                                        return;
+                                      }
+                                      setTodos((prev) => prev.filter((x) => x.id !== t.id));
+                                      setTodoError(null);
+                                    } catch (err) {
+                                      const msg = err instanceof Error ? err.message : String(err);
+                                      setTodoError(msg);
+                                    }
+                                  }}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                            {deps.length > 0 && (
+                              <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                                Depends on {deps.length} todo
+                                {deps.length !== 1 ? "s" : ""} —{" "}
+                                {hasBlockingDep ? "blocked" : "all completed"}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </DashboardCard>
+            </div>
+
+            {/* Architecture */}
+            <DashboardCard title="Architecture">
+              <div style={{ marginBottom: selectedNode ? 8 : 0 }}>
+                <div
+                  style={{
+                    color: "#7d8590",
+                    fontSize: 11,
+                    textTransform: "uppercase",
+                    letterSpacing: 1,
+                    marginBottom: 6,
+                  }}
+                >
+                  Edges
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {(
+                    [
+                      { v: "all" as const, l: "All" },
+                      { v: "architectural" as const, l: "Arch" },
+                      { v: "violations" as const, l: "Violations" },
+                      { v: "drift" as const, l: "Drift" },
+                      { v: "jira" as const, l: "Jira" },
+                    ] as const
+                  ).map(({ v, l }) => {
+                    const isActive =
+                      v === "all"
+                        ? activeFilters.has("all") || activeFilters.size === 0
+                        : activeFilters.has(v);
+                    return (
+                      <button
+                        key={v}
+                        onClick={() => toggleFilter(v)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 10,
+                          background: isActive ? "#238636" : "#21262d",
+                          color: isActive ? "white" : "#7d8590",
+                          border: `1px solid ${isActive ? "#238636" : "#30363d"}`,
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {l}
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedNode && (
+                  <div
+                    style={{
+                      padding: "6px 8px",
+                      background: "rgba(34,197,94,0.12)",
+                      border: "1px solid #22c55e44",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      color: "#22c55e",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span>Focus:</span>
+                    <span style={{ fontWeight: 600 }} title={selectedNode}>
+                      {selectedNode}
+                    </span>
                     <button
-                      onClick={() => addLabelToIssue(j.key, jiraRepoName!)}
+                      onClick={() => setSelectedNode(null)}
                       style={{
+                        marginLeft: "auto",
                         padding: "2px 6px",
                         fontSize: 10,
-                        height: 20,
-                        flexShrink: 0,
-                        background: "#21262d",
-                        color: "#58a6ff",
+                        background: "transparent",
+                        color: "#7d8590",
                         border: "1px solid #30363d",
                         borderRadius: 4,
                         cursor: "pointer",
                       }}
                     >
-                      + Repo
+                      Clear
                     </button>
-                  )}
+                  </div>
+                )}
+              </div>
+            </DashboardCard>
+
+            {/* Violations */}
+            <DashboardCard title="Violations">
+              <div
+                style={{
+                  background: activeViolations.length > 0 ? "transparent" : "#161b22",
+                  borderRadius: 8,
+                  border: activeViolations.length > 0 ? "1px solid #f8514944" : "1px solid #30363d",
+                  flexShrink: 0,
+                }}
+              >
+                <div
+                  onClick={() => activeViolations.length > 0 && setViolationsCollapsed((v) => !v)}
+                  style={{
+                    padding: "8px 12px",
+                    cursor: activeViolations.length > 0 ? "pointer" : "default",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    userSelect: "none",
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: activeViolations.length > 0 ? "#f85149" : "#7d8590", textTransform: "uppercase", letterSpacing: 1 }}>
+                    Active violations
+                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {activeViolations.length > 0 ? (
+                      <>
+                        <span style={{
+                          fontSize: 9,
+                          padding: "1px 6px",
+                          borderRadius: 9,
+                          background: "#f8514922",
+                          color: "#f85149",
+                          fontWeight: 700,
+                        }}>
+                          {activeViolations.length}
+                        </span>
+                        <span style={{ fontSize: 10, color: "#7d8590" }}>
+                          {violationsCollapsed ? "▸" : "▾"}
+                        </span>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 10, color: "#7d8590" }}>0</span>
+                    )}
+                  </div>
                 </div>
-              );
-            })}
-          </div>
+                {violationsRestoreError && (
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      margin: "0 12px 8px",
+                      background: "rgba(248,81,73,0.12)",
+                      border: "1px solid rgba(248,81,73,0.3)",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      color: "#f87171",
+                    }}
+                  >
+                    Could not restore violations: {violationsRestoreError}
+                  </div>
+                )}
+                {jiraError && activeViolations.length > 0 && jiraProjectKeyReady && (
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      margin: "0 12px 8px",
+                      background: "rgba(248,81,73,0.12)",
+                      border: "1px solid rgba(248,81,73,0.3)",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      color: "#f87171",
+                    }}
+                  >
+                    {jiraError}
+                  </div>
+                )}
+                {activeViolations.length === 0 && !violationsRestoreError ? (
+                  <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
+                    No active violations. Ask the agent about your architecture to find issues.
+                  </div>
+                ) : activeViolations.length === 0 && violationsRestoreError ? (
+                  <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
+                    Violations could not be loaded. Try refreshing the workspace.
+                  </div>
+                ) : !violationsCollapsed && (
+                    <div
+                      style={{
+                        maxHeight: 220,
+                        overflowY: "auto",
+                        padding: "0 12px 12px",
+                      }}
+                    >
+                      {[...activeViolations]
+                        .sort((a, b) => {
+                          const o = { critical: 0, high: 1, medium: 2, low: 3 };
+                          return (o[a.severity as keyof typeof o] ?? 4) - (o[b.severity as keyof typeof o] ?? 4);
+                        })
+                        .map((v) => (
+                          <div
+                            key={violationKey(v)}
+                            onClick={() => handleFocusViolation(v)}
+                            style={{
+                              padding: "8px 0",
+                              borderBottom: "1px solid #21262d",
+                              marginBottom: 6,
+                              cursor: "pointer",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                marginBottom: 4,
+                              }}
+                            >
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDismissViolation(v);
+                                }}
+                                style={{
+                                  padding: 2,
+                                  background: "none",
+                                  border: "none",
+                                  color: "#7d8590",
+                                  cursor: "pointer",
+                                  fontSize: 12,
+                                  lineHeight: 1,
+                                }}
+                                title="Dismiss"
+                              >
+                                ✕
+                              </button>
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 6px",
+                                  borderRadius: 3,
+                                  fontWeight: 700,
+                                  letterSpacing: "0.1em",
+                                  textTransform: "uppercase",
+                                  background:
+                                    v.severity === "critical"
+                                      ? "#f8514922"
+                                      : v.severity === "high"
+                                        ? "#f9731622"
+                                        : "#eab30822",
+                                  color:
+                                    v.severity === "critical"
+                                      ? "#f85149"
+                                      : v.severity === "high"
+                                        ? "#f97316"
+                                        : "#eab308",
+                                }}
+                              >
+                                {v.severity}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 6px",
+                                  borderRadius: 3,
+                                  background: "#1e2d4544",
+                                  color: "#94a3b8",
+                                  whiteSpace: "nowrap",
+                                }}
+                                title="Jira priority"
+                              >
+                                {v.severity === "critical"
+                                  ? "Highest"
+                                  : v.severity === "high"
+                                    ? "High"
+                                    : v.severity === "medium"
+                                      ? "Medium"
+                                      : "Low"}
+                              </span>
+                              <span style={{ fontSize: 10, color: "#8b949e", flex: 1 }}>
+                                {v.sourceNodeId}
+                                {v.targetNodeId ? ` → ${v.targetNodeId}` : ""}
+                              </span>
+                              {v.jiraKey && (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    padding: "2px 6px",
+                                    borderRadius: 3,
+                                    background: "#1f6feb33",
+                                    color: "#58a6ff",
+                                    fontWeight: 600,
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {v.jiraKey}
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "#c9d1d9",
+                                marginBottom: 6,
+                                lineHeight: 1.4,
+                              }}
+                            >
+                              {v.description}
+                            </div>
+                            {!v.jiraKey && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {violationRailStatus[violationKey(v)] ? (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSidebarTab("dashboard");
+                                      setMainViewMode("board");
+                                      setSelectedRailId(violationRailStatus[violationKey(v)].railId);
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      padding: "5px 0",
+                                      fontSize: 10,
+                                      background: "#1e3a5f",
+                                      color: "#58a6ff",
+                                      border: "1px solid #2563eb",
+                                      borderRadius: 4,
+                                      cursor: "pointer",
+                                      letterSpacing: "0.08em",
+                                      textTransform: "uppercase",
+                                    }}
+                                  >
+                                    Rail: {violationRailStatus[violationKey(v)].state} · View
+                                  </button>
+                                ) : (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleFixViolation(v);
+                                    }}
+                                    disabled={violationBeingFixed === violationKey(v)}
+                                    style={{
+                                      flex: 1,
+                                      padding: "5px 0",
+                                      fontSize: 10,
+                                      background: violationBeingFixed === violationKey(v) ? "#388934" : "#238636",
+                                      color: "white",
+                                      border: "none",
+                                      borderRadius: 4,
+                                      cursor: violationBeingFixed === violationKey(v) ? "wait" : "pointer",
+                                      opacity: violationBeingFixed === violationKey(v) ? 0.9 : 1,
+                                      letterSpacing: "0.08em",
+                                      textTransform: "uppercase",
+                                    }}
+                                  >
+                                    {violationBeingFixed === violationKey(v) ? "Creating rail…" : "✦ Fix now"}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!jiraProjectKey && activeWorkspaceId) {
+                                      setJiraProjectKeyDraft("");
+                                      setEditingJiraProjectKey(true);
+                                      return;
+                                    }
+                                    handleTrackViolation(v);
+                                  }}
+                                  disabled={jiraConfigured !== true}
+                                  title={
+                                    jiraConfigured !== true
+                                      ? "Connect Jira to track violations"
+                                      : !jiraProjectKey && activeWorkspaceId
+                                        ? "Select project above"
+                                        : "Track in Jira"
+                                  }
+                                  style={{
+                                    flex: 1,
+                                    padding: "5px 0",
+                                    fontSize: 10,
+                                    background: "#21262d",
+                                    color: "#58a6ff",
+                                    border: "1px solid #1f6feb",
+                                    borderRadius: 4,
+                                    cursor: jiraConfigured === true ? "pointer" : "not-allowed",
+                                    opacity: jiraConfigured === true ? 1 : 0.5,
+                                    letterSpacing: "0.08em",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  {jiraProjectKey ? "⬡ Track in Jira" : "Select project"}
+                                </button>
+                              </div>
+                            )}
+                            {v.jiraKey && (
+                              <div style={{ fontSize: 10, color: "#7d8590", marginTop: 4 }}>
+                                Tracked as {v.jiraKey}
+                                {v.jiraStatus ? ` · ${v.jiraStatus}` : ""}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+              </div>
+            </DashboardCard>
+
+            {/* Governance */}
+            <div style={{ gridColumn: "1 / span 2" }}>
+              <DashboardCard title="Governance">
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "flex-start",
+                    flexWrap: "wrap",
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ minWidth: 200, maxWidth: 420 }}>
+                    <div style={{ color: "#7d8590", fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
+                      Jira
+                    </div>
+                    {jiraConfigured === null && (
+                      <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>Checking…</div>
+                    )}
+                    {jiraConfigured === true && jiraConnectedEmail && (
+                      <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>
+                        Connected as {jiraConnectedEmail}
+                      </div>
+                    )}
+                    {jiraConfigured === true && activeWorkspaceId && (
+                      <div style={{ marginTop: 6, fontSize: 10 }}>
+                        <div style={{ color: "#7d8590", marginBottom: 4 }}>Project</div>
+                        {editingJiraProjectKey ? (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                            {jiraProjectsLoading ? (
+                              <div style={{ color: "#7d8590", fontSize: 11 }}>Loading projects…</div>
+                            ) : jiraProjects.length > 0 ? (
+                              <select
+                                value={jiraProjectKeyDraft === "__clear__" ? "" : (jiraProjects.some((p) => p.key === jiraProjectKeyDraft) ? jiraProjectKeyDraft : "")}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v === "__clear__") {
+                                    clearProjectKey();
+                                    setEditingJiraProjectKey(false);
+                                    return;
+                                  }
+                                  setJiraProjectKeyDraft(v);
+                                }}
+                                style={{
+                                  padding: "6px 8px",
+                                  fontSize: 11,
+                                  background: "#0d1117",
+                                  border: "1px solid #30363d",
+                                  borderRadius: 4,
+                                  color: "#e6edf3",
+                                  outline: "none",
+                                }}
+                              >
+                                <option value="">Select a project</option>
+                                <option value="__clear__">— Clear project —</option>
+                                {jiraProjects.map((p) => (
+                                  <option key={p.key} value={p.key}>
+                                    {p.key} — {p.name}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : null}
+                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                <input
+                                  value={jiraProjectKeyDraft}
+                                  onChange={(e) => setJiraProjectKeyDraft(e.target.value.toUpperCase())}
+                                  placeholder={jiraProjects.length > 0 ? "Or type key" : "e.g. DOCLITTLE"}
+                                  style={{
+                                    flex: 1,
+                                    padding: "4px 8px",
+                                    fontSize: 11,
+                                    background: "#0d1117",
+                                    border: "1px solid #30363d",
+                                    borderRadius: 4,
+                                    color: "#e6edf3",
+                                    outline: "none",
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") saveProjectKey(jiraProjectKeyDraft);
+                                    else if (e.key === "Escape") cancelProjectKeyEdit();
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => saveProjectKey(jiraProjectKeyDraft)}
+                                  style={{
+                                    padding: "4px 8px",
+                                    fontSize: 10,
+                                    background: "#238636",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: 4,
+                                    cursor: "pointer",
+                                  }}
+                                >
+                                  ✓
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={cancelProjectKeyEdit}
+                                  style={{
+                                    padding: "4px 6px",
+                                    fontSize: 10,
+                                    background: "transparent",
+                                    color: "#8b949e",
+                                    border: "1px solid #30363d",
+                                    borderRadius: 4,
+                                    cursor: "pointer",
+                                  }}
+                                  title="Cancel and return to list"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                              {jiraProjectKeyDraft && !isValidProjectKey(jiraProjectKeyDraft) && (
+                                <div style={{ fontSize: 10, color: "#f85149" }}>
+                                  Invalid key (no trailing hyphen, 2–10 chars)
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "4px 8px",
+                              background: "#0d1117",
+                              borderRadius: 4,
+                              border: "1px solid #30363d",
+                              cursor: "pointer",
+                              color: jiraProjectKey ? "#e6edf3" : "#7d8590",
+                            }}
+                            onClick={() => {
+                              setJiraProjectKeyDraft(jiraProjectKey ?? "");
+                              setEditingJiraProjectKey(true);
+                              setJiraProjectsLoading(true);
+                              fetch(`${API_BASE}/jira-projects`, { headers: { Authorization: `Bearer ${accessToken}` } })
+                                .then((r) => r.json())
+                                .then((d: { projects?: Array<{ key: string; name: string }> }) => setJiraProjects(d?.projects ?? []))
+                                .catch(() => setJiraProjects([]))
+                                .finally(() => setJiraProjectsLoading(false));
+                            }}
+                            title="Select which Jira project to fetch issues from"
+                          >
+                            <span style={{ flex: 1 }}>{jiraProjectKey ?? "Select project"}</span>
+                            {jiraProjectKey && (
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); clearProjectKey(); }}
+                                style={{
+                                  padding: "2px 6px",
+                                  fontSize: 9,
+                                  background: "transparent",
+                                  color: "#8b949e",
+                                  border: "1px solid #30363d",
+                                  borderRadius: 4,
+                                  cursor: "pointer",
+                                }}
+                                title="Clear project key"
+                              >
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {jiraConfigured === true && activeWorkspaceId && !jiraProjectKey && (
+                      <div
+                        style={{
+                          marginTop: 4,
+                          fontSize: 10,
+                          color: "#d29922",
+                          maxWidth: 420,
+                        }}
+                      >
+                        No project set. Select one to scope Jira searches.
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    {activeWorkspaceId && (
+                      <div
+                        style={{
+                          marginBottom: 8,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
+                      <div style={{ fontSize: 11, color: "#e6edf3" }}>Auto-implement ready todos</div>
+                      <div style={{ fontSize: 10, color: "#7d8590", lineHeight: 1.5 }}>
+                        When enabled, the agent can automatically start executing todos whose
+                        dependencies are satisfied, when triggered from chat or the board.
+                        All executions still respect safety limits.
+                      </div>
+                    </div>
+                        <button
+                          type="button"
+                          onClick={toggleAutoExecute}
+                          disabled={autoExecuteSaving}
+                          style={{
+                            padding: "4px 10px",
+                            fontSize: 10,
+                            height: 22,
+                            background: autoExecuteEnabled ? "#238636" : "#21262d",
+                            color: autoExecuteEnabled ? "white" : "#7d8590",
+                            border: `1px solid ${autoExecuteEnabled ? "#238636" : "#30363d"}`,
+                            borderRadius: 999,
+                            cursor: autoExecuteSaving ? "wait" : "pointer",
+                            minWidth: 80,
+                          }}
+                        >
+                          {autoExecuteEnabled ? "Enabled" : "Disabled"}
+                        </button>
+                      </div>
+                    )}
+
+                    {jiraConfigured !== true ? (
+                      <button
+                        onClick={() => setShowJiraConnectModal(true)}
+                        style={{
+                          padding: "4px 10px",
+                          fontSize: 10,
+                          height: 22,
+                          background: "#21262d",
+                          color: "#7d8590",
+                          border: "1px solid #30363d",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          marginBottom: 8,
+                        }}
+                      >
+                        Connect Jira
+                      </button>
+                    ) : (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+                        <button
+                          onClick={() => {
+                            setJiraFilterByRepo((v) => {
+                              const next = !v;
+                              try {
+                                localStorage.setItem("jiraFilterByRepo", String(next));
+                              } catch { /* ignore */ }
+                              fetchJiraTests(next);
+                              return next;
+                            });
+                          }}
+                          disabled={jiraLoading}
+                          style={{
+                            padding: "4px 6px",
+                            fontSize: 10,
+                            height: 22,
+                            background: jiraFilterByRepo ? "#238636" : "#21262d",
+                            color: jiraFilterByRepo ? "white" : "#7d8590",
+                            border: `1px solid ${jiraFilterByRepo ? "#238636" : "#30363d"}`,
+                            borderRadius: 6,
+                            cursor: jiraLoading ? "wait" : "pointer",
+                          }}
+                          title={jiraFilterByRepo ? "Filter: show only issues labeled with this repo" : "Filter: show all unresolved issues in the project"}
+                        >
+                          {jiraFilterByRepo ? "This repo" : "Show all"}
+                        </button>
+                        <button
+                          onClick={() => setShowJiraDisconnectConfirm(true)}
+                          style={{
+                            padding: "4px 6px",
+                            fontSize: 10,
+                            height: 22,
+                            background: "transparent",
+                            color: "#8b949e",
+                            border: "1px solid #30363d",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                          }}
+                          title="Disconnect Jira"
+                        >
+                          Disconnect
+                        </button>
+                      </div>
+                    )}
+
+                    {staleMismatches.length > 0 && jiraConfigured === true && (
+                      <div
+                        style={{
+                          marginBottom: 8,
+                          padding: "8px 10px",
+                          background: "rgba(210, 153, 34, 0.1)",
+                          border: "1px solid rgba(210, 153, 34, 0.4)",
+                          borderRadius: 6,
+                          fontSize: 11,
+                        }}
+                      >
+                        <div style={{ color: "#d29922", fontWeight: 600, marginBottom: 6 }}>
+                          {staleMismatches.length} issue{staleMismatches.length !== 1 ? "s" : ""} may be stale
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                          {staleMismatches.map((m) => {
+                            const baseUrl =
+                              jiraIssues.find((i) => i.key === m.key)?.baseUrl ??
+                              jiraIssues[0]?.baseUrl;
+                            return (
+                              <div
+                                key={m.key}
+                                style={{
+                                  padding: "4px 6px",
+                                  background: "#0d1117",
+                                  borderRadius: 4,
+                                  borderLeft: "2px solid #d29922",
+                                }}
+                              >
+                                {baseUrl ? (
+                                  <a
+                                    href={`${baseUrl}/browse/${m.key}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ color: "#58a6ff", textDecoration: "none", fontWeight: 500 }}
+                                  >
+                                    {m.key}
+                                  </a>
+                                ) : (
+                                  <span style={{ color: "#e6edf3", fontWeight: 500 }}>{m.key}</span>
+                                )}
+                                <span style={{ color: "#7d8590", marginLeft: 4 }}>— {m.summary}</span>
+                                <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
+                                  {m.reason === "orphaned"
+                                    ? "Module deleted"
+                                    : m.reason === "changed"
+                                      ? "Module fingerprint changed"
+                                      : m.reason}
+                                  {m.storedModule && (
+                                    <span style={{ marginLeft: 4 }}>({m.storedModule})</span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {jiraError && (
+                      jiraError === "No project selected" ? (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            marginBottom: 8,
+                            padding: "6px 10px",
+                            borderRadius: 999,
+                            border: "1px solid #30363d",
+                            background: "#111827",
+                            color: "#9ca3af",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                          }}
+                        >
+                          <span
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: "#4b5563",
+                            }}
+                          />
+                          <span>{jiraError}</span>
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 11, color: "#f85149", marginBottom: 8 }}>{jiraError}</div>
+                      )
+                    )}
+
+                    <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11 }}>
+                      {jiraIssues.length === 0 && !jiraLoading && !jiraError && (
+                        <div
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            padding: "4px 8px",
+                            borderRadius: 999,
+                            border: "1px solid #30363d",
+                            background: "#0d1117",
+                            color: "#7d8590",
+                            marginBottom: 4,
+                          }}
+                        >
+                          {jiraConfigured !== true
+                            ? "Connect Jira to link architecture violations to issues"
+                            : activeWorkspaceId && !jiraProjectKeyReady
+                              ? "Loading Jira issues…"
+                              : !jiraProjectKey && activeWorkspaceId
+                                ? "Choose a project above to view Jira issues"
+                                : "No unresolved Jira issues for this project"}
+                        </div>
+                      )}
+                      {jiraIssues.map((j) => {
+                        const canAddToRepo =
+                          !jiraFilterByRepo &&
+                          jiraRepoName &&
+                          !(j.labels ?? []).includes(jiraRepoName);
+                        return (
+                          <div
+                            key={j.key}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "4px 0",
+                              borderBottom: "1px solid #21262d",
+                            }}
+                          >
+                            {j.priority && (
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  padding: "2px 6px",
+                                  borderRadius: 4,
+                                  fontWeight: 600,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
+                                  background:
+                                    /high|critical|highest|high/i.test(j.priority)
+                                      ? "#f8514922"
+                                      : /medium|medium/i.test(j.priority)
+                                        ? "#eab30822"
+                                        : "#1e2d4544",
+                                  color:
+                                    /high|critical|highest|high/i.test(j.priority)
+                                      ? "#f85149"
+                                      : /medium|medium/i.test(j.priority)
+                                        ? "#eab308"
+                                        : "#94a3b8",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {j.priority}
+                              </span>
+                            )}
+                            <a
+                              href={`${j.baseUrl}/browse/${j.key}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{
+                                flex: 1,
+                                minWidth: 0,
+                                color: "#58a6ff",
+                                textDecoration: "none",
+                              }}
+                            >
+                              <span style={{ color: "#8b949e" }}>{j.key}</span> {j.summary}
+                              <span style={{ color: "#7d8590", marginLeft: 6 }}>{j.status}</span>
+                            </a>
+                            {canAddToRepo && (
+                              <button
+                                onClick={() => addLabelToIssue(j.key, jiraRepoName!)}
+                                style={{
+                                  padding: "2px 6px",
+                                  fontSize: 10,
+                                  height: 20,
+                                  flexShrink: 0,
+                                  background: "#21262d",
+                                  color: "#58a6ff",
+                                  border: "1px solid #30363d",
+                                  borderRadius: 4,
+                                  cursor: "pointer",
+                                }}
+                              >
+                                + Repo
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </DashboardCard>
+            </div>
           </div>
         )}
 
@@ -9269,12 +9467,13 @@ export default function App() {
           <div ref={workspaceDropUpRef} style={{ marginTop: 12, position: "relative" }}>
           <button
             onClick={() => {
-                if (showWorkspaceDropUp) {
-                  setShowWorkspaceDropUp(false);
-                } else {
-                  setShowWorkspaceDropUp(true);
-                  fetchSavedWorkspaces();
-                }
+              if (showWorkspaceDropUp) {
+                setShowWorkspaceDropUp(false);
+              } else {
+                setShowWorkspaceDropUp(true);
+                fetchSavedWorkspaces();
+                fetchArchivedWorkspaces();
+              }
             }}
             style={{
                 width: "100%",
@@ -9359,11 +9558,159 @@ export default function App() {
                         fontSize: 12,
                         cursor: loadingWorkspaceId ? "wait" : "pointer",
                         textAlign: "left",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
                       }}
                     >
-                      {loadingWorkspaceId === ws.id ? "⟳ " : ""}{ws.name}
+                      <div
+                        style={{
+                          width: 40,
+                          height: 30,
+                          flexShrink: 0,
+                          borderRadius: 4,
+                          overflow: "hidden",
+                          background: "#161b22",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        {ws.thumbnail_base64 ? (
+                          <img
+                            src={`data:image/png;base64,${ws.thumbnail_base64}`}
+                            alt=""
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                        ) : (
+                          <span
+                            style={{
+                              fontSize: 14,
+                              fontWeight: 600,
+                              color: "#60a5fa",
+                              fontFamily: "monospace",
+                            }}
+                          >
+                            {(ws.name || "?")[0].toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {loadingWorkspaceId === ws.id ? "⟳ " : ""}
+                          {ws.name}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 10,
+                            color: "#9ca3af",
+                            marginTop: 2,
+                            display: "flex",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          {ws.last_scan_at && (
+                            <span>scanned {new Date(ws.last_scan_at).toLocaleDateString()}</span>
+                          )}
+                          <span>{(ws.node_count ?? 0)} nodes</span>
+                          <span>{(ws.violation_count ?? 0)} violations</span>
+                        </div>
+                      </div>
                     </button>
                   ))
+                )}
+                {accessToken && (
+                  <>
+                    <div style={{ height: 1, background: "#30363d", margin: "8px 8px 0" }} />
+                    <div style={{ padding: "8px 12px 4px", fontSize: 10, color: "#7d8590", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      Archived
+                    </div>
+                    {loadingArchived ? (
+                      <div style={{ padding: "12px", color: "#7d8590", fontSize: 12 }}>Loading…</div>
+                    ) : archivedWorkspaces.length === 0 ? (
+                      <div style={{ padding: "12px", color: "#7d8590", fontSize: 12 }}>No archived workspaces</div>
+                    ) : (
+                      archivedWorkspaces.map((ws) => (
+                        <div
+                          key={ws.id}
+                          style={{
+                            padding: "6px 12px",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            fontSize: 11,
+                            color: "#9ca3af",
+                          }}
+                        >
+                          <span
+                            style={{
+                              flex: 1,
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={ws.name}
+                          >
+                            {ws.name}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await fetch(`${API_BASE}/workspaces/${ws.id}/restore`, {
+                                  method: "POST",
+                                  headers: { Authorization: `Bearer ${accessToken}` },
+                                });
+                                await fetchSavedWorkspaces();
+                                await fetchArchivedWorkspaces();
+                              } catch {
+                                // ignore
+                              }
+                            }}
+                            style={{
+                              fontSize: 10,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              border: "1px solid #2563eb",
+                              background: "transparent",
+                              color: "#93c5fd",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Restore
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (!confirm("Permanently delete this workspace?")) return;
+                              try {
+                                await fetch(`${API_BASE}/workspaces/${ws.id}?hard=true`, {
+                                  method: "DELETE",
+                                  headers: { Authorization: `Bearer ${accessToken}` },
+                                });
+                                await fetchArchivedWorkspaces();
+                              } catch {
+                                // ignore
+                              }
+                            }}
+                            style={{
+                              fontSize: 10,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              border: "1px solid #dc2626",
+                              background: "transparent",
+                              color: "#fca5a5",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -9713,7 +10060,7 @@ export default function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>Import DocLittle todos</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#e5e7eb" }}>Import todos</div>
               <button
                 type="button"
                 onClick={() => !todoImportLoading && setTodoImportOpen(false)}
@@ -10271,12 +10618,304 @@ export default function App() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 4,
+            gap: 8,
             padding: "8px 12px",
             borderBottom: "1px solid #30363d",
             flexShrink: 0,
           }}
         >
+          {mainViewMode === "graph" && graph && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 16 }}>
+              {workspaceTitleEditing && handleRenameWorkspaceTitle ? (
+                <input
+                  autoFocus
+                  value={workspaceTitleDraft}
+                  maxLength={80}
+                  onChange={(e) => setWorkspaceTitleDraft(e.target.value)}
+                  onBlur={() => {
+                    const t = workspaceTitleDraft.trim();
+                    if (t) handleRenameWorkspaceTitle(t);
+                    setWorkspaceTitleEditing(false);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const t = workspaceTitleDraft.trim();
+                      if (t) handleRenameWorkspaceTitle(t);
+                      setWorkspaceTitleEditing(false);
+                    } else if (e.key === "Escape") {
+                      setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                      setWorkspaceTitleEditing(false);
+                    }
+                  }}
+                  style={{
+                    width: 140,
+                    padding: "2px 6px",
+                    fontSize: 11,
+                    background: "#21262d",
+                    border: "1px solid #30363d",
+                    borderRadius: 4,
+                    color: "#e6edf3",
+                    outline: "none",
+                  }}
+                />
+              ) : (
+                <span
+                  onClick={() => {
+                    if (handleRenameWorkspaceTitle) {
+                      setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                      setWorkspaceTitleEditing(true);
+                    }
+                  }}
+                  title={handleRenameWorkspaceTitle ? "Click to rename" : undefined}
+                  style={{
+                    fontSize: 11,
+                    color: "#e6edf3",
+                    maxWidth: 140,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    cursor: handleRenameWorkspaceTitle ? "pointer" : "default",
+                  }}
+                >
+                  {graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace")}
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={!handleSaveWorkspace || saveLoading || !activeWorkspaceId || graph.nodes.length === 0}
+                title={handleSaveWorkspace ? (saveStatus === "saved" ? "Saved" : "Save workspace") : "Sign in to save"}
+                onClick={async () => {
+                  if (!handleSaveWorkspace || saveLoading || !activeWorkspaceId) return;
+                  setSaveLoading(true);
+                  setSaveStatus("idle");
+                  try {
+                    await handleSaveWorkspace();
+                    setSaveStatus("saved");
+                    if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
+                    saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 1500);
+                  } catch {
+                    setSaveStatus("error");
+                    if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
+                    saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 2500);
+                  } finally {
+                    setSaveLoading(false);
+                  }
+                }}
+                style={{
+                  padding: "2px 8px",
+                  fontSize: 10,
+                  borderRadius: 4,
+                  border: "1px solid #238636",
+                  background: "#238636",
+                  color: "white",
+                  cursor: !handleSaveWorkspace || saveLoading || !activeWorkspaceId ? "not-allowed" : "pointer",
+                  opacity: !handleSaveWorkspace || saveLoading || !activeWorkspaceId ? 0.5 : 1,
+                }}
+              >
+                {saveLoading ? "…" : saveStatus === "saved" ? "Saved" : "Save"}
+              </button>
+              <button
+                type="button"
+                disabled={!handleShare || shareLoading}
+                title={handleShare ? "Get share link" : "Sign in to share"}
+                onClick={async () => {
+                  if (!handleShare || shareLoading) return;
+                  setShareLoading(true);
+                  try {
+                    const r = await handleShare();
+                    if (r?.url) {
+                      await navigator.clipboard.writeText(r.url);
+                      setShareCopied(true);
+                      if (shareCopiedTimeoutRef.current) clearTimeout(shareCopiedTimeoutRef.current);
+                      shareCopiedTimeoutRef.current = setTimeout(() => setShareCopied(false), 1500);
+                    }
+                  } finally {
+                    setShareLoading(false);
+                  }
+                }}
+                style={{
+                  padding: "2px 8px",
+                  fontSize: 10,
+                  borderRadius: 4,
+                  border: "1px solid #1f6feb",
+                  background: shareCopied ? "#238636" : "#1f6feb",
+                  color: "white",
+                  cursor: !handleShare || shareLoading ? "not-allowed" : "pointer",
+                  opacity: !handleShare || shareLoading ? 0.5 : 1,
+                }}
+              >
+                {shareLoading ? "…" : shareCopied ? "Copied" : "Share"}
+              </button>
+              <div style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowWorkspaceMenu((m) => !m)}
+                  style={{
+                    padding: "2px 6px",
+                    fontSize: 10,
+                    borderRadius: 4,
+                    border: "1px solid #30363d",
+                    background: "transparent",
+                    color: "#8b949e",
+                    cursor: "pointer",
+                  }}
+                >
+                  ⋮
+                </button>
+                {showWorkspaceMenu && (
+                  <>
+                    <div
+                      style={{ position: "fixed", inset: 0, zIndex: 40 }}
+                      onClick={() => setShowWorkspaceMenu(false)}
+                    />
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: "100%",
+                        left: 0,
+                        marginTop: 4,
+                        background: "#161b22",
+                        border: "1px solid #30363d",
+                        borderRadius: 6,
+                        padding: 6,
+                        minWidth: 160,
+                        zIndex: 41,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                          setWorkspaceTitleEditing(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={autosaveEnabled}
+                          onChange={(e) => setAutosaveEnabled(e.target.checked)}
+                          style={{ accentColor: "#238636" }}
+                        />
+                        Remember on device
+                      </label>
+                      {activeWorkspaceId && handleDeleteWorkspace && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowDeleteConfirm(true);
+                            setShowWorkspaceMenu(false);
+                          }}
+                          style={{
+                            display: "block",
+                            width: "100%",
+                            padding: "6px 8px",
+                            fontSize: 11,
+                            background: "none",
+                            border: "none",
+                            color: "#f85149",
+                            cursor: "pointer",
+                            textAlign: "left",
+                          }}
+                        >
+                          Delete workspace
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+              {showDeleteConfirm && handleDeleteWorkspace && (
+                <div
+                  style={{
+                    position: "fixed",
+                    inset: 0,
+                    background: "rgba(0,0,0,0.5)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    zIndex: 50,
+                  }}
+                  onClick={() => !isDeletingWorkspace && setShowDeleteConfirm(false)}
+                >
+                  <div
+                    style={{
+                      background: "#161b22",
+                      border: "1px solid #30363d",
+                      borderRadius: 8,
+                      padding: 16,
+                      maxWidth: 320,
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div style={{ marginBottom: 12, color: "#e6edf3", fontSize: 13 }}>
+                      Delete this workspace and all its saved graphs?
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                      <button
+                        type="button"
+                        disabled={isDeletingWorkspace}
+                        onClick={() => setShowDeleteConfirm(false)}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          border: "1px solid #30363d",
+                          background: "transparent",
+                          color: "#e6edf3",
+                          fontSize: 12,
+                          cursor: isDeletingWorkspace ? "default" : "pointer",
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDeletingWorkspace}
+                        onClick={async () => {
+                          await handleDeleteWorkspace();
+                          setShowDeleteConfirm(false);
+                        }}
+                        style={{
+                          padding: "6px 12px",
+                          borderRadius: 6,
+                          border: "1px solid #f85149",
+                          background: "#f85149",
+                          color: "white",
+                          fontSize: 12,
+                          cursor: isDeletingWorkspace ? "wait" : "pointer",
+                        }}
+                      >
+                        {isDeletingWorkspace ? "Deleting…" : "Delete"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {(["graph", "board"] as const).map((mode) => (
             <button
               key={mode}
@@ -10304,6 +10943,64 @@ export default function App() {
               {mode.charAt(0).toUpperCase() + mode.slice(1)}
             </button>
           ))}
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Theme</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setCanvasTheme((prev) => (prev === "dark" ? "light" : "dark"))
+                }
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 10,
+                  borderRadius: 999,
+                  border: "1px solid #30363d",
+                  background: canvasTheme === "dark" ? "#020617" : "#e5e7eb",
+                  color: canvasTheme === "dark" ? "#e5e7eb" : "#020617",
+                  cursor: "pointer",
+                }}
+              >
+                {canvasTheme === "dark" ? "Dark" : "Light"}
+              </button>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Presentation</span>
+              <button
+                type="button"
+                onClick={() => setPresentationMode((p) => !p)}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 10,
+                  borderRadius: 999,
+                  border: presentationMode ? "1px solid #60a5fa" : "1px solid #30363d",
+                  background: presentationMode ? "rgba(96,165,250,0.2)" : "transparent",
+                  color: presentationMode ? "#93c5fd" : "#9ca3af",
+                  cursor: "pointer",
+                }}
+              >
+                {presentationMode ? "On" : "Off"}
+              </button>
+              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Density</span>
+              <button
+                type="button"
+                onClick={() =>
+                  setCanvasDensity((prev) => (prev === "standard" ? "compact" : "standard"))
+                }
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 10,
+                  borderRadius: 999,
+                  border: "1px solid #30363d",
+                  background: canvasDensity === "standard" ? "#0f172a" : "#e5e7eb",
+                  color: canvasDensity === "standard" ? "#e5e7eb" : "#020617",
+                  cursor: "pointer",
+                }}
+              >
+                {canvasDensity === "standard" ? "Std" : "Compact"}
+              </button>
+            </div>
+          </div>
         </div>
         {mainViewMode === "graph" && (
         <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
@@ -10334,23 +11031,26 @@ export default function App() {
           }
           proposedNodes={virtualNodes}
           proposedEdges={virtualEdges}
+          theme={canvasTheme}
+          density={canvasDensity}
           ghostNodeStatus={
             virtualNodes.length > 0 &&
             tasksForWorkspace.some((t) => t.kind === "materialize" && t.status === "failed")
               ? "error"
               : undefined
           }
-          onRenameWorkspace={handleRenameWorkspaceTitle}
-          onShare={activeWorkspaceId ? handleShare : undefined}
-          onSave={activeWorkspaceId ? handleSaveWorkspace : undefined}
-          onDeleteWorkspace={activeWorkspaceId ? handleDeleteWorkspace : undefined}
-          isDeletingWorkspace={isDeletingWorkspace}
-          workspaceId={activeWorkspaceId}
+          workspaceId={activeWorkspaceId ?? undefined}
           accessToken={accessToken}
-          autosaveEnabled={autosaveEnabled}
-          onToggleAutosave={setAutosaveEnabled}
           violationBeingFixedKey={violationBeingFixed}
           issuesByNodeId={issuesByNodeId}
+          annotations={workspaceAnnotations}
+          onAnnotationsChange={fetchAnnotations}
+          onExplainArea={(prompt) => {
+            setAiQuestion(prompt);
+            chatInputRef.current?.focus();
+          }}
+          presentationMode={presentationMode}
+          onPresentationModeChange={setPresentationMode}
         />
         {railImpactNodeIds && railImpactNodeIds.length > 0 && selectedRailDetail && (
           <div

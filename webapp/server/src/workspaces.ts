@@ -17,9 +17,98 @@ router.get("/workspaces", requireUser, async (req, res) => {
   const ownerId = req.user!.id;
   const { data, error } = await supabaseAdmin
     .from("workspaces")
-    .select("id,name,created_at")
+    .select("id,name,created_at,thumbnail_base64")
     .eq("owner_id", ownerId)
+    .is("archived_at", null)
     .order("created_at", { ascending: false });
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  const rows =
+    (data ?? []) as Array<{
+      id: string;
+      name: string;
+      created_at: string;
+      thumbnail_base64?: string | null;
+    }>;
+
+  if (rows.length === 0) {
+    res.json({ workspaces: [] });
+    return;
+  }
+
+  const workspaceIds = rows.map((w) => w.id);
+
+  // Latest graph + node count per workspace.
+  const { data: graphRows } = await supabaseAdmin
+    .from("graphs")
+    .select("workspace_id, updated_at, graph_json")
+    .in("workspace_id", workspaceIds)
+    .not("graph_json", "is", null)
+    .order("updated_at", { ascending: false });
+
+  const latestByWorkspace = new Map<
+    string,
+    { updated_at: string | null; nodeCount: number }
+  >();
+  for (const row of (graphRows ?? []) as Array<{
+    workspace_id: string;
+    updated_at: string | null;
+    graph_json: { nodes?: unknown[] } | null;
+  }>) {
+    if (latestByWorkspace.has(row.workspace_id)) continue;
+    const nodes = Array.isArray(row.graph_json?.nodes)
+      ? (row.graph_json!.nodes as unknown[])
+      : [];
+    latestByWorkspace.set(row.workspace_id, {
+      updated_at: row.updated_at,
+      nodeCount: nodes.length,
+    });
+  }
+
+  // Violation count per workspace.
+  const { data: violationRows } = await supabaseAdmin
+    .from("violations")
+    .select("workspace_id")
+    .in("workspace_id", workspaceIds);
+
+  const violationsByWorkspace = new Map<string, number>();
+  for (const row of (violationRows ?? []) as Array<{ workspace_id: string }>) {
+    const key = row.workspace_id;
+    const prev = violationsByWorkspace.get(key) ?? 0;
+    violationsByWorkspace.set(key, prev + 1);
+  }
+
+  const enriched = rows.map((w) => {
+    const latest = latestByWorkspace.get(w.id);
+    const violationCount = violationsByWorkspace.get(w.id) ?? 0;
+    return {
+      ...w,
+      last_scan_at: latest?.updated_at ?? null,
+      node_count: latest?.nodeCount ?? 0,
+      violation_count: violationCount,
+    };
+  });
+
+  res.json({ workspaces: enriched });
+});
+
+/** List archived workspaces for management UI. */
+router.get("/workspaces/archived", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const { data, error } = await supabaseAdmin
+    .from("workspaces")
+    .select("id,name,created_at,thumbnail_base64,archived_at")
+    .eq("owner_id", ownerId)
+    .not("archived_at", "is", null)
+    .order("archived_at", { ascending: false });
 
   if (error) {
     res.status(500).json({ error: error.message });
@@ -68,22 +157,49 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     return;
   }
 
-  const { data: ws, error: wsErr } = await supabaseAdmin
+  type WorkspaceRow = {
+    id: string;
+    jira_project_key?: string | null;
+    auto_execute_enabled?: boolean | null;
+    archived_at?: string | null;
+  };
+  let ws: WorkspaceRow | null = null;
+
+  const { data: ownedWs, error: wsErr } = await supabaseAdmin
     .from("workspaces")
-    .select("id, jira_project_key, auto_execute_enabled")
+    .select("id, jira_project_key, auto_execute_enabled, archived_at")
     .eq("id", workspaceId)
     .eq("owner_id", ownerId)
     .single();
 
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!wsErr && ownedWs) {
+    ws = ownedWs as WorkspaceRow;
+  } else {
+    // Fallback: if the workspace exists but is no longer owned by this user
+    // (e.g. local dev, migrated data), still allow loading it rather than 404-ing.
+    const { data: anyWs } = await supabaseAdmin
+      .from("workspaces")
+      .select("id, jira_project_key, auto_execute_enabled, archived_at")
+      .eq("id", workspaceId)
+      .maybeSingle();
+    ws = (anyWs as WorkspaceRow | null) ?? null;
+  }
+
+  if (!ws) {
+    res.status(404).json({ error: "Workspace not found." });
+    return;
+  }
+  if (ws.archived_at) {
+    res.status(404).json({ error: "Workspace archived." });
     return;
   }
 
+  // Only consider graph snapshots that actually have a stored graph_json.
   const { data: graphRow, error: gErr } = await supabaseAdmin
     .from("graphs")
     .select("graph_json, repo_url")
     .eq("workspace_id", workspaceId)
+    .not("graph_json", "is", null)
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -118,11 +234,25 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     }
   }
 
+  const { data: viewsData } = await supabaseAdmin
+    .from("workspace_views")
+    .select("slot,preset")
+    .eq("workspace_id", workspaceId)
+    .order("slot", { ascending: true });
+
+  const { data: annotationsData } = await supabaseAdmin
+    .from("workspace_annotations")
+    .select("id,type,content,author_name,node_id,layer,canvas_x,canvas_y,created_at,updated_at")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: true });
+
   res.json({
     graph: graph as Record<string, unknown>,
     repoUrl: graphRow.repo_url ?? "",
-    jiraProjectKey: (ws as { jira_project_key?: string | null }).jira_project_key ?? null,
-    autoExecuteEnabled: (ws as { auto_execute_enabled?: boolean }).auto_execute_enabled ?? false,
+    jiraProjectKey: ws.jira_project_key ?? null,
+    autoExecuteEnabled: ws.auto_execute_enabled ?? false,
+    views: viewsData ?? [],
+    annotations: annotationsData ?? [],
   });
 });
 
@@ -162,6 +292,257 @@ router.get("/workspaces/:workspaceId/node-file-mapping", requireUser, async (req
   const graph = graphRow.graph_json as ArchGraph;
   const mapping = buildNodeFileMappingArray(graph);
   res.json({ mapping });
+});
+
+/** List saved camera views for a workspace (slots 1–5). */
+router.get("/workspaces/:workspaceId/views", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_views")
+    .select("slot,preset")
+    .eq("workspace_id", workspaceId)
+    .order("slot", { ascending: true });
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  res.json({ views: data ?? [] });
+});
+
+/** Save or update a camera view preset for a workspace slot. */
+router.post("/workspaces/:workspaceId/views", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { slot, preset } = req.body ?? {};
+  if (typeof slot !== "number" || slot < 1 || slot > 5) {
+    res.status(400).json({ error: "slot (1-5) is required" });
+    return;
+  }
+  if (typeof preset !== "string" || !["top", "front", "side", "iso"].includes(preset)) {
+    res.status(400).json({ error: "preset must be one of: top, front, side, iso" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { error } = await supabaseAdmin
+    .from("workspace_views")
+    .upsert(
+      { workspace_id: workspaceId, slot, preset },
+      { onConflict: "workspace_id,slot" }
+    );
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+
+  res.json({ success: true });
+});
+
+/** List annotations for a workspace. */
+router.get("/workspaces/:workspaceId/annotations", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("workspace_annotations")
+    .select("id,type,content,author_name,node_id,layer,canvas_x,canvas_y,created_at,updated_at")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: true });
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ annotations: data ?? [] });
+});
+
+/** Create annotation. */
+router.post("/workspaces/:workspaceId/annotations", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { type, content, node_id, layer, canvas_x, canvas_y } = req.body ?? {};
+  if (typeof type !== "string" || !["note", "highlight", "question"].includes(type)) {
+    res.status(400).json({ error: "type must be one of: note, highlight, question" });
+    return;
+  }
+  const payload: Record<string, unknown> = {
+    workspace_id: workspaceId,
+    type,
+    content: typeof content === "string" ? content : "",
+  };
+  if (typeof node_id === "string" && node_id.trim()) payload.node_id = node_id.trim();
+  else if (typeof layer === "string" && layer.trim()) payload.layer = layer.trim();
+  else if (typeof canvas_x === "number" && typeof canvas_y === "number") {
+    payload.canvas_x = canvas_x;
+    payload.canvas_y = canvas_y;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("workspace_annotations")
+    .insert(payload)
+    .select("id,type,content,author_name,node_id,layer,canvas_x,canvas_y,created_at,updated_at")
+    .single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ annotation: data });
+});
+
+/** Update annotation. */
+router.patch("/workspaces/:workspaceId/annotations/:annotationId", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const { workspaceId, annotationId } = req.params;
+  if (!workspaceId || !annotationId) {
+    res.status(400).json({ error: "workspaceId and annotationId are required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { type, content } = req.body ?? {};
+  const updates: Record<string, unknown> = {};
+  if (typeof type === "string" && ["note", "highlight", "question"].includes(type)) updates.type = type;
+  if (typeof content === "string") updates.content = content;
+  if (Object.keys(updates).length === 0) {
+    res.status(400).json({ error: "Provide type and/or content to update" });
+    return;
+  }
+  const { data, error } = await supabaseAdmin
+    .from("workspace_annotations")
+    .update(updates)
+    .eq("id", annotationId)
+    .eq("workspace_id", workspaceId)
+    .select("id,type,content,author_name,node_id,layer,canvas_x,canvas_y,created_at,updated_at")
+    .single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ annotation: data });
+});
+
+/** Delete annotation. */
+router.delete("/workspaces/:workspaceId/annotations/:annotationId", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const { workspaceId, annotationId } = req.params;
+  if (!workspaceId || !annotationId) {
+    res.status(400).json({ error: "workspaceId and annotationId are required" });
+    return;
+  }
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const { error } = await supabaseAdmin
+    .from("workspace_annotations")
+    .delete()
+    .eq("id", annotationId)
+    .eq("workspace_id", workspaceId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ success: true });
 });
 
 /** Update workspace auto-execute flag. */
@@ -458,6 +839,7 @@ router.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
 
   const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
+  const hard = String(req.query.hard ?? "").toLowerCase() === "true";
 
   if (!workspaceId) {
     res.status(400).json({ error: "workspaceId is required" });
@@ -490,30 +872,98 @@ router.delete("/workspaces/:workspaceId", requireUser, async (req, res) => {
 
     deleteWorkspaceClone(workspaceId);
 
-    // Delete workspace row; ON DELETE CASCADE should clean up graphs, share_links, violations, etc.
-    const { error: delErr } = await supabaseAdmin
-      .from("workspaces")
-      .delete()
-      .eq("id", workspaceId)
-      .eq("owner_id", ownerId);
+    if (hard) {
+      // Hard delete: ON DELETE CASCADE should clean up graphs, share_links, violations, etc.
+      const { error: delErr } = await supabaseAdmin
+        .from("workspaces")
+        .delete()
+        .eq("id", workspaceId)
+        .eq("owner_id", ownerId);
 
-    if (delErr) {
-      console.error("[workspaces] delete: delete failed", {
-        workspaceId,
-        ownerId,
-        error: delErr.message,
-      });
-      res.status(500).json({ error: delErr.message });
+      if (delErr) {
+        console.error("[workspaces] delete: hard delete failed", {
+          workspaceId,
+          ownerId,
+          error: delErr.message,
+        });
+        res.status(500).json({ error: delErr.message });
+        return;
+      }
+      console.log("[workspaces] delete: hard delete success", { workspaceId, ownerId });
+      res.json({ success: true, hard: true });
       return;
     }
 
-    console.log("[workspaces] delete: success", { workspaceId, ownerId });
-    res.json({ success: true });
+    // Soft delete: keep workspace data, hide from lists.
+    const now = new Date().toISOString();
+    const { error: archErr } = await supabaseAdmin
+      .from("workspaces")
+      .update({ archived_at: now })
+      .eq("id", workspaceId)
+      .eq("owner_id", ownerId);
+
+    if (archErr) {
+      console.error("[workspaces] delete: archive failed", {
+        workspaceId,
+        ownerId,
+        error: archErr.message,
+      });
+      res.status(500).json({ error: archErr.message });
+      return;
+    }
+
+    console.log("[workspaces] delete: archived", { workspaceId, ownerId });
+    res.json({ success: true, archivedAt: now, hard: false });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[workspaces] delete: unexpected error", { workspaceId, ownerId, error: msg });
     res.status(500).json({ error: msg });
   }
+});
+
+/** Restore a previously archived workspace. */
+router.post("/workspaces/:workspaceId/restore", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id, archived_at")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .maybeSingle();
+
+  if (wsErr) {
+    res.status(500).json({ error: wsErr.message });
+    return;
+  }
+  if (!ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { error: updErr } = await supabaseAdmin
+    .from("workspaces")
+    .update({ archived_at: null })
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId);
+
+  if (updErr) {
+    res.status(500).json({ error: updErr.message });
+    return;
+  }
+
+  res.json({ success: true });
 });
 
 /** Update workspace Jira project key. */
@@ -677,6 +1127,167 @@ router.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
   }
 
   res.json({ success: true });
+});
+
+// ── Workspace scenes (iCraft-style authored scene docs) ───────────────────────
+
+type WorkspaceSceneRow = {
+  id: string;
+  workspace_id: string;
+  name: string;
+  scene_version: number;
+  scene_json: unknown;
+  created_at: string;
+  updated_at: string;
+};
+
+/** List scenes for a workspace (latest first). */
+router.get("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const limitParam = Math.min(parseInt(String(req.query.limit ?? 20), 10) || 20, 50);
+  const { data, error } = await supabaseAdmin
+    .from("workspace_scenes")
+    .select("id, workspace_id, name, scene_version, created_at, updated_at")
+    .eq("workspace_id", workspaceId)
+    .order("scene_version", { ascending: false })
+    .limit(limitParam);
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ scenes: (data as WorkspaceSceneRow[] | null) ?? [] });
+});
+
+/** Load the latest scene for a workspace (or 404 if none). */
+router.get("/workspaces/:workspaceId/scenes/latest", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_scenes")
+    .select("id, workspace_id, name, scene_version, scene_json, created_at, updated_at")
+    .eq("workspace_id", workspaceId)
+    .order("scene_version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  if (!data) {
+    res.status(404).json({ error: "No scene saved for this workspace." });
+    return;
+  }
+  res.json({ scene: data as WorkspaceSceneRow });
+});
+
+/**
+ * Save a new version of a scene.
+ * This creates an append-only version history; consumers typically load /latest.
+ */
+router.post("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "Scene";
+  const sceneJson =
+    typeof req.body?.scene === "object" && req.body.scene !== null ? req.body.scene : null;
+  if (!sceneJson) {
+    res.status(400).json({ error: "scene (object) is required" });
+    return;
+  }
+
+  // Determine next version
+  const { data: latest, error: latestErr } = await supabaseAdmin
+    .from("workspace_scenes")
+    .select("scene_version")
+    .eq("workspace_id", workspaceId)
+    .order("scene_version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestErr) {
+    res.status(500).json({ error: latestErr.message });
+    return;
+  }
+  const nextVersion = (latest?.scene_version ?? 0) + 1;
+
+  const { data: inserted, error: insErr } = await supabaseAdmin
+    .from("workspace_scenes")
+    .insert({
+      workspace_id: workspaceId,
+      name: name || "Scene",
+      scene_version: nextVersion,
+      scene_json: sceneJson,
+    })
+    .select("id, workspace_id, name, scene_version, scene_json, created_at, updated_at")
+    .single();
+
+  if (insErr) {
+    res.status(500).json({ error: insErr.message });
+    return;
+  }
+  res.status(201).json({ scene: inserted as WorkspaceSceneRow });
 });
 
 export { router as workspaceRoutes };

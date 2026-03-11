@@ -99,6 +99,26 @@ export interface ArchNodeViolationState {
   highestSeverity: "critical" | "high" | "medium" | null;
 }
 
+/** Coarse-grained technical classification for a node. */
+export type TechKind =
+  | "database"
+  | "cache"
+  | "queue"
+  | "message-bus"
+  | "http-api"
+  | "web-ui"
+  | "mobile-app"
+  | "kubernetes"
+  | "container-service"
+  | "serverless"
+  | "object-storage"
+  | "external-saas"
+  | "generic-service"
+  | "unknown";
+
+/** Optional cloud provider hint for tech-specific rendering. */
+export type CloudProvider = "aws" | "gcp" | "azure" | "other" | "unknown";
+
 export interface ArchNode {
   id: string;
   label: string;
@@ -129,6 +149,14 @@ export interface ArchNode {
   description?: string;
   /** Semantic signals for AI (exports, external libs used) */
   semanticSignals: SemanticSignals;
+  /** Tech classification for richer 2D/3D visuals (DB, queue, k8s, etc.). */
+  techKind?: TechKind;
+  /** Cloud provider hint when applicable. */
+  cloudProvider?: CloudProvider;
+  /** Free-form tags for UI rendering (k8s, API, DB, external, etc.). */
+  tags?: string[];
+  /** Icon key for mapping to specific glyph/mesh on the frontend. */
+  iconKey?: string;
   /**
    * File paths in this module. Always relative to project root (e.g. "src/middleware/routes.ts").
    * Use path.join(graph.projectRoot, f) to get an absolute path.
@@ -167,7 +195,7 @@ export interface ArchEdge {
   id: string;
   source: string;
   target: string;
-  type: "import" | "reexport" | "dynamic";
+  type: "import" | "reexport" | "dynamic" | "runtime";
   isDrift: boolean;
   driftReason?: string;
   /** architectural = cross-layer load-bearing, utility = helpers/config, config = env reads */
@@ -285,6 +313,61 @@ export interface AgentTraceEntry {
     logicPathStep?: string;
     filePath?: string;
   };
+}
+
+// ── Scene model (iCraft-style authored scenes) ────────────────────────────────
+
+/** Saved camera preset for 3D views. */
+export interface CameraPreset {
+  id: string;
+  name: string;
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+}
+
+/**
+ * Scene document stored per workspace.
+ * Intentionally separated from `ArchGraph` so authored layout/assets/states persist across rescans.
+ */
+export interface WorkspaceSceneDoc {
+  /** Schema version for forward migrations of scene_json. */
+  schemaVersion: number;
+  /** Scene-level settings (grid, theme, etc.). */
+  settings?: Record<string, unknown>;
+  /** Objects in the scene (2D or 3D). */
+  objects: Array<{
+    id: string;
+    kind: "node" | "group" | "plate" | "annotation" | "link" | "custom";
+    /** Optional link back to scanned graph nodes. */
+    archNodeId?: string;
+    /** Free-form props; renderer/editor specific. */
+    props?: Record<string, unknown>;
+    /** Transform in world/canvas space. */
+    transform?: {
+      position?: { x: number; y: number; z?: number };
+      rotation?: { x: number; y: number; z: number };
+      scale?: { x: number; y: number; z?: number };
+    };
+  }>;
+  /** Optional state/slide system (presentation). */
+  states?: Array<{
+    id: string;
+    name: string;
+    cameraPresetId?: string;
+    objectOverrides?: Record<string, Record<string, unknown>>;
+  }>;
+  /** Saved camera presets for this workspace scene. */
+  cameraPresets?: CameraPreset[];
+}
+
+export interface WorkspaceScene {
+  id: string;
+  workspaceId: string;
+  name: string;
+  sceneVersion: number;
+  scene: WorkspaceSceneDoc;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /** Extension host → webview messages */

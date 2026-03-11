@@ -1,18 +1,22 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
-import type { ArchGraph, ArchNode } from "./types";
+import { Html } from "@react-three/drei";
+import type { ArchGraph, ArchNode, WorkspaceAnnotation } from "./types";
 import { computeDepthLayout } from "./layout/depthLayout";
 import { computeLayerLayout } from "./layout/layerLayout";
-import { layoutTo3D } from "./layout/layoutTo3D";
+import { layoutTo3D, layerToY3D, LAYOUT_SCALE } from "./layout/layoutTo3D";
+import { isFlagEnabled } from "./featureFlags";
 
 const CARD_W = 1.5;
 const CARD_H = 0.9;
 const CARD_D = 0.12;
+const GRID_DIVISIONS = 80;
+const INSTANCED_THRESHOLD = 50;
 import { NodeCard3D } from "./NodeCard3D";
 import { NodesInstanced } from "./NodesInstanced";
 import { LayerPlane3D } from "./LayerPlane3D";
 import { Edge3D } from "./Edge3D";
-import { CameraControls3D, SnapButtons3D } from "./CameraControls3D";
+import { CameraControls3D, SnapButtons3D, type ViewPreset, DEFAULT_CAM_POS } from "./CameraControls3D";
 import { SceneLighting } from "./SceneLighting";
 import { SceneAnimations } from "./SceneAnimations";
 
@@ -30,6 +34,9 @@ interface Arch3DViewProps {
   onNodeSelect: (nodeId: string | null) => void;
   legendHighlight?: LegendHighlight | null;
   tracePathNodeIds?: string[] | null;
+  workspaceId?: string | null;
+  accessToken?: string | null;
+  annotations?: WorkspaceAnnotation[];
 }
 
 function GlCapture({ glRef }: { glRef: React.MutableRefObject<HTMLCanvasElement | null> }) {
@@ -69,6 +76,9 @@ export function Arch3DView({
   onNodeSelect,
   legendHighlight = null,
   tracePathNodeIds = null,
+  workspaceId,
+  accessToken,
+  annotations = [],
 }: Arch3DViewProps) {
   const isGreenfield =
     graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
@@ -191,6 +201,34 @@ export function Arch3DView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const annotations3D = useMemo(() => {
+    const out: Array<{ ann: WorkspaceAnnotation; pos: [number, number, number] }> = [];
+    for (const ann of annotations) {
+      let x = 0,
+        y = 0,
+        z = 0;
+      if (ann.node_id) {
+        const p = positions3D.get(ann.node_id);
+        if (!p) continue;
+        x = p.x + 0.08;
+        y = p.y + 0.15;
+        z = p.z;
+      } else if (ann.layer) {
+        const band = layerBands.find((b) => b.layer === ann.layer);
+        if (!band) continue;
+        x = (band.x + band.width / 2) * LAYOUT_SCALE;
+        y = layerToY3D(band.layer) + 0.2;
+        z = band.y * LAYOUT_SCALE;
+      } else if (typeof ann.canvas_x === "number" && typeof ann.canvas_y === "number") {
+        x = ann.canvas_x * LAYOUT_SCALE;
+        y = layerToY3D("Uncategorized") + 0.2;
+        z = ann.canvas_y * LAYOUT_SCALE;
+      } else continue;
+      out.push({ ann, pos: [x, y, z] });
+    }
+    return out;
+  }, [annotations, positions3D, layerBands]);
+
   const nodeCards = useMemo(() => {
     const out: Array<{ node: ArchNode & { isVirtual?: boolean; isVirtualError?: boolean }; pos: [number, number, number] }> = [];
     for (const node of nodes) {
@@ -203,6 +241,110 @@ export function Arch3DView({
     return out;
   }, [nodes, positions3D, visibleNodeIds]);
 
+  const [viewPresetSlots, setViewPresetSlots] = useState<Record<number, ViewPreset | undefined>>({});
+  const [lastSnapPreset, setLastSnapPreset] = useState<ViewPreset>("iso");
+  const [gridDensity, setGridDensity] = useState<"coarse" | "medium" | "fine">("medium");
+  const [gridOpacity, setGridOpacity] = useState<number>(0.22);
+  const API_BASE = "/api";
+  const [fps3d, setFps3d] = useState(0);
+
+  useEffect(() => {
+    if (!isFlagEnabled("perf_hud")) return;
+    let frames = 0;
+    let last = performance.now();
+    let raf = window.requestAnimationFrame(function loop() {
+      const now = performance.now();
+      frames += 1;
+      if (now - last >= 1000) {
+        setFps3d(frames);
+        frames = 0;
+        last = now;
+      }
+      raf = window.requestAnimationFrame(loop);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+
+  const handleSnap = useCallback((preset: ViewPreset) => {
+    setLastSnapPreset(preset);
+    setSnapPreset(preset);
+  }, []);
+
+  const handleSavePreset = useCallback(
+    (slot: number) => {
+      setViewPresetSlots((prev) => {
+        const existing = prev[slot];
+        // If a preset exists, jumping to it is just another snap.
+        if (existing) {
+          setSnapPreset(existing);
+          return prev;
+        }
+        return { ...prev, [slot]: lastSnapPreset };
+      });
+      if (workspaceId && accessToken) {
+        fetch(`${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/views`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ slot, preset: lastSnapPreset }),
+        }).catch(() => {
+          // ignore errors for now — UI still works locally
+        });
+      }
+    },
+    [lastSnapPreset, workspaceId, accessToken]
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key >= "1" && e.key <= "5") {
+        const slot = Number(e.key);
+        const preset = viewPresetSlots[slot];
+        if (preset) {
+          setSnapPreset(preset);
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [viewPresetSlots]);
+
+  // Load saved camera views for this workspace.
+  useEffect(() => {
+    if (!workspaceId || !accessToken) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/workspaces/${encodeURIComponent(workspaceId)}/views`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          }
+        );
+        if (!res.ok) return;
+        const data: { views?: Array<{ slot: number; preset: ViewPreset }> } =
+          await res.json().catch(() => ({}));
+        if (cancelled || !Array.isArray(data.views)) return;
+        setViewPresetSlots((prev) => {
+          const next = { ...prev };
+          for (const v of data.views!) {
+            if (v.slot >= 1 && v.slot <= 5 && v.preset) {
+              next[v.slot] = v.preset;
+            }
+          }
+          return next;
+        });
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, accessToken]);
+
   return (
     <div
       style={{
@@ -213,7 +355,7 @@ export function Arch3DView({
     >
       <Canvas
         onPointerMissed={() => onNodeSelect(null)}
-        camera={{ position: [0, 14, 22], fov: 50 }}
+        camera={{ position: DEFAULT_CAM_POS, fov: 50 }}
         gl={{
           antialias: true,
           alpha: false,
@@ -226,6 +368,14 @@ export function Arch3DView({
         <SceneLighting
           layerBands={layerBands}
           selectedNodePos={selectedNodePos}
+          gridDivisions={
+            gridDensity === "fine"
+              ? GRID_DIVISIONS * 2
+              : gridDensity === "coarse"
+                ? GRID_DIVISIONS / 2
+                : GRID_DIVISIONS
+          }
+          gridOpacity={gridOpacity}
         />
         <CameraControls3D
           selectedNodePos={selectedNodePos}
@@ -275,6 +425,39 @@ export function Arch3DView({
             />
           );
         })}
+        {annotations3D.map(({ ann, pos }) => {
+          const typeColor =
+            ann.type === "note"
+              ? "#fef08a"
+              : ann.type === "highlight"
+                ? "#bbf7d0"
+                : "#bfdbfe";
+          return (
+            <group key={ann.id} position={pos}>
+              <Html
+                center
+                style={{
+                  minWidth: 120,
+                  maxWidth: 200,
+                  padding: "6px 8px",
+                  background: typeColor,
+                  color: "#0f172a",
+                  borderRadius: 6,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                  fontFamily: "monospace",
+                  fontSize: 10,
+                  lineHeight: 1.35,
+                  pointerEvents: "none",
+                }}
+              >
+                <div style={{ fontWeight: 600, textTransform: "uppercase", fontSize: 9 }}>{ann.type}</div>
+                <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", marginTop: 2 }}>
+                  {ann.content || "(empty)"}
+                </div>
+              </Html>
+            </group>
+          );
+        })}
         {layerBands.map((band) => (
           <LayerPlane3D
             key={band.id}
@@ -282,7 +465,7 @@ export function Arch3DView({
             nodeCount={nodeCountByLayer.get(band.layer) ?? 0}
           />
         ))}
-        {nodeCards.length > 30 ? (
+        {nodeCards.length > INSTANCED_THRESHOLD ? (
           <>
             <NodesInstanced
               nodes={nodeCards.map((c) => c.node)}
@@ -328,7 +511,88 @@ export function Arch3DView({
           ))
         )}
       </Canvas>
-      <SnapButtons3D onSnap={(p) => setSnapPreset(p)} onExport={onExport} />
+      {isFlagEnabled("perf_hud") && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            right: 16,
+            fontSize: 10,
+            padding: "4px 6px",
+            background: "rgba(15,23,42,0.9)",
+            borderRadius: 4,
+            border: "1px solid #1e293b",
+            fontFamily: "monospace",
+            color: "#e5e7eb",
+            pointerEvents: "none",
+          }}
+        >
+          3D · {graph.nodes.length} nodes · {graph.edges.length} edges · {fps3d} fps
+        </div>
+      )}
+      <SnapButtons3D
+        onSnap={handleSnap}
+        onExport={onExport}
+        onSavePreset={handleSavePreset}
+        presetSlots={viewPresetSlots}
+      />
+      {/* Ground grid controls */}
+      <div
+        style={{
+          position: "absolute",
+          left: 16,
+          bottom: 16,
+          zIndex: 21,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          padding: 6,
+          borderRadius: 8,
+          border: "1px solid #1e2d45",
+          background: "rgba(6,12,26,0.9)",
+          backdropFilter: "blur(10px)",
+          fontFamily: "monospace",
+          fontSize: 10,
+          color: "#9ca3af",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            Grid
+          </span>
+          {(["coarse", "medium", "fine"] as const).map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setGridDensity(d)}
+              style={{
+                padding: "2px 6px",
+                borderRadius: 999,
+                border:
+                  gridDensity === d ? "1px solid #38bdf8" : "1px solid transparent",
+                background:
+                  gridDensity === d ? "rgba(56,189,248,0.16)" : "transparent",
+                color: gridDensity === d ? "#e0f2fe" : "#64748b",
+                cursor: "pointer",
+              }}
+            >
+              {d[0].toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Opacity</span>
+          <input
+            type="range"
+            min={0}
+            max={0.5}
+            step={0.02}
+            value={gridOpacity}
+            onChange={(e) => setGridOpacity(Number(e.target.value))}
+            style={{ flex: 1 }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

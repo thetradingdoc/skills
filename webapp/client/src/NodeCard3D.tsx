@@ -24,6 +24,23 @@ const KIND_ICON: Record<string, string> = {
   unknown: "◈",
 };
 
+const TECH_COLOR: Record<string, string> = {
+  "database": "#22c55e",
+  "cache": "#f97316",
+  "queue": "#eab308",
+  "message-bus": "#a855f7",
+  "http-api": "#60a5fa",
+  "web-ui": "#38bdf8",
+  "mobile-app": "#f472b6",
+  "kubernetes": "#3b82f6",
+  "container-service": "#a78bfa",
+  "serverless": "#facc15",
+  "object-storage": "#fb923c",
+  "external-saas": "#f97316",
+  "generic-service": "#e5e7eb",
+  "unknown": "#9ca3af",
+};
+
 const CARD_W = 1.5;
 const CARD_H = 0.9;
 const CARD_D = 0.12;
@@ -214,11 +231,19 @@ export function NodeCard3D({
   const isVirtual = node.isVirtual ?? false;
   const health = node.health ?? { hasDocs: false, hasTests: false, hasContext: false };
   const healthy = health.hasDocs && health.hasTests && health.hasContext;
+  const techKind = (node as any).techKind as string | undefined;
   const matMainRef = useRef<THREE.MeshStandardMaterial>(null);
   useSceneAnimation(({ elapsed }) => {
-    if (isDrift && matMainRef.current) {
-      const t = Math.sin(elapsed * 2) * 0.5 + 0.5;
-      matMainRef.current.emissiveIntensity = 0.25 + t * 0.4;
+    if (matMainRef.current) {
+      let base = isSelected ? 0.9 : outlineOpacity > 0 ? 0.4 : 0.05;
+      if (isDrift) {
+        const t = Math.sin(elapsed * 2) * 0.5 + 0.5;
+        base = 0.25 + t * 0.4;
+      } else if (severity === "critical" || severity === "high") {
+        const t = Math.sin(elapsed * 1.8) * 0.5 + 0.5;
+        base = (severity === "critical" ? 0.4 : 0.25) + t * 0.35;
+      }
+      matMainRef.current.emissiveIntensity = base;
     }
   });
 
@@ -256,15 +281,15 @@ export function NodeCard3D({
           metalness={isVirtual ? 0.2 : healthy ? 0.4 : 0.2}
           emissive={new THREE.Color(isDrift ? "#ef4444" : cfg.accent)}
           emissiveIntensity={isDrift ? 0.3 : isSelected ? 0.9 : outlineOpacity > 0 ? 0.4 : 0.05}
-          color="#0c1220"
+          color={techKind && TECH_COLOR[techKind] ? TECH_COLOR[techKind] : "#0c1220"}
           transparent={opacity < 1 || isVirtual}
           opacity={isVirtual ? 0.6 : opacity}
           wireframe={isVirtual}
         />
         ) : (
         <meshStandardMaterial
-          color={cfg.accent}
-          emissive={new THREE.Color(cfg.accent)}
+          color={techKind && TECH_COLOR[techKind] ? TECH_COLOR[techKind] : cfg.accent}
+          emissive={new THREE.Color(techKind && TECH_COLOR[techKind] ? TECH_COLOR[techKind] : cfg.accent)}
           emissiveIntensity={0.2}
           roughness={isVirtual ? 0.95 : healthy ? 0.5 : 0.95}
           metalness={isVirtual ? 0.2 : healthy ? 0.4 : 0.2}
@@ -274,6 +299,54 @@ export function NodeCard3D({
         />
         )}
       </mesh>
+
+      {/* Tech-specific glyph mesh above the card (DB cylinder, queue torus, etc.) */}
+      {!isVirtual && techKind && (
+        <mesh position={[0, CARD_H / 2 + 0.2, CARD_D / 2 + 0.04]}>
+          {(() => {
+            const color = TECH_COLOR[techKind] ?? TECH_COLOR.unknown;
+            if (techKind === "database") {
+              return (
+                <>
+                  <cylinderGeometry args={[0.18, 0.18, 0.16, 24]} />
+                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.3} />
+                </>
+              );
+            }
+            if (techKind === "queue" || techKind === "message-bus") {
+              return (
+                <>
+                  <torusGeometry args={[0.18, 0.06, 12, 32]} />
+                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.3} />
+                </>
+              );
+            }
+            if (techKind === "kubernetes" || techKind === "container-service") {
+              return (
+                <>
+                  <octahedronGeometry args={[0.18, 0]} />
+                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.3} />
+                </>
+              );
+            }
+            if (techKind === "http-api" || techKind === "web-ui" || techKind === "mobile-app") {
+              return (
+                <>
+                  <boxGeometry args={[0.34, 0.18, 0.06]} />
+                  <meshStandardMaterial color={color} roughness={0.4} metalness={0.2} />
+                </>
+              );
+            }
+            // Fallback: small sphere.
+            return (
+              <>
+                <sphereGeometry args={[0.12, 16, 12]} />
+                <meshStandardMaterial color={color} roughness={0.4} metalness={0.2} />
+              </>
+            );
+          })()}
+        </mesh>
+      )}
 
       {/* P8-6: Greenfield ghost nodes - dashed outline when virtual */}
       {isVirtual && (

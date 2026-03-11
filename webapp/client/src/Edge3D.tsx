@@ -24,13 +24,10 @@ interface Edge3DProps {
   tracePathActive?: boolean;
 }
 
-function edgeColor(
-  edge: ArchEdge,
-  srcLayer?: string,
-  tgtLayer?: string
-): string {
+function edgeColor(edge: ArchEdge, srcLayer?: string, tgtLayer?: string): string {
   if (edge.isDrift) return "#ef4444";
   if (edge.isLayerViolation) return "#f59e0b";
+  if (edge.type === "runtime") return "#22c55e";
   const layer = (srcLayer ?? tgtLayer ?? "Uncategorized") as string;
   return LAYER_COLORS[layer]?.top ?? LAYER_COLORS["Uncategorized"].top;
 }
@@ -38,7 +35,7 @@ function edgeColor(
 function edgeRadius(edge: ArchEdge): number {
   if (edge.isDrift) return TUBE_RADII.drift;
   if (edge.isLayerViolation) return TUBE_RADII.violation;
-  return TUBE_RADII.arch;
+  return edge.type === "runtime" ? TUBE_RADII.arch * 0.9 : TUBE_RADII.arch;
 }
 
 export function Edge3D({
@@ -73,7 +70,8 @@ export function Edge3D({
       ),
     [tgtPos.x, tgtPos.y, tgtPos.z]
   );
-  const midY = (start.y + end.y) / 2 + 0.5;
+  const midYBase = (start.y + end.y) / 2;
+  const midY = midYBase + (edge.type === "runtime" ? 1.2 : 0.5);
   const mid = useMemo(
     () =>
       new THREE.Vector3(

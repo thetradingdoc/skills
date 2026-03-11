@@ -20,6 +20,7 @@ import type {
   ArchNode,
   NodeLayer,
   ArchNodeViolationState,
+  WorkspaceAnnotation,
 } from "./types";
 import { NodePopup } from "./NodePopup";
 import { Arch3DView } from "./Arch3DView";
@@ -27,7 +28,9 @@ import { computeDepthLayout } from "./layout/depthLayout";
 import { computeLayerLayout } from "./layout/layerLayout";
 import { NODE_W } from "./layout/canvasConstants";
 import { LAYER_COLORS, LAYER_CFG } from "./layerPalette";
+import { canvasTheme, densityScale, type CanvasDensity, type CanvasThemeName } from "./theme";
 import { filterEdges, type EdgeFilter } from "./analysis/graphAnalyser";
+import { isFlagEnabled } from "./featureFlags";
 
 const DEFAULT_EDGE_FILTER = new Set<EdgeFilter>(["all"]);
 import type { GraphCommand } from "./types";
@@ -52,11 +55,79 @@ const KIND_ICON: Record<string, string> = {
   unknown: "◈",
 };
 
+const TECH_ICON: Record<string, string> = {
+  "database": "🗄️",
+  "cache": "⚡",
+  "queue": "📨",
+  "message-bus": "📡",
+  "http-api": "🌐",
+  "web-ui": "🖥️",
+  "mobile-app": "📱",
+  "kubernetes": "☸️",
+  "container-service": "📦",
+  "serverless": "⚙️",
+  "object-storage": "🗂️",
+  "external-saas": "☁️",
+  "generic-service": "🔧",
+  // additional infra / UI pictograms driven by tags
+  "cdn": "🌀",
+  "api-gateway": "🧭",
+  "redis": "🧱",
+  "mysql": "🍚",
+  "user": "👤",
+  "device": "💻",
+  "laptop": "💻",
+  "mobile": "📱",
+  "unknown": "◻️",
+};
+
+const CLOUD_ICON: Record<string, string> = {
+  aws: "🟧",
+  gcp: "🟦",
+  azure: "🟩",
+  other: "☁️",
+  unknown: "",
+};
+
+// Tech family colors (data / edge / compute / external / ui)
+const TECH_COLOR: Record<string, string> = {
+  // data
+  "database": "#22c55e",
+  "object-storage": "#22c55e",
+  "cache": "#16a34a",
+  "redis": "#ef4444",
+  "mysql": "#0ea5e9",
+  // edge / messaging
+  "queue": "#eab308",
+  "message-bus": "#eab308",
+  "cdn": "#38bdf8",
+  "api-gateway": "#38bdf8",
+  // compute / orchestration
+  "kubernetes": "#3b82f6",
+  "container-service": "#a78bfa",
+  "serverless": "#f97316",
+  // ui / client
+  "http-api": "#60a5fa",
+  "web-ui": "#38bdf8",
+  "mobile-app": "#f472b6",
+  "user": "#f97316",
+  "device": "#64748b",
+  "laptop": "#64748b",
+  "mobile": "#f472b6",
+  // external / generic
+  "external-saas": "#f97316",
+  "generic-service": "#e5e7eb",
+  "unknown": "#9ca3af",
+};
+
 // ── Custom Node ───────────────────────────────────────────────────────────────
 function ArchNodeComponent({
   data,
-}: NodeProps<ArchNode & { isSelected: boolean }>) {
+}: NodeProps<ArchNode & { isSelected: boolean; canvasZoom?: number; density?: CanvasDensity; theme?: CanvasThemeName }>) {
   const node = data;
+  const densityKey: CanvasDensity = (data as any).density ?? "standard";
+  const th: CanvasThemeName = (data as any).theme ?? "dark";
+  const zoom = (data as any).canvasZoom ?? 1;
   const isVirtual = (node as any).isVirtual === true;
   const isVirtualError = (node as any).isVirtualError === true;
   const cfg =
@@ -91,8 +162,51 @@ function ArchNodeComponent({
 
   const kind = (node.kind ?? "unknown") as string;
   const kindIcon = KIND_ICON[kind] ?? KIND_ICON.unknown;
+  const techKind = ((node as any).techKind ?? "unknown") as string;
+  const tags = Array.isArray(node.tags) ? node.tags : [];
+  const tagSet = new Set(tags.map((t) => t.toLowerCase()));
+  let iconKey = techKind as string;
+  if (iconKey === "generic-service" || iconKey === "unknown") {
+    if (tagSet.has("redis")) iconKey = "redis";
+    else if (tagSet.has("mysql")) iconKey = "mysql";
+    else if (tagSet.has("cdn")) iconKey = "cdn";
+    else if (tagSet.has("gateway") || tagSet.has("api-gateway")) iconKey = "api-gateway";
+    else if (tagSet.has("user")) iconKey = "user";
+    else if (tagSet.has("mobile")) iconKey = "mobile";
+  }
+  const techIcon = TECH_ICON[iconKey] ?? TECH_ICON.unknown;
+  const techColor = TECH_COLOR[iconKey] ?? "#9ca3af";
+  const cloudProvider = ((node as any).cloudProvider ?? "unknown") as string;
+  const cloudIcon = CLOUD_ICON[cloudProvider] ?? "";
   const toolCount = node.toolCount ?? 0;
   const hasRag = !!node.hasRAG;
+  const vsSummary = vs?.highestSeverity ?? null;
+  const hasTraces = node.hasTraces === true;
+  const densityFactor = densityScale[densityKey];
+  const zoomFactor = zoom < 0.5 ? 0.85 : zoom > 1.3 ? 1.15 : 1;
+  const sizeFactor = densityFactor * zoomFactor;
+  const iconSize = 18 * sizeFactor;
+  const labelSize = 11 * sizeFactor;
+  const showLayer = zoom >= 0.55;
+  const showKindTech = zoom >= 0.65;
+  const showDescription = zoom >= 0.85 && densityKey === "standard";
+  const showProviderModel = zoom >= 0.8;
+  const showFileCount = zoom >= 0.75;
+  const showHealth = zoom >= 0.8;
+  const showTags = zoom >= 0.85;
+  const fileCount =
+    (node.semanticSignals?.fileCount as number | undefined) ??
+    (Array.isArray(node.files) ? node.files.length : 0);
+  const sizeBucket =
+    fileCount === 0
+      ? "empty"
+      : fileCount <= 2
+        ? "tiny"
+        : fileCount <= 5
+          ? "small"
+          : fileCount <= 10
+            ? "medium"
+            : "large";
 
   return (
     <div style={{ width: NODE_W, minWidth: 0, position: "relative" }}>
@@ -165,7 +279,7 @@ function ArchNodeComponent({
 
       <div
         style={{
-          height: 4,
+          height: 3 * densityFactor,
           position: "relative",
           zIndex: 1,
           background: isVirtual
@@ -235,7 +349,7 @@ function ArchNodeComponent({
                           : `${cfg.accent}88`
                     }`,
           borderRadius: "0 0 8px 8px",
-          padding: "8px 12px 12px",
+          padding: `${8 * densityFactor}px 12px ${12 * densityFactor}px`,
           position: "relative",
           zIndex: 1,
           boxShadow: node.isDrift
@@ -260,34 +374,89 @@ function ArchNodeComponent({
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 5,
+            gap: 8,
             marginBottom: 4,
           }}
         >
-          <span
+          <div
             style={{
-              fontSize: 10,
-              lineHeight: 1,
-            }}
-            title={kind}
-          >
-            {kindIcon}
-          </span>
-          <span
-            style={{
-              fontSize: 7,
-              color: cfg.color,
-              fontFamily: "monospace",
-              letterSpacing: "0.08em",
-              opacity: 0.85,
-              textTransform: "uppercase",
+              width: Math.round(28 * sizeFactor),
+              height: Math.round(28 * sizeFactor),
+              borderRadius: 8,
+              background: "#020617",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: `0 0 0 1px ${techColor}33`,
             }}
           >
-            {node.layer ?? "Uncategorized"}
-          </span>
+            <span
+              style={{
+                fontSize: iconSize,
+                lineHeight: 1,
+              }}
+              title={techKind}
+            >
+              {techIcon}
+            </span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
+            <span
+              style={{
+                fontSize: labelSize,
+                fontWeight: 600,
+                color: "#e2e8f0",
+                fontFamily: "'JetBrains Mono','Fira Code',monospace",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={label}
+            >
+              {label}
+            </span>
+            {showLayer && (
+            <div style={{ display: "flex", alignItems: "center", gap: 4, maxWidth: NODE_W - 60 }}>
+              <span
+                style={{
+                  fontSize: 7 * sizeFactor,
+                  color: cfg.color,
+                  fontFamily: "monospace",
+                  letterSpacing: "0.08em",
+                  opacity: 0.9,
+                  textTransform: "uppercase",
+                }}
+              >
+                {node.layer ?? "Uncategorized"}
+              </span>
+              {cloudIcon && (
+                <span style={{ fontSize: 9, lineHeight: 1, opacity: 0.7 }} title={cloudProvider}>
+                  {cloudIcon}
+                </span>
+              )}
+            </div>
+            )}
+            {showKindTech && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, maxWidth: NODE_W - 60 }}>
+              <span
+                style={{
+                  fontSize: 8 * sizeFactor,
+                  color: "#94a3b8",
+                  fontFamily: "monospace",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                title={`${kind} · ${techKind}`}
+              >
+                {kind} · {techKind}
+              </span>
+            </div>
+            )}
+          </div>
         </div>
 
-        {(node.llmProvider || node.modelVersion) && (
+        {showProviderModel && (node.llmProvider || node.modelVersion) && (
           <div
             style={{
               fontSize: 8,
@@ -301,27 +470,10 @@ function ArchNodeComponent({
           </div>
         )}
 
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: "#e2e8f0",
-            fontFamily: "'JetBrains Mono','Fira Code',monospace",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            lineHeight: 1.3,
-            marginBottom: 3,
-          }}
-          title={label}
-        >
-          {label}
-        </div>
-
-        {node.description && (
+        {showDescription && node.description && (
           <div
             style={{
-              fontSize: 9,
+              fontSize: 9 * sizeFactor,
               color: "#475569",
               lineHeight: 1.4,
               display: "-webkit-box",
@@ -340,52 +492,73 @@ function ArchNodeComponent({
             display: "flex",
             flexWrap: "wrap",
             gap: 4,
-            marginTop: 6,
+            marginTop: 6 * densityFactor,
           }}
         >
-          {hasRag && (
+          {vs && vs.violations?.length > 0 && (
             <span
               style={{
                 fontSize: 7,
-                color: cfg.color,
-                background: cfg.bg,
+                color: canvasTheme[th].badgeViolation,
+                background: "rgba(239,68,68,0.22)",
                 padding: "2px 4px",
                 borderRadius: 3,
                 fontFamily: "monospace",
               }}
-              title="RAG enabled"
+              title={`Violations: ${vs.violations.length}${
+                vsSummary ? ` (highest: ${vsSummary})` : ""
+              }`}
             >
-              RAG
+              V{vs.violations.length}
             </span>
           )}
-          {toolCount > 0 && (
+          {hasTraces && (
             <span
               style={{
                 fontSize: 7,
-                color: cfg.color,
-                background: cfg.bg,
+                color: canvasTheme[th].badgeTrace,
+                background: `${canvasTheme[th].badgeTrace}2e`,
                 padding: "2px 4px",
                 borderRadius: 3,
                 fontFamily: "monospace",
               }}
-              title={`${toolCount} tool${toolCount !== 1 ? "s" : ""}`}
+              title="This node has traces recorded"
             >
-              {toolCount}T
+              TR
+            </span>
+          )}
+          {linkedCount > 0 && (
+            <span
+              style={{
+                fontSize: 7,
+                color: canvasTheme[th].badgeJira,
+                background: `${canvasTheme[th].badgeJira}29`,
+                padding: "2px 4px",
+                borderRadius: 3,
+                fontFamily: "monospace",
+              }}
+              title={
+                primaryJiraKey
+                  ? `Primary Jira: ${primaryJiraKey} (${linkedCount} linked)`
+                  : `${linkedCount} linked Jira issue${linkedCount !== 1 ? "s" : ""}`
+              }
+            >
+              J{linkedCount > 1 ? linkedCount : ""}
             </span>
           )}
           {node.isDrift && (
             <span
               style={{
                 fontSize: 7,
-                color: "#ef4444",
-                background: "rgba(239,68,68,0.15)",
+                color: canvasTheme[th].badgeDrift,
+                background: `${canvasTheme[th].badgeDrift}26`,
                 padding: "2px 4px",
                 borderRadius: 3,
                 fontFamily: "monospace",
               }}
               title={node.driftReason ?? "Architecture drift"}
             >
-              drift
+              D
             </span>
           )}
           {depth >= 0 && (
@@ -405,12 +578,22 @@ function ArchNodeComponent({
           )}
         </div>
 
+        {showFileCount && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
-          <span style={{ fontSize: 8, color: "#334155" }}>
-            {Array.isArray(node.files) ? node.files.length : 0} files
+          <span
+            style={{
+              fontSize: 8,
+              color: "#334155",
+              fontFamily: "monospace",
+            }}
+            title={`Approximate size bucket based on file count`}
+          >
+            {fileCount} files · {sizeBucket}
           </span>
         </div>
+        )}
 
+        {showHealth && (
         <div
           style={{
             display: "flex",
@@ -454,6 +637,37 @@ function ArchNodeComponent({
             </div>
           ))}
         </div>
+        )}
+
+        {showTags && tags.length > 0 && (
+          <div
+            style={{
+              marginTop: 5,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 4,
+              maxHeight: 32,
+              overflow: "hidden",
+            }}
+          >
+            {tags.slice(0, 4).map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  fontSize: 7,
+                  color: "#c4d4ff",
+                  background: "rgba(15,23,42,0.9)",
+                  padding: "2px 4px",
+                  borderRadius: 4,
+                  fontFamily: "monospace",
+                }}
+                title={tag}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
 
         {isVirtual && (
           <div
@@ -482,75 +696,7 @@ function ArchNodeComponent({
           </div>
         )}
 
-        {hasViolation && vs && (
-          <div
-            style={{
-              position: "absolute",
-              top: -10,
-              right: -10,
-              width: 20,
-              height: 20,
-              borderRadius: "50%",
-              background: hasCritical
-                ? "#f85149"
-                : hasHigh
-                  ? "#f97316"
-                  : "#eab308",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#0b1120",
-              fontSize: 10,
-              fontWeight: 700,
-            }}
-            title={`${vs!.violations.length} active violation${
-              vs!.violations.length === 1 ? "" : "s"
-            }`}
-          >
-            {vs!.violations.length}
-          </div>
-        )}
-
-        {primaryJiraKey && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: -12,
-              left: "50%",
-              transform: "translateX(-50%)",
-              background: "#1f6feb",
-              color: "#f9fafb",
-              fontSize: 9,
-              fontWeight: 600,
-              padding: "1px 6px",
-              borderRadius: 4,
-              whiteSpace: "nowrap",
-            }}
-            title={`Tracked in Jira as ${primaryJiraKey}`}
-          >
-            {primaryJiraKey}
-          </div>
-        )}
-        {!primaryJiraKey && linkedCount > 0 && (
-          <div
-            style={{
-              position: "absolute",
-              bottom: -12,
-              left: "50%",
-              transform: "translateX(-50%)",
-              background: "#238636",
-              color: "#f9fafb",
-              fontSize: 9,
-              fontWeight: 600,
-              padding: "1px 6px",
-              borderRadius: 4,
-              whiteSpace: "nowrap",
-            }}
-            title={linkedJiraIssues?.map((i) => `${i.key}: ${i.summary}`).join("\n")}
-          >
-            {linkedCount} issue{linkedCount !== 1 ? "s" : ""}
-          </div>
-        )}
+        {/* Micro-badges only: V, TR, J, D, d — semantics in legend */}
 
         <div
           style={{
@@ -800,10 +946,68 @@ function LayerBandComponent({
   );
 }
 
-const nodeTypes = { arch: ArchNodeComponent, band: LayerBandComponent };
+// ── Annotation sticky note (2D) ────────────────────────────────────────────────
+function AnnotationStickyComponent({ data }: NodeProps) {
+  const ann = data as unknown as WorkspaceAnnotation & { onDelete?: (id: string) => void };
+  const typeColor =
+    ann.type === "note"
+      ? "#fef08a"
+      : ann.type === "highlight"
+        ? "#bbf7d0"
+        : "#bfdbfe";
+  return (
+    <div
+      style={{
+        minWidth: 140,
+        maxWidth: 220,
+        padding: "6px 8px",
+        background: typeColor,
+        color: "#0f172a",
+        borderRadius: 4,
+        boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+        fontFamily: "monospace",
+        fontSize: 10,
+        lineHeight: 1.35,
+        transform: "rotate(-1deg)",
+        position: "relative",
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 4 }}>
+        <span style={{ fontWeight: 600, textTransform: "uppercase", fontSize: 9 }}>{ann.type}</span>
+        {ann.onDelete && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              ann.onDelete?.(ann.id);
+            }}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              fontSize: 12,
+              lineHeight: 1,
+              opacity: 0.6,
+            }}
+            title="Delete"
+          >
+            ×
+          </button>
+        )}
+      </div>
+      <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", marginTop: 2 }}>
+        {ann.content || "(empty)"}
+      </div>
+    </div>
+  );
+}
+
+const nodeTypes = { arch: ArchNodeComponent, band: LayerBandComponent, annotation: AnnotationStickyComponent };
 const edgeTypes = { arch: ArchEdgeComponent };
 
 // ── ArchCanvas ────────────────────────────────────────────────────────────────
+
 interface Props {
   graph: ArchGraph;
   selectedNode: string | null;
@@ -825,26 +1029,26 @@ interface Props {
   proposedEdges?: Array<{ fromId: string; toId: string; edgeType?: string }>;
   /** When materialize task failed, ghost nodes show error state (red border). */
   ghostNodeStatus?: "ghost" | "error";
-  /** Called when the user renames the workspace (card title). */
-  onRenameWorkspace?: (name: string) => void;
-  /** Called when the user clicks Share. Returns share URL or null. */
-  onShare?: () => Promise<{ url: string } | null>;
-  /** Called when the user clicks Save. Persists the current workspace graph. */
-  onSave?: () => Promise<void>;
-  /** Called when the user clicks Delete workspace. */
-  onDeleteWorkspace?: () => Promise<void>;
-  /** Whether a workspace delete is currently in flight (disables destructive UI). */
-  isDeletingWorkspace?: boolean;
   /** For NodePopup Traces/Eval tabs. */
   workspaceId?: string | null;
   accessToken?: string | null;
-  /** Autosave toggle state + handler (from App). */
-  autosaveEnabled: boolean;
-  onToggleAutosave: (value: boolean) => void;
   /** Violation key being fixed (Fix Now in progress). Badge shows "fixing" state. */
   violationBeingFixedKey?: string | null;
   /** Jira issues linked to nodes via archNodeId label. Map nodeId -> issues for node badges. */
   issuesByNodeId?: Record<string, Array<{ key: string; summary: string; baseUrl: string }>>;
+  /** Visual theme for the canvas. */
+  theme?: CanvasThemeName;
+  /** Visual density for cards. */
+  density?: CanvasDensity;
+  /** Annotations pinned to nodes/zones/canvas. */
+  annotations?: WorkspaceAnnotation[];
+  /** Called after annotation create/update/delete to refetch. */
+  onAnnotationsChange?: () => Promise<void>;
+  /** When user clicks "Explain this area" in focus mode, called with prompt to pre-fill chat. */
+  onExplainArea?: (prompt: string) => void;
+  /** Presentation mode: hide most controls, step through scenes. */
+  presentationMode?: boolean;
+  onPresentationModeChange?: (value: boolean) => void;
 }
 
 type LegendHighlight =
@@ -865,39 +1069,92 @@ export function ArchCanvas({
   proposedNodes,
   proposedEdges,
   ghostNodeStatus,
-  onRenameWorkspace,
-  onShare,
-  onSave,
-  onDeleteWorkspace,
-  isDeletingWorkspace,
   workspaceId,
   accessToken,
-  autosaveEnabled,
-  onToggleAutosave,
   violationBeingFixedKey,
   issuesByNodeId = {},
+  theme = "dark",
+  density = "standard",
+  annotations = [],
+  onAnnotationsChange,
+  onExplainArea,
+  presentationMode = false,
+  onPresentationModeChange,
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [building, setBuilding] = useState(true);
   const [legendHighlight, setLegendHighlight] = useState<LegendHighlight>(null);
-  const [workspaceTitleEditing, setWorkspaceTitleEditing] = useState(false);
-  const [workspaceTitleDraft, setWorkspaceTitleDraft] = useState("");
-  const [shareUrl, setShareUrl] = useState<string | null>(null);
-  const [shareLoading, setShareLoading] = useState(false);
-  const [shareCopied, setShareCopied] = useState(false);
-  const shareCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [saveLoading, setSaveLoading] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
-  const saveStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [tracePathNodeIds, setTracePathNodeIds] = useState<string[] | null>(null);
   const reactFlowInstanceRef = useRef<{ fitView: (opts?: { padding?: number }) => void } | null>(null);
   const prevGraphKeyRef = useRef<string>("");
   const legendHighlightRef = useRef<LegendHighlight>(null);
   legendHighlightRef.current = legendHighlight;
-  const isAnonymous = !workspaceId && !accessToken;
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
+  const [focusMode, setFocusMode] = useState(false);
+  const [canvasZoom, setCanvasZoom] = useState(1);
+  const [fps2d, setFps2d] = useState(0);
+
+  useEffect(() => {
+    if (!isFlagEnabled("perf_hud")) return;
+    let frames = 0;
+    let last = performance.now();
+    let raf = window.requestAnimationFrame(function loop() {
+      const now = performance.now();
+      frames += 1;
+      if (now - last >= 1000) {
+        setFps2d(frames);
+        frames = 0;
+        last = now;
+      }
+      raf = window.requestAnimationFrame(loop);
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, []);
+
+  const handleDeleteAnnotation = useCallback(
+    async (id: string) => {
+      if (!workspaceId || !accessToken || !onAnnotationsChange) return;
+      try {
+        const API_BASE = "/api";
+        await fetch(`${API_BASE}/workspaces/${workspaceId}/annotations/${id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        await onAnnotationsChange();
+      } catch {
+        // ignore
+      }
+    },
+    [workspaceId, accessToken, onAnnotationsChange]
+  );
+
+  const handleAddAnnotation = useCallback(
+    async (anchor: { nodeId?: string; layer?: string; canvasX?: number; canvasY?: number }, type: "note" | "highlight" | "question") => {
+      if (!workspaceId || !accessToken || !onAnnotationsChange) return;
+      const content = prompt("Annotation content:");
+      if (content == null) return;
+      try {
+        const API_BASE = "/api";
+        const body: Record<string, unknown> = { type, content };
+        if (anchor.nodeId) body.node_id = anchor.nodeId;
+        else if (anchor.layer) body.layer = anchor.layer;
+        else if (typeof anchor.canvasX === "number" && typeof anchor.canvasY === "number") {
+          body.canvas_x = anchor.canvasX;
+          body.canvas_y = anchor.canvasY;
+        } else return;
+        await fetch(`${API_BASE}/workspaces/${workspaceId}/annotations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify(body),
+        });
+        await onAnnotationsChange();
+      } catch {
+        // ignore
+      }
+    },
+    [workspaceId, accessToken, onAnnotationsChange]
+  );
 
   useEffect(() => {
     const total = graph.nodes.length + (proposedNodes?.length ?? 0);
@@ -905,18 +1162,6 @@ export function ArchCanvas({
       reactFlowInstanceRef.current.fitView({ padding: 0.12 });
     }
   }, [graph.nodes.length, graph.generatedAt, proposedNodes?.length]);
-
-  useEffect(() => {
-    setShareUrl(null);
-  }, [graph.generatedAt]);
-
-  useEffect(
-    () => () => {
-      if (shareCopiedTimeoutRef.current) clearTimeout(shareCopiedTimeoutRef.current);
-      if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
-    },
-    []
-  );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -944,7 +1189,15 @@ export function ArchCanvas({
     }
   }, [agentGraphCommand]);
 
-  const build = useCallback(() => {
+  function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
+    let t: number | undefined;
+    return ((...args: any[]) => {
+      if (t) window.clearTimeout(t);
+      t = window.setTimeout(() => fn(...args), delay);
+    }) as T;
+  }
+
+  const rawBuild = useCallback(() => {
     const nodeIds = graph.nodes.map((n) => n.id).sort().join(",");
     const proposedIds = (proposedNodes ?? []).map((p) => p.id).sort().join(",");
     const graphKey = `${graph.generatedAt ?? 0}-${nodeIds}-${proposedIds}`;
@@ -959,7 +1212,17 @@ export function ArchCanvas({
     const hl = legendHighlightRef.current;
 
     const nodeMatches = (node: ArchNode): boolean => {
-      if (!hl) return true;
+      if (!hl && !focusMode) return true;
+      const inFocus =
+        focusMode && selectedNode
+          ? (() => {
+              if (node.id === selectedNode) return true;
+              return graph.edges.some(
+                (e) => (e.source === selectedNode && e.target === node.id) || (e.target === selectedNode && e.source === node.id)
+              );
+            })()
+          : true;
+      if (!hl) return inFocus;
       if (hl.type === "nodes") return hl.nodeIds.includes(node.id);
       if (hl.type === "layer") return (node.layer ?? "Uncategorized") === hl.layer;
       if (hl.type === "status") {
@@ -980,7 +1243,12 @@ export function ArchCanvas({
     };
 
     const edgeMatches = (edge: { source: string; target: string; isDrift?: boolean; isLayerViolation?: boolean }): boolean => {
-      if (!hl) return true;
+      if (!hl && !focusMode) return true;
+      const inFocus =
+        focusMode && selectedNode
+          ? edge.source === selectedNode || edge.target === selectedNode
+          : true;
+      if (!hl) return inFocus;
       if (hl.type === "nodes") {
         const nodeSet = new Set(hl.nodeIds);
         return nodeSet.has(edge.source) || nodeSet.has(edge.target);
@@ -1006,6 +1274,36 @@ export function ArchCanvas({
       }
       return true;
     };
+
+    // External dependencies lane: shift External Services band and nodes to the far right.
+    const externalLayer = "External Services";
+    const externalIds = graph.nodes
+      .filter((n) => (n.layer ?? "Uncategorized") === externalLayer)
+      .map((n) => n.id);
+    if (externalIds.length > 0) {
+      let maxNonExternalX = -Infinity;
+      let minExternalX = Infinity;
+      nodePositions.forEach((pos, id) => {
+        if (!pos) return;
+        if (externalIds.includes(id)) {
+          if (pos.x < minExternalX) minExternalX = pos.x;
+        } else {
+          if (pos.x > maxNonExternalX) maxNonExternalX = pos.x;
+        }
+      });
+      if (maxNonExternalX > -Infinity && minExternalX < Infinity) {
+        const offset = maxNonExternalX + 260 - minExternalX;
+        externalIds.forEach((id) => {
+          const pos = nodePositions.get(id);
+          if (pos) nodePositions.set(id, { ...pos, x: pos.x + offset });
+        });
+        for (const band of layerBands) {
+          if (band.layer === externalLayer) {
+            band.x += offset;
+          }
+        }
+      }
+    }
 
     const bandNodes: Node[] = layerBands.map((band) => {
       const colors =
@@ -1035,6 +1333,30 @@ export function ArchCanvas({
       .filter((v) => !baseNodeIds.has(v.id))
       .sort((a, b) => a.id.localeCompare(b.id));
 
+    const annotationNodes: Node[] = !isFlagEnabled("annotations")
+      ? []
+      : (annotations ?? []).map((ann) => {
+      let position = { x: 0, y: 0 };
+      if (ann.node_id) {
+        const pos = nodePositions.get(ann.node_id);
+        position = pos ? { x: pos.x + NODE_W + 12, y: pos.y - 16 } : { x: 0, y: 0 };
+      } else if (ann.layer) {
+        const band = layerBands.find((b) => b.layer === ann.layer);
+        position = band ? { x: band.x + band.width / 2 - 70, y: band.y - 40 } : { x: 0, y: 0 };
+      } else if (typeof ann.canvas_x === "number" && typeof ann.canvas_y === "number") {
+        position = { x: ann.canvas_x, y: ann.canvas_y };
+      }
+      return {
+        id: `annotation-${ann.id}`,
+        type: "annotation",
+        position,
+        data: { ...ann, onDelete: workspaceId && accessToken ? handleDeleteAnnotation : undefined },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+      };
+      });
+
     const rfNodes: Node[] = [
       ...bandNodes,
       ...graph.nodes.map((node) => {
@@ -1046,6 +1368,9 @@ export function ArchCanvas({
           data: {
             ...node,
             isSelected: selectedNode === node.id,
+            canvasZoom,
+            density,
+            theme,
             violationBeingFixedKey: violationBeingFixedKey ?? undefined,
             linkedJiraIssues:
               issuesByNodeId[node.id] ??
@@ -1063,6 +1388,7 @@ export function ArchCanvas({
           },
         };
       }),
+      ...annotationNodes,
       ...virtualNodesList.map((v) => {
         const pos = nodePositions.get(v.id);
         const basePos = !pos && v.archNodeId ? nodePositions.get(v.archNodeId) : null;
@@ -1108,7 +1434,24 @@ export function ArchCanvas({
     ];
 
     const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
-    const baseEdges: Edge[] = filtered.edges.map((edge) => {
+
+    // Basic edge bundling: collapse multiple edges with same source/target into one
+    // and store a bundleCount used to subtly increase stroke width.
+    const bundleMap = new Map<
+      string,
+      { edge: (typeof filtered.edges)[0]; count: number }
+    >();
+    for (const e of filtered.edges) {
+      const key = `${e.source}->${e.target}`;
+      const existing = bundleMap.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        bundleMap.set(key, { edge: e, count: 1 });
+      }
+    }
+
+    const baseEdges: Edge[] = Array.from(bundleMap.values()).map(({ edge, count }) => {
       const matches = edgeMatches({
         source: edge.source,
         target: edge.target,
@@ -1130,12 +1473,14 @@ export function ArchCanvas({
           isDrift: edge.isDrift,
           importance: edge.importance,
           isLayerViolation: edge.isLayerViolation,
+          driftReason: edge.driftReason,
           inTrace: !!inTrace,
           sourceLayer,
+          bundleCount: count,
         },
         style: {
           opacity: hl ? (matches ? 1 : 0.2) : 1,
-          strokeWidth: inTrace ? 3 : 1,
+          strokeWidth: inTrace ? 3 : count > 3 ? 2.4 : count > 1 ? 1.8 : 1,
           transition: "opacity 0.2s ease, stroke-width 0.2s ease",
         },
       };
@@ -1179,9 +1524,17 @@ export function ArchCanvas({
     proposedEdges,
     ghostNodeStatus,
     issuesByNodeId,
+    annotations,
+    density,
+    theme,
+    handleDeleteAnnotation,
+    workspaceId,
+    accessToken,
     setNodes,
     setEdges,
   ]);
+
+  const build = useMemo(() => debounce(rawBuild, 50), [rawBuild]);
 
   useEffect(() => {
     build();
@@ -1189,13 +1542,21 @@ export function ArchCanvas({
 
   // When only legend highlight changes, update opacity without recomputing layout.
   useEffect(() => {
-    if (!legendHighlight) {
+    if (!legendHighlight && !focusMode) {
       setNodes((nds) => nds.map((n) => ({ ...n, style: { ...n.style, opacity: 1 } })));
       setEdges((eds) => eds.map((e) => ({ ...e, style: { ...e.style, opacity: 1 } })));
       return;
     }
     const filtered = filterEdges(graph, edgeFilter);
     const nodeMatches = (node: ArchNode): boolean => {
+      const inFocus =
+        focusMode && selectedNode
+          ? node.id === selectedNode ||
+            graph.edges.some(
+              (e) => (e.source === selectedNode && e.target === node.id) || (e.target === selectedNode && e.source === node.id)
+            )
+          : true;
+      if (!legendHighlight) return inFocus;
       if (legendHighlight.type === "nodes") return legendHighlight.nodeIds.includes(node.id);
       if (legendHighlight.type === "layer") return (node.layer ?? "Uncategorized") === legendHighlight.layer;
       if (legendHighlight.type === "status") {
@@ -1215,6 +1576,9 @@ export function ArchCanvas({
       return true;
     };
     const edgeMatches = (edge: { source: string; target: string; isDrift?: boolean; isLayerViolation?: boolean }): boolean => {
+      const inFocus =
+        focusMode && selectedNode ? edge.source === selectedNode || edge.target === selectedNode : true;
+      if (!legendHighlight) return inFocus;
       if (legendHighlight.type === "nodes") {
         const s = new Set(legendHighlight.nodeIds);
         return s.has(edge.source) || s.has(edge.target);
@@ -1246,7 +1610,7 @@ export function ArchCanvas({
     };
     setNodes((nds) =>
       nds.map((n) => {
-        if (n.type === "band") return n;
+        if (n.type === "band" || n.type === "annotation") return n;
         const d = n.data as ArchNode & { isSelected?: boolean; isVirtual?: boolean };
         if (d.isVirtual) return n;
         const matches = nodeMatches(d);
@@ -1264,7 +1628,7 @@ export function ArchCanvas({
         return { ...e, style: { ...e.style, opacity: matches ? 1 : 0.2 } };
       })
     );
-  }, [legendHighlight, graph, edgeFilter, setNodes, setEdges]);
+  }, [legendHighlight, graph, edgeFilter, setNodes, setEdges, focusMode, selectedNode]);
 
   const legendLayers = useMemo(() => {
     const seen = new Map<string, number>();
@@ -1284,10 +1648,42 @@ export function ArchCanvas({
     !graph.projectRoot &&
     (proposedNodes?.length ?? 0) === 0;
 
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+  const [hoveredEdgePos, setHoveredEdgePos] = useState<{ x: number; y: number } | null>(null);
   const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
+  const densityFactor = densityScale[density] ?? 1;
+  const hoveredNodeData = useMemo(
+    () => graph.nodes.find((n) => n.id === hoveredNodeId) ?? null,
+    [graph.nodes, hoveredNodeId]
+  );
+  const hoveredEdgeData = useMemo(() => {
+    if (!hoveredEdgeId) return null;
+    const e = graph.edges.find((x) => x.id === hoveredEdgeId);
+    if (!e) return null;
+    const src = graph.nodes.find((n) => n.id === e.source);
+    const tgt = graph.nodes.find((n) => n.id === e.target);
+    return {
+      source: e.source,
+      target: e.target,
+      sourceLabel: src?.suggestedLabel ?? src?.role ?? src?.label ?? e.source,
+      targetLabel: tgt?.suggestedLabel ?? tgt?.role ?? tgt?.label ?? e.target,
+      isDrift: e.isDrift,
+      isLayerViolation: e.isLayerViolation,
+      driftReason: e.driftReason,
+    };
+  }, [graph.edges, graph.nodes, hoveredEdgeId]);
 
   return (
-    <div style={{ width: "100%", height: "100%", position: "relative" }}>
+    <div
+      style={{
+        width: "100%",
+        height: "100%",
+        position: "relative",
+        background: canvasTheme[theme].canvasBg,
+      }}
+    >
       {isEmptyWorkspace && (
         <div
           style={{
@@ -1444,6 +1840,9 @@ export function ArchCanvas({
           onNodeSelect={onNodeSelect}
           legendHighlight={legendHighlight}
           tracePathNodeIds={tracePathNodeIds}
+          workspaceId={workspaceId}
+          accessToken={accessToken}
+          annotations={annotations}
         />
       ) : (
       <ReactFlow
@@ -1455,7 +1854,42 @@ export function ArchCanvas({
           if (n.type === "band") return;
           onNodeSelect(n.id);
         }}
+        onNodeMouseEnter={(e, n) => {
+          if (n.type === "band") return;
+          setHoveredNodeId(n.id);
+          setHoverPos({ x: e.clientX, y: e.clientY });
+        }}
+        onNodeMouseMove={(e, n) => {
+          if (n.type === "band") return;
+          if (hoveredNodeId === n.id) {
+            setHoverPos({ x: e.clientX, y: e.clientY });
+          }
+        }}
+        onNodeMouseLeave={(_, n) => {
+          if (n.id === hoveredNodeId) {
+            setHoveredNodeId(null);
+            setHoverPos(null);
+          }
+        }}
+        onEdgeMouseEnter={(e, edge) => {
+          setHoveredEdgeId(edge.id);
+          setHoveredEdgePos({ x: e.clientX, y: e.clientY });
+        }}
+        onEdgeMouseMove={(e, edge) => {
+          if (hoveredEdgeId === edge.id) {
+            setHoveredEdgePos({ x: e.clientX, y: e.clientY });
+          }
+        }}
+        onEdgeMouseLeave={(_, edge) => {
+          if (edge.id === hoveredEdgeId) {
+            setHoveredEdgeId(null);
+            setHoveredEdgePos(null);
+          }
+        }}
         onPaneClick={() => onNodeSelect(null)}
+        onMove={(_, viewport) => {
+          if (typeof viewport.zoom === "number") setCanvasZoom(viewport.zoom);
+        }}
         onInit={(instance) => { reactFlowInstanceRef.current = instance; }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
@@ -1468,9 +1902,9 @@ export function ArchCanvas({
       >
         <Background
           variant={BackgroundVariant.Dots}
-          color="#111f3a"
-          gap={26}
-          size={1.2}
+          color={theme === "dark" ? "#1e293b" : "#94a3b8"}
+          gap={24}
+          size={1}
         />
 
         <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view, lock">
@@ -1501,6 +1935,221 @@ export function ArchCanvas({
       </ReactFlow>
       )}
 
+      {viewMode === "2d" && hoveredNodeData && hoverPos && (
+        <div
+          style={{
+            position: "fixed",
+            left: hoverPos.x + 12,
+            top: hoverPos.y + 12,
+            zIndex: 30,
+            maxWidth: 260,
+            background: "rgba(15,23,42,0.98)",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: "8px 10px",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#e2e8f0",
+              fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              marginBottom: 2,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {hoveredNodeData.suggestedLabel ?? hoveredNodeData.role ?? hoveredNodeData.label}
+          </div>
+          <div
+            style={{
+              fontSize: 9,
+              color: "#94a3b8",
+              marginBottom: 4,
+              fontFamily: "monospace",
+            }}
+          >
+            {(hoveredNodeData.layer ?? "Uncategorized") +
+              " · " +
+              ((hoveredNodeData as any).techKind ?? "unknown")}
+          </div>
+          {hoveredNodeData.description && (
+            <div
+              style={{
+                fontSize: 9,
+                color: "#cbd5f5",
+                marginBottom: 4,
+                fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+                lineHeight: 1.4,
+              }}
+            >
+              {hoveredNodeData.description}
+            </div>
+          )}
+          {(() => {
+            const issues =
+              issuesByNodeId[hoveredNodeData.id] ??
+              issuesByNodeId[hoveredNodeData.path] ??
+              issuesByNodeId[(hoveredNodeData as { archNodeId?: string }).archNodeId ?? hoveredNodeData.id] ??
+              [];
+            const primary = issues[0];
+            return primary ? (
+              <div
+                style={{
+                  fontSize: 9,
+                  color: "#fbbf24",
+                  marginBottom: 4,
+                  fontFamily: "monospace",
+                }}
+              >
+                {primary.key}: {primary.summary}
+              </div>
+            ) : null;
+          })()}
+          {Array.isArray(hoveredNodeData.files) && hoveredNodeData.files.length > 0 && (
+            <div
+              style={{
+                fontSize: 8,
+                color: "#94a3b8",
+                marginBottom: 4,
+                fontFamily: "monospace",
+                maxHeight: 48,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {hoveredNodeData.files.slice(0, 5).map((f) => (
+                <div key={f} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {f.split("/").pop() ?? f}
+                </div>
+              ))}
+              {hoveredNodeData.files.length > 5 && (
+                <div style={{ color: "#64748b" }}>+{hoveredNodeData.files.length - 5} more</div>
+              )}
+            </div>
+          )}
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 4,
+            }}
+          >
+            <span style={{ fontSize: 8, color: "#64748b", fontFamily: "monospace" }}>
+              {hoveredNodeData.files.length} files
+            </span>
+            {Array.isArray(hoveredNodeData.tags) &&
+              hoveredNodeData.tags.slice(0, 3).map((t) => (
+                <span
+                  key={t}
+                  style={{
+                    fontSize: 8,
+                    color: "#c4d4ff",
+                    background: "rgba(30,64,175,0.6)",
+                    padding: "1px 4px",
+                    borderRadius: 4,
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {t}
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {viewMode === "2d" && hoveredEdgeData && hoveredEdgePos && (
+        <div
+          style={{
+            position: "fixed",
+            left: hoveredEdgePos.x + 12,
+            top: hoveredEdgePos.y + 12,
+            zIndex: 30,
+            maxWidth: 280,
+            background: "rgba(15,23,42,0.98)",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: "8px 10px",
+            boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: "#e2e8f0",
+              fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              marginBottom: 2,
+            }}
+          >
+            {hoveredEdgeData.sourceLabel} → {hoveredEdgeData.targetLabel}
+          </div>
+          {hoveredEdgeData.isDrift && (
+            <div
+              style={{
+                fontSize: 9,
+                color: "#f87171",
+                fontFamily: "monospace",
+              }}
+            >
+              Drift: {hoveredEdgeData.driftReason ?? "architecture drift"}
+            </div>
+          )}
+          {hoveredEdgeData.isLayerViolation && !hoveredEdgeData.isDrift && (
+            <div
+              style={{
+                fontSize: 9,
+                color: "#fbbf24",
+                fontFamily: "monospace",
+              }}
+            >
+              Layer violation
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Reserved HUD slot (bottom-right) – perf/runtime overlays, disabled by default */}
+      {!presentationMode && (
+        <div
+          data-hud-slot
+          style={{
+            position: "absolute",
+            bottom: 12,
+            right: 16,
+            minWidth: 60,
+            minHeight: 24,
+            zIndex: 8,
+            pointerEvents: "none",
+            display: "flex",
+            alignItems: "flex-end",
+            justifyContent: "flex-end",
+          }}
+        >
+          {isFlagEnabled("perf_hud") && (
+            <div
+              style={{
+                fontSize: 10,
+                padding: "4px 6px",
+                background: "rgba(15,23,42,0.9)",
+                borderRadius: 4,
+                border: "1px solid #1e293b",
+                fontFamily: "monospace",
+                color: "#e5e7eb",
+              }}
+            >
+              2D · {graph.nodes.length} nodes · {edges.length} edges · {fps2d} fps
+            </div>
+          )}
+        </div>
+      )}
+
+      {!presentationMode && (
       <div
         style={{
           position: "absolute",
@@ -1551,15 +2200,17 @@ export function ArchCanvas({
           3D
         </button>
       </div>
+      )}
 
+      {!presentationMode && (
       <div
         style={{
           position: "absolute",
-          bottom: 144,
+          top: 96,
           left: 16,
           zIndex: 10,
-          background: "rgba(6,12,26,0.92)",
-          border: "1px solid #1e3a5f",
+          background: canvasTheme[theme].panelBg,
+          border: `1px solid ${canvasTheme[theme].panelBorder}`,
           borderRadius: 10,
           padding: "12px 14px",
           backdropFilter: "blur(12px)",
@@ -1574,18 +2225,27 @@ export function ArchCanvas({
         <div
           style={{
             fontSize: 9,
-            color: "#94a3b8",
+              color: canvasTheme[theme].subtleText,
             marginBottom: 10,
             lineHeight: 1.4,
             fontFamily: "monospace",
           }}
           title="Click any item to highlight it on the graph. Click again to clear."
         >
-          Click to highlight on graph
+          Click to highlight
         </div>
 
         <div style={{ marginBottom: 10 }}>
-          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase", fontFamily: "monospace" }}>
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
             Layers
           </div>
           {legendLayers.map(([name, count]) => {
@@ -1625,22 +2285,137 @@ export function ArchCanvas({
                     boxShadow: active ? `0 0 6px ${cfg.glow}` : undefined,
                   }}
                 />
-                <span style={{ fontSize: 10, color: "#e2e8f0", flex: 1, fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>{name}</span>
-                <span style={{ fontSize: 9, color: "#64748b", fontFamily: "monospace" }}>{count}</span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: canvasTheme[theme].panelText,
+                    flex: 1,
+                    fontFamily: "'JetBrains Mono','Fira Code',monospace",
+                  }}
+                >
+                  {name}
+                </span>
+                <span
+                  style={{
+                    fontSize: 9,
+                    color: canvasTheme[theme].subtleText,
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {count}
+                </span>
               </div>
             );
           })}
         </div>
 
-        <div style={{ borderTop: "1px solid #1e3a5f", paddingTop: 8 }}>
-          <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 6, textTransform: "uppercase", fontFamily: "monospace" }}>
+        <div
+          style={{
+            borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+            marginTop: 8,
+            paddingTop: 8,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
+            Tech families
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              fontSize: 9,
+              color: canvasTheme[theme].subtleText,
+              fontFamily: "monospace",
+            }}
+          >
+            {[
+              { key: "database", label: "DB" },
+              { key: "cache", label: "Cache" },
+              { key: "queue", label: "Queue" },
+              { key: "http-api", label: "API" },
+              { key: "web-ui", label: "UI" },
+              { key: "kubernetes", label: "K8s" },
+              { key: "external-saas", label: "SaaS" },
+            ].map(({ key, label }) => (
+              <span key={key} style={{ display: "flex", alignItems: "center", gap: 3 }} title={key}>
+                <span style={{ fontSize: 12, lineHeight: 1 }}>{TECH_ICON[key] ?? "◻"}</span>
+                <span>{label}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div
+          style={{
+            borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+            marginTop: 8,
+            paddingTop: 8,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
+            Node badges
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              fontSize: 9,
+              color: canvasTheme[theme].subtleText,
+              fontFamily: "monospace",
+            }}
+          >
+            <span style={{ color: canvasTheme[theme].badgeViolation }} title="Violations count">V</span>
+            <span style={{ color: canvasTheme[theme].badgeTrace }} title="Traces">TR</span>
+            <span style={{ color: canvasTheme[theme].badgeJira }} title="Jira linked">J</span>
+            <span style={{ color: canvasTheme[theme].badgeDrift }} title="Drift">D</span>
+            <span title="Depth from entry">d</span>
+          </div>
+        </div>
+
+        <div
+          style={{
+            borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+            marginTop: 8,
+            paddingTop: 8,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
             By type
           </div>
           {(
             [
-              { id: "ok" as const, label: "Imports", color: "#60a5fa", dashed: false },
-              { id: "violation" as const, label: "Layer violation", color: "#f59e0b", dashed: true },
-              { id: "drift" as const, label: "Drift", color: "#ef4444", dashed: true },
+              { id: "ok" as const, label: "Imports", color: canvasTheme[theme].legendImport, dashed: false },
+              { id: "violation" as const, label: "Layer violation", color: canvasTheme[theme].legendViolation, dashed: true },
+              { id: "drift" as const, label: "Drift", color: canvasTheme[theme].legendDrift, dashed: true },
             ] as const
           ).map(({ id, label, color, dashed }) => {
             const isActive =
@@ -1687,406 +2462,131 @@ export function ArchCanvas({
                     borderRadius: 1,
                   }}
                 />
-                <span style={{ fontSize: 10, color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>{label}</span>
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: canvasTheme[theme].panelText,
+                    fontFamily: "'JetBrains Mono','Fira Code',monospace",
+                  }}
+                >
+                  {label}
+                </span>
               </div>
             );
           })}
         </div>
-      </div>
-
-      <div
-        style={{
-          position: "absolute",
-          top: 16,
-          right: 24,
-          zIndex: 10,
-          background: "linear-gradient(150deg, #0c1220, #070d1a)",
-          border: "1px solid #1d4ed866",
-          borderRadius: 10,
-          padding: 0,
-          display: "flex",
-          flexDirection: "column",
-          gap: 0,
-          backdropFilter: "blur(12px)",
-          minWidth: 200,
-          maxWidth: 260,
-          overflow: "hidden",
-          boxShadow: [
-            "0 4px 0 #1d4ed833",
-            "0 8px 0 #1d4ed818",
-            "0 16px 32px rgba(0,0,0,0.4)",
-          ].join(", "),
-        }}
-      >
         <div
           style={{
-            height: 4,
-            background: "linear-gradient(90deg, #1d4ed888, #60a5fa, #1d4ed888)",
-            borderRadius: "10px 10px 0 0",
-          }}
-        />
-        <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6, minWidth: 0, overflow: "hidden" }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
+            borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+            marginTop: 8,
+            paddingTop: 8,
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", fontFamily: "'JetBrains Mono','Fira Code',monospace" }}>
-            {workspaceTitleEditing && onRenameWorkspace ? (
-              <input
-                autoFocus
-                value={workspaceTitleDraft}
-                maxLength={80}
-                onChange={(e) => setWorkspaceTitleDraft(e.target.value)}
-                onBlur={() => {
-                  const trimmed = workspaceTitleDraft.trim();
-                  if (trimmed) onRenameWorkspace(trimmed);
-                  setWorkspaceTitleEditing(false);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    const trimmed = workspaceTitleDraft.trim();
-                    if (trimmed) onRenameWorkspace(trimmed);
-                    setWorkspaceTitleEditing(false);
-                  } else if (e.key === "Escape") {
-                    setWorkspaceTitleDraft(
-                      graph.projectName ?? (isGreenfieldOnly ? "New Design" : "My workspace")
-                    );
-                    setWorkspaceTitleEditing(false);
-                  }
-                }}
-                style={{
-                  width: "100%",
-                  background: "#0c1220",
-                  border: "1px solid #1d4ed866",
-                  borderRadius: 4,
-                  color: "#e2e8f0",
-                  padding: "2px 6px",
-                  fontSize: 12,
-                  outline: "none",
-                  fontFamily: "inherit",
-                }}
-              />
-            ) : (
-              <span
-                onClick={() => {
-                  if (onRenameWorkspace) {
-                    const current =
-                      graph.projectName ?? (isGreenfieldOnly ? "New Design" : "My workspace");
-                    setWorkspaceTitleDraft(current);
-                    setWorkspaceTitleEditing(true);
-                  }
-                }}
-                title={onRenameWorkspace ? "Click to rename workspace" : undefined}
-                style={{
-                  cursor: onRenameWorkspace ? "pointer" : "default",
-                }}
-              >
-                {graph.projectName ?? (isGreenfieldOnly ? "New Design" : "My workspace")}
-              </span>
-            )}
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
+            Focus
           </div>
-          {!isAnonymous && onDeleteWorkspace && (
+          <button
+            type="button"
+            onClick={() => setFocusMode((prev) => !prev)}
+            style={{
+              padding: "6px 8px",
+              fontSize: 10,
+              fontFamily: "monospace",
+              borderRadius: 6,
+              border: focusMode ? `1px solid ${canvasTheme[theme].legendFocus}` : "1px solid transparent",
+              background: focusMode ? `${canvasTheme[theme].legendFocus}28` : "transparent",
+              color: focusMode ? canvasTheme[theme].legendFocus : canvasTheme[theme].subtleText,
+              cursor: "pointer",
+              width: "100%",
+              textAlign: "left",
+            }}
+            title="Focus on selected node and its neighbors"
+          >
+            {focusMode ? "Focused on selection" : "Focus on selection"}
+          </button>
+          {focusMode && selectedNode && onExplainArea && (
             <button
               type="button"
-              disabled={isDeletingWorkspace}
-              onClick={() => {
-                if (!isDeletingWorkspace) setShowDeleteConfirm(true);
-              }}
-              title="Delete workspace"
+              onClick={() =>
+                onExplainArea(
+                  `Explain the architecture in this area, focusing on the selected node "${selectedNodeData?.suggestedLabel ?? selectedNodeData?.label ?? selectedNode}" and its neighbors.`
+                )
+              }
               style={{
-                border: "none",
-                background: "transparent",
-                color: "#ef4444",
-                cursor: isDeletingWorkspace ? "wait" : "pointer",
-                padding: 2,
-                fontSize: 12,
+                padding: "6px 8px",
+                fontSize: 10,
+                fontFamily: "monospace",
+                borderRadius: 6,
+                border: `1px solid ${canvasTheme[theme].legendFocus}`,
+                background: `${canvasTheme[theme].legendFocus}20`,
+                color: canvasTheme[theme].legendFocus,
+                cursor: "pointer",
+                width: "100%",
+                textAlign: "left",
+                marginTop: 4,
               }}
+              title="Pre-fill chat with explain prompt"
             >
-              🗑
+              Explain this area
             </button>
           )}
         </div>
-        <div style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>
-          {isGreenfieldOnly
-            ? `${proposedNodes?.length ?? 0} proposed nodes`
-            : graph.generatedAt
-              ? `Last scan: ${new Date(graph.generatedAt).toLocaleString(undefined, {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })} · ${graph.nodes.length} nodes`
-              : "No scan"}
-          {graph.lastSavedAt && (
-            <div style={{ marginTop: 2 }}>
-              Saved at{" "}
-              {new Date(graph.lastSavedAt).toLocaleTimeString(undefined, {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </div>
-          )}
-        </div>
-        <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
-          <button
-            type="button"
-            disabled={!onSave || saveLoading || !workspaceId || graph.nodes.length === 0}
-            title={
-              onSave
-                ? saveStatus === "saved"
-                  ? "Workspace saved"
-                  : "Save latest graph for this workspace"
-                : "Sign in and scan a repo to save"
-            }
-            style={{
-              fontSize: 10,
-              padding: "4px 10px",
-              background: "#059669",
-              color: "white",
-              border: "1px solid #059669",
-              borderRadius: 6,
-              cursor: !onSave || saveLoading || !workspaceId ? "not-allowed" : "pointer",
-              opacity: !onSave || saveLoading || !workspaceId ? 0.5 : 1,
-              fontFamily: "monospace",
-            }}
-            onClick={async () => {
-              if (!onSave || saveLoading || !workspaceId) return;
-              setSaveLoading(true);
-              setSaveStatus("idle");
-              try {
-                await onSave();
-                setSaveStatus("saved");
-                if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
-                saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 1500);
-              } catch (err) {
-                console.error("Save workspace failed:", err);
-                setSaveStatus("error");
-                if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
-                saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 2500);
-              } finally {
-                setSaveLoading(false);
-              }
-            }}
-          >
-            {saveLoading ? "Saving…" : saveStatus === "saved" ? "Saved" : "Save"}
-          </button>
-          <button
-            type="button"
-            disabled={!onShare || shareLoading}
-            title={onShare ? "Create share options" : "Sign in and scan a repo to share"}
-            onClick={async () => {
-              if (!onShare) return;
-              // If share options are already visible, a second click hides them.
-              if (shareUrl) {
-                setShareUrl(null);
-                return;
-              }
-              setShareLoading(true);
-              try {
-                const result = await onShare();
-                if (result?.url) setShareUrl(result.url);
-              } finally {
-                setShareLoading(false);
-              }
-            }}
-            style={{
-              fontSize: 10,
-              padding: "4px 10px",
-              background: "#1d4ed8",
-              color: "white",
-              border: "1px solid #60a5fa66",
-              borderRadius: 6,
-              cursor: onShare ? "pointer" : "not-allowed",
-              opacity: onShare ? 1 : 0.5,
-              fontFamily: "monospace",
-            }}
-          >
-            {shareLoading ? "…" : "Share"}
-          </button>
-        </div>
-        {isAnonymous && (
+        {workspaceId && accessToken && onAnnotationsChange && (
           <div
             style={{
-              marginTop: 4,
-              fontSize: 10,
-              color: "#f59e0b",
-              fontFamily: "monospace",
-            }}
-          >
-            Sign in and scan a repo to save & share this workspace.
-          </div>
-        )}
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 11,
-            color: "#7d8590",
-            cursor: "pointer",
-            userSelect: "none",
-            marginTop: 6,
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={autosaveEnabled}
-            onChange={(e) => onToggleAutosave(e.target.checked)}
-            style={{ accentColor: "#22c55e", cursor: "pointer" }}
-          />
-          Remember workspace on this device
-        </label>
-        {shareUrl && (
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 10,
-              color: "#60a5fa",
-              border: "1px solid #1d4ed866",
-              borderRadius: 6,
-              padding: "6px 8px",
-              background: "linear-gradient(150deg, #071020, #0c1220)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-              fontFamily: "monospace",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 6,
-              }}
-            >
-              <span>Share this workspace</span>
-              <button
-                type="button"
-                onClick={() => window.open(shareUrl, "_blank")}
-                style={{
-                  fontSize: 9,
-                  padding: "2px 8px",
-                  background: "#0c1220",
-                  border: "1px solid #1d4ed866",
-                  borderRadius: 4,
-                  color: "#60a5fa",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                  fontFamily: "monospace",
-                }}
-              >
-                Open shared view
-              </button>
-            </div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-              }}
-            >
-              <input
-                readOnly
-                value={shareUrl}
-                style={{
-                  flex: 1,
-                  fontSize: 9,
-                  background: "#0c1220",
-                  border: "1px solid #1d4ed866",
-                  borderRadius: 4,
-                  color: "#94a3b8",
-                  padding: "2px 4px",
-                  outline: "none",
-                  fontFamily: "monospace",
-                }}
-                onFocus={(e) => e.target.select()}
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  if (shareCopiedTimeoutRef.current) clearTimeout(shareCopiedTimeoutRef.current);
-                  navigator.clipboard.writeText(shareUrl).then(() => {
-                    setShareCopied(true);
-                    shareCopiedTimeoutRef.current = setTimeout(() => setShareCopied(false), 1500);
-                  });
-                }}
-                style={{
-                  fontSize: 9,
-                  padding: "2px 6px",
-                  background: "#1d4ed844",
-                  border: "1px solid #1d4ed866",
-                  borderRadius: 4,
-                  color: "#60a5fa",
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                  fontFamily: "monospace",
-                }}
-              >
-                {shareCopied ? "Copied" : "Copy link"}
-              </button>
-            </div>
-          </div>
-        )}
-        {showDeleteConfirm && onDeleteWorkspace && (
-          <div
-            style={{
+              borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
               marginTop: 8,
-              padding: "8px 10px",
-              borderRadius: 6,
-              background: "linear-gradient(150deg, #1a0a0a, #0c1220)",
-              border: "1px solid #ef444466",
-              fontSize: 11,
-              color: "#e2e8f0",
-              fontFamily: "monospace",
+              paddingTop: 8,
             }}
           >
-            <div style={{ marginBottom: 4 }}>Delete this workspace and all its saved graphs?</div>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6 }}>
-              <button
-                type="button"
-                disabled={isDeletingWorkspace}
-                onClick={() => setShowDeleteConfirm(false)}
-                style={{
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                  border: "1px solid #1d4ed866",
-                  background: "transparent",
-                  color: "#e2e8f0",
-                  fontSize: 11,
-                  cursor: isDeletingWorkspace ? "default" : "pointer",
-                  fontFamily: "monospace",
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isDeletingWorkspace}
-                onClick={async () => {
-                  await onDeleteWorkspace();
-                  setShowDeleteConfirm(false);
-                }}
-                style={{
-                  padding: "2px 8px",
-                  borderRadius: 4,
-                  border: "1px solid #ef4444",
-                  background: isDeletingWorkspace ? "#7f1d1d" : "#ef4444",
-                  color: "#f9fafb",
-                  fontSize: 11,
-                  cursor: isDeletingWorkspace ? "wait" : "pointer",
-                  fontFamily: "monospace",
-                }}
-              >
-                {isDeletingWorkspace ? "Deleting…" : "Delete"}
-              </button>
+            <div
+              style={{
+                fontSize: 8,
+                color: canvasTheme[theme].legendSectionTitleText,
+                letterSpacing: "0.1em",
+                marginBottom: 6,
+                textTransform: "uppercase",
+                fontFamily: "monospace",
+              }}
+            >
+              Annotations
             </div>
+            <button
+              type="button"
+              onClick={() =>
+                selectedNode
+                  ? handleAddAnnotation({ nodeId: selectedNode }, "note")
+                  : handleAddAnnotation({ layer: "Uncategorized" }, "note")
+              }
+              style={{
+                padding: "6px 8px",
+                fontSize: 10,
+                fontFamily: "monospace",
+                borderRadius: 6,
+                border: "1px solid transparent",
+                background: "transparent",
+                color: "#94a3b8",
+                cursor: "pointer",
+                width: "100%",
+                textAlign: "left",
+              }}
+              title={selectedNode ? "Add note to selected node" : "Add note to canvas"}
+            >
+              + Add note
+            </button>
           </div>
         )}
-        </div>
       </div>
+      )}
     </div>
   );
 }

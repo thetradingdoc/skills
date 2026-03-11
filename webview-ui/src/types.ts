@@ -32,6 +32,24 @@ export type NodeStatus =
   | "warning"
   | "error";
 
+export type TechKind =
+  | "database"
+  | "cache"
+  | "queue"
+  | "message-bus"
+  | "http-api"
+  | "web-ui"
+  | "mobile-app"
+  | "kubernetes"
+  | "container-service"
+  | "serverless"
+  | "object-storage"
+  | "external-saas"
+  | "generic-service"
+  | "unknown";
+
+export type CloudProvider = "aws" | "gcp" | "azure" | "other" | "unknown";
+
 export interface ArchNode {
   id: string;
   label: string;
@@ -41,6 +59,10 @@ export interface ArchNode {
   layer?: string;
   description?: string;
   semanticSignals?: SemanticSignals;
+  techKind?: TechKind;
+  cloudProvider?: CloudProvider;
+  tags?: string[];
+  iconKey?: string;
   files: string[];
   health: { hasDocs: boolean; hasTests: boolean; hasContext: boolean };
   contextRawContent?: string;

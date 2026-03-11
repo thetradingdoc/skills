@@ -43,9 +43,16 @@ interface LayerBand {
 interface SceneLightingProps {
   layerBands: LayerBand[];
   selectedNodePos: { x: number; y: number; z: number } | null;
+  gridDivisions?: number;
+  gridOpacity?: number;
 }
 
-export function SceneLighting({ layerBands, selectedNodePos }: SceneLightingProps) {
+export function SceneLighting({
+  layerBands,
+  selectedNodePos,
+  gridDivisions,
+  gridOpacity,
+}: SceneLightingProps) {
   const { scene } = useThree();
   const bgTex = useMemo(() => createRadialGradientTexture(), []);
   const gridRef = useRef<THREE.GridHelper>(null);
@@ -126,12 +133,41 @@ export function SceneLighting({ layerBands, selectedNodePos }: SceneLightingProp
       )}
 
       {/* P5-6: Floor grid with edge fade */}
-      <FadingGrid size={GRID_SIZE} divisions={GRID_DIVISIONS} y={-2} />
+      <FadingGrid
+        size={GRID_SIZE}
+        divisions={gridDivisions ?? GRID_DIVISIONS}
+        y={-2}
+        opacity={gridOpacity}
+      />
+
+      {/* Optional pseudo-shadow plane to ground cards */}
+      <mesh
+        rotation={[-Math.PI / 2, 0, 0]}
+        position={[0, -1.9, 0]}
+        receiveShadow
+      >
+        <planeGeometry args={[GRID_SIZE, GRID_SIZE]} />
+        <meshStandardMaterial
+          color={0x020617}
+          opacity={0.85}
+          transparent
+        />
+      </mesh>
     </>
   );
 }
 
-function FadingGrid({ size, divisions, y }: { size: number; divisions: number; y: number }) {
+function FadingGrid({
+  size,
+  divisions,
+  y,
+  opacity,
+}: {
+  size: number;
+  divisions: number;
+  y: number;
+  opacity?: number;
+}) {
   const mat = useMemo(() => {
     const uniforms = {
       uSize: { value: size },
@@ -139,7 +175,7 @@ function FadingGrid({ size, divisions, y }: { size: number; divisions: number; y
       uMajorEvery: { value: 10 },
       uColorMajor: { value: new THREE.Color(0x1e3a5f) },
       uColorMinor: { value: new THREE.Color(0x0f172a) },
-      uOpacity: { value: 0.22 },
+      uOpacity: { value: opacity ?? 0.22 },
       uFadeInner: { value: size * 0.25 },
       uFadeOuter: { value: size * 0.5 },
     };

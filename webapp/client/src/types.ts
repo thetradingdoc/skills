@@ -64,6 +64,24 @@ export interface ArchNodeViolationState {
   highestSeverity: "critical" | "high" | "medium" | null;
 }
 
+export type TechKind =
+  | "database"
+  | "cache"
+  | "queue"
+  | "message-bus"
+  | "http-api"
+  | "web-ui"
+  | "mobile-app"
+  | "kubernetes"
+  | "container-service"
+  | "serverless"
+  | "object-storage"
+  | "external-saas"
+  | "generic-service"
+  | "unknown";
+
+export type CloudProvider = "aws" | "gcp" | "azure" | "other" | "unknown";
+
 export interface ArchNode {
   id: string;
   label: string;
@@ -79,6 +97,10 @@ export interface ArchNode {
   hasTraces?: boolean;
   description?: string;
   semanticSignals?: SemanticSignals;
+  techKind?: TechKind;
+  cloudProvider?: CloudProvider;
+  tags?: string[];
+  iconKey?: string;
   files: string[];
   health: { hasDocs: boolean; hasTests: boolean; hasContext: boolean };
   contextRawContent?: string;
@@ -96,7 +118,7 @@ export interface ArchEdge {
   id: string;
   source: string;
   target: string;
-  type: "import" | "reexport" | "dynamic";
+  type: "import" | "reexport" | "dynamic" | "runtime";
   isDrift: boolean;
   driftReason?: string;
   importance?: EdgeImportance;
@@ -150,6 +172,62 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+}
+
+// ── Scene model (iCraft-style authored scenes) ────────────────────────────────
+
+export interface CameraPreset {
+  id: string;
+  name: string;
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+}
+
+export interface WorkspaceSceneDoc {
+  schemaVersion: number;
+  settings?: Record<string, unknown>;
+  objects: Array<{
+    id: string;
+    kind: "node" | "group" | "plate" | "annotation" | "link" | "custom";
+    archNodeId?: string;
+    props?: Record<string, unknown>;
+    transform?: {
+      position?: { x: number; y: number; z?: number };
+      rotation?: { x: number; y: number; z: number };
+      scale?: { x: number; y: number; z?: number };
+    };
+  }>;
+  states?: Array<{
+    id: string;
+    name: string;
+    cameraPresetId?: string;
+    objectOverrides?: Record<string, Record<string, unknown>>;
+  }>;
+  cameraPresets?: CameraPreset[];
+}
+
+export interface WorkspaceScene {
+  id: string;
+  workspaceId: string;
+  name: string;
+  sceneVersion: number;
+  scene: WorkspaceSceneDoc;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Annotation pinned to a node, layer, or canvas position. */
+export interface WorkspaceAnnotation {
+  id: string;
+  type: "note" | "highlight" | "question";
+  content: string;
+  author_name?: string | null;
+  node_id?: string | null;
+  layer?: string | null;
+  canvas_x?: number | null;
+  canvas_y?: number | null;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Chat can trigger graph actions (highlight, filter, design, trace). From manager response. */
