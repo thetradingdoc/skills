@@ -17,7 +17,7 @@ export type ResourceClass =
   | "unclassified";
 
 export type CellState = "reaches" | "none" | "not-traced";
-export type ClaimConfidence = "high" | "medium" | "low";
+export type ClaimConfidence = "high" | "medium";
 
 export type ReachHop = {
   /** Relative file path */
@@ -914,37 +914,21 @@ function emptyCells(
   return cells;
 }
 
-const CONF_RANK: Record<ClaimConfidence, number> = { low: 0, medium: 1, high: 2 };
+const CONF_RANK: Record<ClaimConfidence, number> = { medium: 0, high: 1 };
 
 export function rankConfidence(a: ClaimConfidence, b: ClaimConfidence): ClaimConfidence {
   return CONF_RANK[a] >= CONF_RANK[b] ? a : b;
 }
 
 /**
- * Confidence for a reaches claim.
- * high  — handler hops resolved, literal SQL or explicit SDK/HTTP path, depth <= 2
- * medium — resolved but deeper, or inferred from a function/service name
- * low — unresolved hop, dynamic dispatch, or runtime-built SQL on the path
+ * Confidence for a reaches claim (two tiers only — low was unreachable and misleading).
+ * high   — literal SQL or explicit SDK/HTTP path, depth <= 2
+ * medium — deeper, or inferred from a function/service name rather than a query
  */
 export function assignClaimConfidence(
   r: Omit<ReachResource, "confidence">,
-  truncationReasons: string[]
+  _truncationReasons: string[]
 ): ClaimConfidence {
-  const blob = `${r.evidence}\n${r.proof ?? ""}\n${(r.path ?? []).join(" ")}`;
-  if (
-    /dynamic-sql|unresolved-callsite|dynamic-dispatch|unresolved-handler|runtime string/i.test(
-      blob
-    ) ||
-    truncationReasons.some((t) =>
-      /dynamic-sql|unresolved-callsite|dynamic-dispatch/.test(t)
-    )
-  ) {
-    // Only low if this claim itself looks unresolved — proven SQL still high
-    if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(r.proof ?? "")) {
-      if (/dynamic-sql|unresolved-callsite|dynamic-dispatch/i.test(blob)) return "low";
-    }
-  }
-
   const literalSql = /\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(r.proof ?? r.evidence);
   const explicitHttp =
     r.kind === "external" &&
@@ -954,16 +938,7 @@ export function assignClaimConfidence(
     r.kind === "external" &&
     /^(stripe|twilio|retell|openai|anthropic|groq|sendgrid)/i.test(r.name);
 
-  if (r.kind === "db_call") return "medium"; // inferred from function name
-  if (r.kind === "service" && !literalSql) {
-    // service hop without a query at this node — inferred
-    if (r.depth <= 2) return "medium";
-    return "medium";
-  }
-
   if ((literalSql || explicitHttp || explicitSdk) && r.depth <= 2) return "high";
-  if (literalSql || explicitHttp || explicitSdk) return "medium"; // deeper
-  if (r.kind === "db" && r.depth <= 2) return "medium"; // table attributed via method map without proof string
   return "medium";
 }
 
@@ -987,7 +962,7 @@ function buildCells(
       const best = use.reduce((a, b) => (a.depth <= b.depth ? a : b));
       const conf = use.reduce<ClaimConfidence>(
         (acc, r) => rankConfidence(acc, r.confidence ?? "medium"),
-        "low"
+        "medium"
       );
       cells[c] = {
         state: "reaches",

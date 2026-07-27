@@ -57,6 +57,9 @@ export type RuleEvaluation = {
   rule: ParsedRule;
   status: RuleResultStatus;
   reason: string;
+  /** e.g. "FAIL (71% of scope traced)" */
+  display: string;
+  coveragePercent: number;
   claim?: CitingClaim;
   unevaluableCount?: number;
 };
@@ -64,7 +67,6 @@ export type RuleEvaluation = {
 export type ReachBaseline = {
   version: number;
   description?: string;
-  /** Fingerprints of baselined FAIL rules: raw rule text or hash */
   baselinedFailures: string[];
 };
 
@@ -78,7 +80,7 @@ export type GuardReport = {
     failBaselined: number;
     unevaluable: number;
   };
-  confidenceOfReaches: { high: number; medium: number; low: number };
+  confidenceOfReaches: { high: number; medium: number };
   ciLine: string;
   exitCode: number;
 };
@@ -103,10 +105,14 @@ function isSensitivityClass(s: string): s is ResourceClass {
   return (RESOURCE_CLASSES as string[]).includes(s);
 }
 
+function agentTools(surface: AgentSurface): AgentTool[] {
+  return (surface.tools ?? []).filter((t) => t.name !== "(hosted)");
+}
+
 function toolHasHighReach(
   tool: AgentTool,
   target: string
-): { hit: boolean; claim?: CitingClaim; agentFile?: string } {
+): { hit: boolean; claim?: CitingClaim } {
   if (isSensitivityClass(target)) {
     const cell = cellFor(tool, target);
     if (cell?.state === "reaches" && cell.confidence === "high") {
@@ -128,7 +134,6 @@ function toolHasHighReach(
     }
     return { hit: false };
   }
-  // specific resource key like db:patient_document_extracts or patient_document_extracts
   const needle = target.toLowerCase();
   for (const r of tool.reach?.resources ?? []) {
     if (r.class === "plumbing" || r.kind === "db_call") continue;
@@ -158,33 +163,91 @@ function toolHasHighReach(
 function countUnevaluableForTarget(tools: AgentTool[], target: string): number {
   let n = 0;
   for (const t of tools) {
-    if (t.name === "(hosted)") continue;
     if (isSensitivityClass(target)) {
       const cell = cellFor(t, target);
-      if (!cell) continue;
-      if (cell.state === "not-traced") n++;
-      else if (cell.state === "reaches" && cell.confidence === "low") n++;
-    } else {
+      if (cell?.state === "not-traced") n++;
+    } else if (t.reach?.truncated) {
       const needle = target.toLowerCase();
       const hits = (t.reach?.resources ?? []).filter((r) => {
         const key = `${r.kind}:${r.name}`.toLowerCase();
         return key === needle || r.name.toLowerCase() === needle;
       });
-      if (hits.some((r) => r.confidence === "low")) n++;
-      else if (
-        hits.length === 0 &&
-        t.reach?.truncated &&
-        isSensitivityClass("unclassified")
-      ) {
-        /* skip */
-      }
-      if (t.reach?.truncated && hits.length === 0) {
-        // truncated walk may have missed the resource
-        n++;
-      }
+      if (hits.length === 0) n++;
     }
   }
   return n;
+}
+
+function coveragePercent(traced: number, total: number): number {
+  if (total === 0) return 100;
+  return Math.round((traced / total) * 100);
+}
+
+function coverageAgentTarget(
+  surfaces: AgentSurface[],
+  target: string
+): number {
+  let traced = 0;
+  let total = 0;
+  for (const a of surfaces) {
+    for (const t of agentTools(a)) {
+      if (!isSensitivityClass(target)) {
+        total++;
+        if (!t.reach?.truncated) traced++;
+        continue;
+      }
+      total++;
+      const cell = cellFor(t, target);
+      if (cell && cell.state !== "not-traced") traced++;
+    }
+  }
+  return coveragePercent(traced, total);
+}
+
+function coverageCoReach(inventory: AgentInventory): number {
+  let traced = 0;
+  let total = 0;
+  for (const a of (inventory.agents ?? []).filter((x) => x.kind === "agent")) {
+    for (const t of agentTools(a)) {
+      total++;
+      const ca = cellFor(t, "patient");
+      const cb = cellFor(t, "money");
+      if (ca && cb && ca.state !== "not-traced" && cb.state !== "not-traced") {
+        traced++;
+      }
+    }
+  }
+  return coveragePercent(traced, total);
+}
+
+function coverageToolsDeclared(surfaces: AgentSurface[]): number {
+  let traced = 0;
+  let total = 0;
+  for (const a of surfaces) {
+    for (const t of agentTools(a)) {
+      total++;
+      if (t.handler) traced++;
+    }
+  }
+  return coveragePercent(traced, total);
+}
+
+function pack(
+  rule: ParsedRule,
+  status: RuleResultStatus,
+  reason: string,
+  cov: number,
+  extra: { claim?: CitingClaim; unevaluableCount?: number } = {}
+): RuleEvaluation {
+  return {
+    rule,
+    status,
+    reason,
+    display: `${status} (${cov}% of scope traced)`,
+    coveragePercent: cov,
+    claim: extra.claim,
+    unevaluableCount: extra.unevaluableCount,
+  };
 }
 
 export function parseReachRules(text: string): ParsedRule[] {
@@ -194,9 +257,7 @@ export function parseReachRules(text: string): ParsedRule[] {
     const raw = lines[i]!.trim();
     if (!raw || raw.startsWith("#")) continue;
 
-    let m =
-      /^agent\s+(\S+)\s+may\s+not\s+reach\s+(\S+)\s*$/i.exec(raw) ||
-      null;
+    let m = /^agent\s+(\S+)\s+may\s+not\s+reach\s+(\S+)\s*$/i.exec(raw);
     if (m) {
       rules.push({
         kind: "may-not-reach",
@@ -237,9 +298,7 @@ export function parseReachRules(text: string): ParsedRule[] {
     if (m) {
       const a = m[1]!.toLowerCase();
       const b = m[2]!.toLowerCase();
-      if (!isSensitivityClass(a) || !isSensitivityClass(b)) {
-        continue;
-      }
+      if (!isSensitivityClass(a) || !isSensitivityClass(b)) continue;
       rules.push({
         kind: "must-not-co-reach",
         classA: a,
@@ -247,14 +306,9 @@ export function parseReachRules(text: string): ParsedRule[] {
         raw,
         line: i + 1,
       });
-      continue;
     }
   }
   return rules;
-}
-
-function agentTools(surface: AgentSurface): AgentTool[] {
-  return (surface.tools ?? []).filter((t) => t.name !== "(hosted)");
 }
 
 export function evaluateRule(
@@ -265,24 +319,19 @@ export function evaluateRule(
 
   if (rule.kind === "may-not-reach") {
     const matched = agents.filter((a) => matchAgent(a, rule.agent));
+    const cov = coverageAgentTarget(matched, rule.target);
     if (matched.length === 0) {
-      return {
-        rule,
-        status: "UNEVALUABLE",
-        reason: `no agent matched '${rule.agent}'`,
+      return pack(rule, "UNEVALUABLE", `no agent matched '${rule.agent}'`, 0, {
         unevaluableCount: 1,
-      };
+      });
     }
     for (const a of matched) {
       for (const t of agentTools(a)) {
         const { hit, claim } = toolHasHighReach(t, rule.target);
         if (hit && claim) {
-          return {
-            rule,
-            status: "FAIL",
-            reason: `high-confidence reach of ${rule.target}`,
+          return pack(rule, "FAIL", `high-confidence reach of ${rule.target}`, cov, {
             claim: { ...claim, agent: a.file },
-          };
+          });
         }
       }
     }
@@ -291,47 +340,39 @@ export function evaluateRule(
       uneval += countUnevaluableForTarget(agentTools(a), rule.target);
     }
     if (uneval > 0) {
-      return {
+      return pack(
         rule,
-        status: "UNEVALUABLE",
-        reason: `${uneval} not-traced or low-confidence cell(s) cover '${rule.target}' — cannot clear the rule`,
-        unevaluableCount: uneval,
-      };
+        "UNEVALUABLE",
+        `${uneval} not-traced cell(s) cover '${rule.target}' — cannot clear the rule`,
+        cov,
+        { unevaluableCount: uneval }
+      );
     }
-    return {
-      rule,
-      status: "PASS",
-      reason: `no high-confidence reach of ${rule.target}`,
-    };
+    return pack(rule, "PASS", `no high-confidence reach of ${rule.target}`, cov);
   }
 
   if (rule.kind === "must-authenticate") {
     const matched = agents.filter((a) => matchAgent(a, rule.agent));
+    const cov = coverageAgentTarget(matched, rule.target);
     if (matched.length === 0) {
-      return {
-        rule,
-        status: "UNEVALUABLE",
-        reason: `no agent matched '${rule.agent}'`,
+      return pack(rule, "UNEVALUABLE", `no agent matched '${rule.agent}'`, 0, {
         unevaluableCount: 1,
-      };
+      });
     }
     for (const a of matched) {
       if (a.auth?.found) {
-        return {
-          rule,
-          status: "PASS",
-          reason: `auth found at ${a.auth.location}`,
-        };
+        return pack(rule, "PASS", `auth found at ${a.auth.location}`, cov);
       }
       for (const t of agentTools(a)) {
         const { hit, claim } = toolHasHighReach(t, rule.target);
         if (hit && claim) {
-          return {
+          return pack(
             rule,
-            status: "FAIL",
-            reason: `high-confidence ${rule.target} reach with no authentication before tools`,
-            claim: { ...claim, agent: a.file },
-          };
+            "FAIL",
+            `high-confidence ${rule.target} reach with no authentication before tools`,
+            cov,
+            { claim: { ...claim, agent: a.file } }
+          );
         }
       }
     }
@@ -340,54 +381,54 @@ export function evaluateRule(
       uneval += countUnevaluableForTarget(agentTools(a), rule.target);
     }
     if (uneval > 0) {
-      return {
+      return pack(
         rule,
-        status: "UNEVALUABLE",
-        reason: `${uneval} not-traced/low-confidence cell(s) for '${rule.target}' — cannot confirm auth is unnecessary`,
-        unevaluableCount: uneval,
-      };
+        "UNEVALUABLE",
+        `${uneval} not-traced cell(s) for '${rule.target}' — cannot confirm auth is unnecessary`,
+        cov,
+        { unevaluableCount: uneval }
+      );
     }
-    return {
+    return pack(
       rule,
-      status: "PASS",
-      reason: `no high-confidence ${rule.target} reach (auth gap not proven against a confident claim)`,
-    };
+      "PASS",
+      `no high-confidence ${rule.target} reach (auth gap not proven against a confident claim)`,
+      cov
+    );
   }
 
   if (rule.kind === "tools-declared") {
     const matched = agents.filter((a) => matchAgent(a, rule.agent));
+    const cov = coverageToolsDeclared(matched);
     if (matched.length === 0) {
-      return {
-        rule,
-        status: "UNEVALUABLE",
-        reason: `no agent matched '${rule.agent}'`,
+      return pack(rule, "UNEVALUABLE", `no agent matched '${rule.agent}'`, 0, {
         unevaluableCount: 1,
-      };
+      });
     }
     for (const a of matched) {
       for (const t of agentTools(a)) {
         if (!t.handler) {
-          return {
+          return pack(
             rule,
-            status: "FAIL",
-            reason: `tool '${t.name}' has no file:line handler in this repository`,
-            claim: {
-              agent: a.file,
-              tool: t.name,
-              evidence: t.note ?? "no handler",
-            },
-          };
+            "FAIL",
+            `tool '${t.name}' has no file:line handler in this repository`,
+            cov,
+            {
+              claim: {
+                agent: a.file,
+                tool: t.name,
+                evidence: t.note ?? "no handler",
+              },
+            }
+          );
         }
       }
     }
-    return {
-      rule,
-      status: "PASS",
-      reason: "all tools have resolvable handlers",
-    };
+    return pack(rule, "PASS", "all tools have resolvable handlers", cov);
   }
 
   // must-not-co-reach
+  const cov = coverageCoReach(inventory);
   for (const a of agents) {
     for (const t of agentTools(a)) {
       const ca = cellFor(t, rule.classA);
@@ -398,22 +439,26 @@ export function evaluateRule(
         cb?.state === "reaches" &&
         cb.confidence === "high"
       ) {
-        const r = ca.resources[0];
-        return {
+        const r =
+          ca.resources.find((x) => x.confidence === "high") ?? ca.resources[0];
+        return pack(
           rule,
-          status: "FAIL",
-          reason: `tool reaches both ${rule.classA} and ${rule.classB} at high confidence`,
-          claim: {
-            agent: a.file,
-            tool: t.name,
-            class: rule.classA,
-            resource: r ? `${r.kind}:${r.name}` : rule.classA,
-            confidence: "high",
-            depth: ca.depth,
-            path: ca.path,
-            evidence: r?.evidence,
-          },
-        };
+          "FAIL",
+          `tool reaches both ${rule.classA} and ${rule.classB} at high confidence`,
+          cov,
+          {
+            claim: {
+              agent: a.file,
+              tool: t.name,
+              class: rule.classA,
+              resource: r ? `${r.kind}:${r.name}` : rule.classA,
+              confidence: "high",
+              depth: r?.depth ?? ca.depth,
+              path: r?.path ?? ca.path,
+              evidence: r?.evidence,
+            },
+          }
+        );
       }
     }
   }
@@ -422,44 +467,42 @@ export function evaluateRule(
     for (const t of agentTools(a)) {
       const ca = cellFor(t, rule.classA);
       const cb = cellFor(t, rule.classB);
-      const aWeak =
-        ca?.state === "not-traced" ||
-        (ca?.state === "reaches" && ca.confidence === "low");
-      const bWeak =
-        cb?.state === "not-traced" ||
-        (cb?.state === "reaches" && cb.confidence === "low");
+      const aWeak = ca?.state === "not-traced";
+      const bWeak = cb?.state === "not-traced";
       const aHigh = ca?.state === "reaches" && ca.confidence === "high";
       const bHigh = cb?.state === "reaches" && cb.confidence === "high";
-      // One side high and the other unevaluable → cannot clear co-reach rule
       if ((aHigh && bWeak) || (bHigh && aWeak) || (aWeak && bWeak)) uneval++;
     }
   }
   if (uneval > 0) {
-    return {
+    return pack(
       rule,
-      status: "UNEVALUABLE",
-      reason: `${uneval} tool(s) have not-traced/low-confidence coverage on ${rule.classA}/${rule.classB}`,
-      unevaluableCount: uneval,
-    };
+      "UNEVALUABLE",
+      `${uneval} tool(s) have not-traced coverage on ${rule.classA}/${rule.classB}`,
+      cov,
+      { unevaluableCount: uneval }
+    );
   }
-  return {
+  return pack(
     rule,
-    status: "PASS",
-    reason: `no high-confidence co-reach of ${rule.classA} and ${rule.classB}`,
-  };
+    "PASS",
+    `no high-confidence co-reach of ${rule.classA} and ${rule.classB}`,
+    cov
+  );
 }
 
-export function countReachConfidence(
-  inventory: AgentInventory
-): { high: number; medium: number; low: number } {
-  const out = { high: 0, medium: 0, low: 0 };
+export function countReachConfidence(inventory: AgentInventory): {
+  high: number;
+  medium: number;
+} {
+  const out = { high: 0, medium: 0 };
   for (const a of inventory.agents ?? []) {
     if (a.kind !== "agent") continue;
     for (const t of agentTools(a)) {
       for (const c of RESOURCE_CLASSES) {
         const cell = cellFor(t, c);
         if (cell?.state !== "reaches") continue;
-        const conf = cell.confidence ?? "medium";
+        const conf = cell.confidence === "high" ? "high" : "medium";
         out[conf]++;
       }
     }
@@ -469,9 +512,7 @@ export function countReachConfidence(
 
 export function loadBaseline(repoRoot: string): ReachBaseline {
   const p = path.join(repoRoot, "reach-baseline.json");
-  if (!fs.existsSync(p)) {
-    return { version: 1, baselinedFailures: [] };
-  }
+  if (!fs.existsSync(p)) return { version: 1, baselinedFailures: [] };
   try {
     const raw = JSON.parse(fs.readFileSync(p, "utf8"));
     return {
@@ -487,8 +528,11 @@ export function loadBaseline(repoRoot: string): ReachBaseline {
 }
 
 export function writeBaseline(repoRoot: string, baseline: ReachBaseline): void {
-  const p = path.join(repoRoot, "reach-baseline.json");
-  fs.writeFileSync(p, JSON.stringify(baseline, null, 2) + "\n", "utf8");
+  fs.writeFileSync(
+    path.join(repoRoot, "reach-baseline.json"),
+    JSON.stringify(baseline, null, 2) + "\n",
+    "utf8"
+  );
 }
 
 export function baselineKey(rule: ParsedRule, claim?: CitingClaim): string {
@@ -528,19 +572,30 @@ export function evaluateReachRules(
     }
   }
 
-  const ciLine = `${failNew} new failures would block, ${failBaselined} baselined, ${unevaluable} unevaluable.`;
   return {
     rulesPath: path.join(repoRoot, "reach.rules"),
     evaluations,
     summary: { pass, fail, failNew, failBaselined, unevaluable },
     confidenceOfReaches,
-    ciLine,
+    ciLine: `${failNew} new failures would block, ${failBaselined} baselined, ${unevaluable} unevaluable.`,
     exitCode: failNew > 0 ? 1 : 0,
   };
 }
 
+function hasHighSensitiveReach(a: AgentSurface): boolean {
+  return agentTools(a).some((t) => {
+    for (const cls of ["patient", "money"] as ResourceClass[]) {
+      const c = cellFor(t, cls);
+      if (c?.state === "reaches" && c.confidence === "high") return true;
+    }
+    return false;
+  });
+}
+
 /**
- * Generate starter rules from live findings (auth gap + high-confidence patient/money co-reach).
+ * Starter rules from live findings:
+ * - auth rule for EVERY agent with high-confidence sensitive reach and no auth
+ * - co-reach rule when observed
  */
 export function generateStarterRules(inventory: AgentInventory): string {
   const agents = (inventory.agents ?? []).filter((a) => a.kind === "agent");
@@ -550,33 +605,27 @@ export function generateStarterRules(inventory: AgentInventory): string {
     "",
   ];
 
-  // Auth gap: pick an agent with high-confidence patient reach and no auth
-  let authAgent: AgentSurface | null = null;
-  for (const a of agents) {
-    if (a.auth?.found) continue;
-    const hasHighPatient = agentTools(a).some((t) => {
-      const c = cellFor(t, "patient");
-      return c?.state === "reaches" && c.confidence === "high";
-    });
-    if (hasHighPatient) {
-      authAgent = a;
-      break;
-    }
-  }
-  if (!authAgent) {
-    // fall back to first agent without auth
-    authAgent = agents.find((a) => !a.auth?.found) ?? agents[0] ?? null;
-  }
-  if (authAgent) {
-    const name = agentShortName(authAgent.file);
+  const authTargets = agents.filter((a) => !a.auth?.found && hasHighSensitiveReach(a));
+  if (authTargets.length === 0) {
+    lines.push("# No unauthenticated agents with high-confidence patient/money reach");
+    lines.push("");
+  } else {
     lines.push(
-      `# Auth gap: ${name} has no authentication before tool execution`
+      `# Auth gap: ${authTargets.length} agent(s) reach sensitive data without authentication`
     );
-    lines.push(`agent ${name} must authenticate before patient`);
+    for (const a of authTargets) {
+      const name = agentShortName(a.file);
+      // Prefer patient if they reach it at high confidence, else money
+      const patientHigh = agentTools(a).some((t) => {
+        const c = cellFor(t, "patient");
+        return c?.state === "reaches" && c.confidence === "high";
+      });
+      const target = patientHigh ? "patient" : "money";
+      lines.push(`agent ${name} must authenticate before ${target}`);
+    }
     lines.push("");
   }
 
-  // Highest-confidence patient+money co-reach → co-reach rule
   let coReachTool: { agent: string; tool: string } | null = null;
   for (const a of agents) {
     for (const t of agentTools(a)) {

@@ -18,6 +18,8 @@ type EvalRow = {
   rule: { raw: string; kind?: string; line?: number };
   status: "PASS" | "FAIL" | "UNEVALUABLE";
   reason: string;
+  display?: string;
+  coveragePercent?: number;
   claim?: {
     agent: string;
     tool: string;
@@ -34,7 +36,7 @@ type EvalRow = {
 type EvalResponse = {
   rules: string;
   ciLine: string;
-  confidenceOfReaches?: { high: number; medium: number; low: number };
+  confidenceOfReaches?: { high: number; medium: number };
   summary: {
     pass: number;
     fail: number;
@@ -254,7 +256,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
         {report?.confidenceOfReaches && (
           <span style={{ color: "#6b7280", fontSize: 11 }}>
             reaches conf: high {report.confidenceOfReaches.high} · medium{" "}
-            {report.confidenceOfReaches.medium} · low {report.confidenceOfReaches.low}
+            {report.confidenceOfReaches.medium}
           </span>
         )}
         {error && <span style={{ color: "#f87171" }}>{error}</span>}
@@ -385,8 +387,11 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                   <span style={{ color, fontWeight: 700, fontSize: 11, minWidth: 110 }}>
                     {statusLabel}
                   </span>
-                  <span style={{ color: "#e5e7eb", fontSize: 12 }}>{e.rule.raw}</span>
+                  <span style={{ color: "#6b7280", fontSize: 10 }}>
+                    {e.display ?? `${e.status} (${e.coveragePercent ?? "?"}%)`}
+                  </span>
                 </div>
+                <div style={{ marginTop: 4, color: "#e5e7eb", fontSize: 12 }}>{e.rule.raw}</div>
                 <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af" }}>{e.reason}</div>
                 {e.claim && (
                   <div style={{ marginTop: 8, fontSize: 11, color: "#d1d5db" }}>

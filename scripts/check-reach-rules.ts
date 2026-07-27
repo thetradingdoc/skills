@@ -51,6 +51,8 @@ const out = {
   evaluations: report.evaluations.map((e) => ({
     rule: e.rule.raw,
     status: e.status,
+    display: e.display,
+    coveragePercent: e.coveragePercent,
     reason: e.reason,
     claim: e.claim ?? null,
     unevaluableCount: e.unevaluableCount ?? null,

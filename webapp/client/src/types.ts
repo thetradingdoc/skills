@@ -238,7 +238,7 @@ export type ResourceClass =
   | "unclassified";
 
 export type CellState = "reaches" | "none" | "not-traced";
-export type ClaimConfidence = "high" | "medium" | "low";
+export type ClaimConfidence = "high" | "medium";
 
 export type ReachHop = {
   file: string;
