@@ -238,6 +238,13 @@ export type ResourceClass =
 
 export type CellState = "reaches" | "none" | "not-traced";
 
+export type ReachHop = {
+  file: string;
+  line: number | null;
+  snippet: string;
+  label: string;
+};
+
 export type ReachResource = {
   kind: ResourceKind;
   name: string;
@@ -246,6 +253,8 @@ export type ReachResource = {
   path: string[];
   evidence: string;
   guess?: boolean;
+  hops?: ReachHop[];
+  proof?: string;
 };
 
 export type ClassCell = {

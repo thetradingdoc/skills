@@ -1,14 +1,15 @@
 /**
  * Reach matrix — tools × sensitivity columns with three cell states:
- * reaches | none | not-traced.
+ * reaches | none | not-traced. Click a cell for the full evidence chain.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AgentInventoryResult,
   AgentSurface,
   AgentTool,
   CellState,
   ClassCell,
+  ReachResource,
   ResourceClass,
 } from "./types";
 
@@ -24,6 +25,29 @@ const COLUMNS: ResourceClass[] = [
   "unclassified",
 ];
 
+const DISPUTES_KEY = "arch_trace_disputes";
+
+type DisputeKey = string; // agent::tool::class or tool::resource
+
+function disputeCellKey(agent: string, tool: string, cls: string): DisputeKey {
+  return `${agent}::${tool}::${cls}`;
+}
+
+function loadDisputedCells(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISPUTES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw) as { cells?: string[] };
+    return new Set(parsed.cells ?? []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDisputedCells(set: Set<string>) {
+  localStorage.setItem(DISPUTES_KEY, JSON.stringify({ cells: [...set] }));
+}
+
 function fileName(file: string): string {
   const parts = file.split(/[/\\]/);
   return parts[parts.length - 1] || file;
@@ -32,7 +56,6 @@ function fileName(file: string): string {
 function cellFor(tool: AgentTool, cls: ResourceClass): ClassCell {
   const fromCells = tool.reach?.cells?.[cls];
   if (fromCells) return fromCells;
-  // Backward compat for older scans without cells
   const resources = (tool.reach?.resources ?? []).filter((r) => r.class === cls);
   if (resources.length) {
     const best = resources.reduce((a, b) => (a.depth <= b.depth ? a : b));
@@ -68,13 +91,17 @@ function toolReachesMoney(tool: AgentTool): boolean {
 
 function CellMark({
   state,
+  depth,
   active,
+  disputed,
   reason,
   onClick,
   cls,
 }: {
   state: CellState;
+  depth: number | null;
   active: boolean;
+  disputed: boolean;
   reason: string | null;
   onClick: () => void;
   cls: ResourceClass;
@@ -93,11 +120,15 @@ function CellMark({
         title={reason ?? "not traced"}
         onClick={onClick}
         style={{
-          width: 14,
+          width: disputed ? 22 : 14,
           height: 14,
           borderRadius: 2,
-          border: active ? "1px solid #fde68a" : "1px dashed #b45309",
-          background: "transparent",
+          border: active
+            ? "1px solid #fde68a"
+            : disputed
+              ? "1px solid #f472b6"
+              : "1px dashed #b45309",
+          background: disputed ? "rgba(244,114,182,0.15)" : "transparent",
           color: "#f59e0b",
           cursor: "pointer",
           padding: 0,
@@ -119,21 +150,189 @@ function CellMark({
           : cls === "unclassified"
             ? "#a78bfa"
             : "#6b7280";
+  const depthLabel = depth == null ? "" : String(depth);
   return (
     <button
       type="button"
-      title="Show path"
+      title={`reaches at depth ${depth ?? "?"}${disputed ? " (disputed)" : ""}`}
       onClick={onClick}
       style={{
-        width: 14,
-        height: 14,
+        minWidth: depthLabel ? 22 : 14,
+        height: 16,
         borderRadius: 3,
-        border: active ? "1px solid #93c5fd" : "1px solid transparent",
-        background: bg,
+        border: active
+          ? "1px solid #93c5fd"
+          : disputed
+            ? "1px solid #f472b6"
+            : "1px solid transparent",
+        background: disputed ? "rgba(244,114,182,0.25)" : bg,
         cursor: "pointer",
-        padding: 0,
+        padding: "0 3px",
+        fontSize: 9,
+        fontWeight: 700,
+        color: disputed ? "#fce7f3" : "#0f172a",
+        lineHeight: "14px",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       }}
-    />
+    >
+      {depthLabel}
+    </button>
+  );
+}
+
+function EvidenceChain({
+  tool,
+  surface,
+  cls,
+  cell,
+}: {
+  tool: AgentTool;
+  surface: AgentSurface;
+  cls: ResourceClass;
+  cell: ClassCell;
+}) {
+  const primary: ReachResource | null =
+    cell.resources.length > 0
+      ? cell.resources.reduce((a, b) => (a.depth <= b.depth ? a : b))
+      : null;
+
+  return (
+    <div style={{ marginTop: 10, fontSize: 11, color: "#d1d5db", lineHeight: 1.55 }}>
+      <div style={{ color: "#f3f4f6", fontWeight: 600 }}>
+        {tool.name}
+        <span style={{ color: "#9ca3af", fontWeight: 400, marginLeft: 8 }}>
+          → {cls} ({cell.state}
+          {cell.state === "reaches" && cell.depth != null ? ` · depth ${cell.depth}` : ""})
+        </span>
+      </div>
+      {tool.description && (
+        <div style={{ marginTop: 4, color: "#9ca3af" }}>
+          model description: {tool.description}
+        </div>
+      )}
+      {tool.handler && (
+        <div style={{ marginTop: 6, color: "#93c5fd" }}>
+          handler {tool.handler}
+        </div>
+      )}
+      {!tool.handler && (
+        <div style={{ marginTop: 6, color: "#f59e0b" }}>
+          no handler resolved on {fileName(surface.file)}
+        </div>
+      )}
+
+      {cell.state === "not-traced" && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: "8px 10px",
+            borderRadius: 6,
+            border: "1px dashed #b45309",
+            background: "rgba(120,53,15,0.2)",
+            color: "#fbbf24",
+          }}
+        >
+          Stopped: {cell.reason}
+          {(tool.reach?.truncationReasons?.length ?? 0) > 1 && (
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: "#fcd34d" }}>
+              {tool.reach!.truncationReasons!.slice(0, 6).map((r) => (
+                <li key={r}>{r}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {cell.state === "none" && (
+        <div style={{ marginTop: 8, color: "#6b7280" }}>
+          Walk completed with no path to {cls}.
+        </div>
+      )}
+
+      {cell.resources.map((r) => {
+        const hops =
+          r.hops && r.hops.length > 0
+            ? r.hops
+            : (r.path ?? []).map((label) => ({
+                file: label.split(":")[0] ?? label,
+                line: null as number | null,
+                snippet: label,
+                label,
+              }));
+        return (
+          <div
+            key={`${r.kind}:${r.name}:${r.depth}`}
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              borderRadius: 6,
+              border: "1px solid #30363d",
+              background: "rgba(15,23,42,0.6)",
+            }}
+          >
+            <div style={{ color: "#93c5fd" }}>
+              {r.kind}:{r.name}{" "}
+              <span style={{ color: "#6b7280" }}>depth {r.depth}</span>
+              {r.guess && (
+                <span style={{ color: "#fbbf24", marginLeft: 8 }}>guess</span>
+              )}
+            </div>
+            <div style={{ marginTop: 8 }}>
+              {hops.map((h, i) => (
+                <div
+                  key={`${h.label}-${i}`}
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    marginBottom: 6,
+                    alignItems: "flex-start",
+                  }}
+                >
+                  <span style={{ color: "#4b5563", minWidth: 14 }}>{i + 1}.</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ color: "#e5e7eb" }}>
+                      {h.file}
+                      {h.line != null ? `:${h.line}` : ""}
+                      {h.label && h.label !== h.file && (
+                        <span style={{ color: "#6b7280", marginLeft: 8 }}>{h.label}</span>
+                      )}
+                    </div>
+                    {h.snippet && (
+                      <pre
+                        style={{
+                          margin: "4px 0 0",
+                          padding: "6px 8px",
+                          borderRadius: 4,
+                          background: "#0b1220",
+                          color: "#a5b4fc",
+                          fontSize: 10,
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          border: "1px solid #1f2937",
+                        }}
+                      >
+                        {h.snippet}
+                      </pre>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {(r.proof || r.evidence) && (
+              <div style={{ marginTop: 8, color: "#86efac", fontSize: 10 }}>
+                proof: {r.proof ?? r.evidence}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {primary && cell.state === "reaches" && (
+        <div style={{ marginTop: 8, color: "#4b5563", fontSize: 10 }}>
+          shortest path: {(primary.path ?? []).join(" → ")}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -148,6 +347,28 @@ export default function ReachView({ agents }: Props) {
     tool: string;
     cls: ResourceClass;
   } | null>(null);
+
+  const [disputed, setDisputed] = useState<Set<string>>(() => loadDisputedCells());
+  const [disputeStatus, setDisputeStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/resources/disputes")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.disputes) return;
+        setDisputed((prev) => {
+          const next = new Set(prev);
+          for (const d of data.disputes) {
+            if (d.agent && d.class) next.add(disputeCellKey(d.agent, d.tool, d.class));
+          }
+          saveDisputedCells(next);
+          return next;
+        });
+      })
+      .catch(() => {
+        /* localStorage only */
+      });
+  }, []);
 
   const selectedTool: { surface: AgentSurface; tool: AgentTool } | null =
     useMemo(() => {
@@ -186,6 +407,47 @@ export default function ReachView({ agents }: Props) {
     }
     return { unclassifiedCount: names.size, notTracedCells: notTraced, totalCells: total };
   }, [agentSurfaces]);
+
+  async function markLooksWrong() {
+    if (!selected || !selectedTool || !selectedCell) return;
+    const primary =
+      selectedCell.resources[0] ??
+      ({
+        kind: "service",
+        name: selected.cls,
+      } as { kind: string; name: string });
+    const resource = `${primary.kind}:${primary.name}`;
+    const claim = selectedCell.state;
+    const body = {
+      tool: selected.tool,
+      resource,
+      claim,
+      agent: selected.agent,
+      class: selected.cls,
+      reason: selectedCell.reason ?? undefined,
+    };
+    const key = disputeCellKey(selected.agent, selected.tool, selected.cls);
+    setDisputed((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      saveDisputedCells(next);
+      return next;
+    });
+    setDisputeStatus("Recording…");
+    try {
+      const res = await fetch("/api/resources/disputes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setDisputeStatus("Saved to trace-disputes.json");
+    } catch (e) {
+      setDisputeStatus(
+        `Marked locally (file write failed: ${e instanceof Error ? e.message : String(e)})`
+      );
+    }
+  }
 
   if (!agents || agentSurfaces.length === 0) {
     return (
@@ -233,6 +495,10 @@ export default function ReachView({ agents }: Props) {
     );
   }
 
+  const selectedDisputed =
+    selected != null &&
+    disputed.has(disputeCellKey(selected.agent, selected.tool, selected.cls));
+
   return (
     <div
       style={{
@@ -254,8 +520,8 @@ export default function ReachView({ agents }: Props) {
           background: "rgba(120,53,15,0.25)",
         }}
       >
-        {notTracedCells} of {totalCells} cells are untraced (depth limit, module cap, unresolved
-        handler, or dynamic dispatch). Filled = reaches · · = none · ? = not-traced.
+        {notTracedCells} of {totalCells} cells are untraced. Filled digit = reaches at that depth · ·
+        = none · ? = not-traced. Pink border = disputed. Click any claim for the evidence chain.
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: "16px 20px 40px" }}>
         {agentSurfaces.map((surface) => {
@@ -377,6 +643,9 @@ export default function ReachView({ agents }: Props) {
                           selected?.agent === surface.file &&
                           selected?.tool === tool.name &&
                           selected?.cls === cls;
+                        const isDisputed = disputed.has(
+                          disputeCellKey(surface.file, tool.name, cls)
+                        );
                         return (
                           <td
                             key={cls}
@@ -388,7 +657,9 @@ export default function ReachView({ agents }: Props) {
                           >
                             <CellMark
                               state={cell.state}
+                              depth={cell.depth}
                               active={active}
+                              disputed={isDisputed}
                               reason={cell.reason}
                               cls={cls}
                               onClick={() =>
@@ -415,71 +686,58 @@ export default function ReachView({ agents }: Props) {
         <div
           style={{
             borderTop: "1px solid #30363d",
-            background: "rgba(17,24,39,0.95)",
+            background: "rgba(17,24,39,0.97)",
             padding: "12px 20px 16px",
-            maxHeight: 220,
+            maxHeight: 340,
             overflow: "auto",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-            <div style={{ fontSize: 12, color: "#f3f4f6" }}>
-              {selectedTool.tool.name} → {selected.cls}{" "}
-              <span style={{ color: "#9ca3af" }}>({selectedCell.state})</span>
-              {selectedTool.tool.handler && (
-                <span style={{ color: "#6b7280", marginLeft: 8 }}>
-                  handler {selectedTool.tool.handler}
-                </span>
-              )}
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>Evidence</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={markLooksWrong}
+                disabled={selectedDisputed}
+                style={{
+                  background: selectedDisputed ? "rgba(244,114,182,0.2)" : "transparent",
+                  border: "1px solid #f472b6",
+                  color: "#f9a8d4",
+                  borderRadius: 4,
+                  padding: "4px 10px",
+                  cursor: selectedDisputed ? "default" : "pointer",
+                  fontSize: 11,
+                }}
+              >
+                {selectedDisputed ? "Disputed" : "This looks wrong"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelected(null);
+                  setDisputeStatus(null);
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                close
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setSelected(null)}
-              style={{
-                background: "transparent",
-                border: "none",
-                color: "#9ca3af",
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              close
-            </button>
           </div>
-          {selectedCell.state === "not-traced" && (
-            <div style={{ marginTop: 8, fontSize: 11, color: "#fbbf24" }}>
-              {selectedCell.reason}
-            </div>
+          {disputeStatus && (
+            <div style={{ marginTop: 6, fontSize: 10, color: "#f9a8d4" }}>{disputeStatus}</div>
           )}
-          {selectedCell.state === "none" && (
-            <div style={{ marginTop: 8, fontSize: 11, color: "#6b7280" }}>
-              Walk completed with no path to {selected.cls}.
-            </div>
-          )}
-          {selectedCell.resources.map((r) => (
-            <div
-              key={`${r.kind}:${r.name}:${r.depth}`}
-              style={{
-                marginTop: 10,
-                padding: "8px 10px",
-                borderRadius: 6,
-                border: "1px solid #30363d",
-                fontSize: 11,
-                color: "#d1d5db",
-              }}
-            >
-              <div style={{ color: "#93c5fd" }}>
-                {r.kind}:{r.name}{" "}
-                <span style={{ color: "#6b7280" }}>depth {r.depth}</span>
-                {r.guess && (
-                  <span style={{ color: "#fbbf24", marginLeft: 8 }}>guess</span>
-                )}
-              </div>
-              <div style={{ marginTop: 4, color: "#9ca3af", lineHeight: 1.5 }}>
-                {r.path.join(" → ")}
-              </div>
-              <div style={{ marginTop: 4, color: "#4b5563" }}>{r.evidence}</div>
-            </div>
-          ))}
+          <EvidenceChain
+            tool={selectedTool.tool}
+            surface={selectedTool.surface}
+            cls={selected.cls}
+            cell={selectedCell}
+          />
         </div>
       )}
     </div>
