@@ -18,6 +18,7 @@ import { detectDrift } from "../src/analyzer/driftDetector";
 import { enrichGraph } from "../src/ai/enricher-v2";
 import { analyseGraph } from "../src/analysis/graphAnalyser";
 import { getClonesDir, authUrl, cloneToStablePath } from "../webapp/server/src/cloneRepo.js";
+import { buildAgentInventory } from "./agent-inventory";
 
 async function main() {
   const repoUrl = process.argv[2];
@@ -61,12 +62,15 @@ async function main() {
     graph = await enrichGraph(graph);
     graph = analyseGraph(graph);
 
+    const agents = buildAgentInventory(absoluteCloneDir);
+
     // Normalize for JSON output:
     // - projectRoot: absolute path to the cloned repo (server uses this as rootPath)
     // - node.files: always relative to projectRoot to avoid double-joining
     const out = {
       ...graph,
       projectRoot: absoluteCloneDir,
+      agents,
       nodes: graph.nodes.map((n) => ({
         ...n,
         path: n.id,

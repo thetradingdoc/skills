@@ -279,6 +279,8 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  /** Agent inventory from scripts/agent-inventory.ts (scan-time). */
+  agents?: AgentInventoryResult;
   layers?: Array<{
     id: string;
     name: string;
@@ -293,6 +295,25 @@ export interface ArchGraph {
   }>;
   findings?: ContractFinding[];
 }
+
+/** Per-file agent surface detected by agent-inventory. */
+export type AgentSurface = {
+  file: string;
+  provider: string;
+  evidence: string;
+  model: string | null;
+  systemPrompt: string | null;
+  toolCandidates: string[];
+  confidence: "high" | "low";
+};
+
+export type AgentInventoryResult = {
+  agents: AgentSurface[];
+  scannedFiles: number;
+  languages: Record<string, number>;
+  pythonAgents: string[];
+  searchedFor: string[];
+};
 
 /** SystemModel node: ArchNode + inferred domain, runtimeRoles, tier for reasoning. */
 export interface SystemModelNode extends ArchNode {

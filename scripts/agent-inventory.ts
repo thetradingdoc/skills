@@ -357,11 +357,26 @@ function analyzeJsTsFile(
     if (!hasPkgImport) continue;
     const m = pat.re.exec(text);
     if (m) {
+      const model = findModel(text);
+      // Embedding-only clients are not agent surfaces.
+      if (
+        model &&
+        /embedding/i.test(model) &&
+        !/\.chat\.completions\.|messages\.create\s*\(|bindTools\s*\(/.test(text)
+      ) {
+        continue;
+      }
+      if (
+        /Embeddings\s*\(|embeddings\.create\s*\(/.test(text) &&
+        !/\.chat\.completions\.|messages\.create\s*\(|bindTools\s*\(/.test(text)
+      ) {
+        continue;
+      }
       return {
         file: rel,
         provider: pat.provider,
         evidence: lineOfMatch(text, m.index),
-        model: findModel(text),
+        model,
         systemPrompt: findSystemPrompt(text, rel),
         toolCandidates: findToolCandidates(text),
         confidence: "high",

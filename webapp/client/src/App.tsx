@@ -598,6 +598,7 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [graph, setGraph] = useState<ArchGraph | null>(null);
+  const [selectedAgentFile, setSelectedAgentFile] = useState<string | null>(null);
   const effectiveGraph = useMemo(() => {
     if (!graph) return null;
 
@@ -813,12 +814,6 @@ export default function App() {
     violations: CriticViolation[];
   } | null>(null);
 
-  const criticalViolationsCount = activeViolations.filter(
-    (v) => v.severity === "critical"
-  ).length;
-  const highViolationsCount = activeViolations.filter(
-    (v) => v.severity === "high"
-  ).length;
   // ── Autosave ──────────────────────────────────────────────────────────────
   const [autosaveEnabled, setAutosaveEnabled] = useState<boolean>(() => {
     try {
@@ -2004,6 +1999,7 @@ export default function App() {
         }
 
         // Successful scan: always show the graph.
+        setSelectedAgentFile(null);
         setGraph(analyseGraph(data));
 
         // Signed-in path MUST return workspaceId (server enforces this).
@@ -4054,8 +4050,6 @@ export default function App() {
   }
 
   // Main: chat left, ReactFlow right
-  const driftEdges = graph?.edges.filter((e) => e.isDrift) ?? [];
-  const missingContextNodes = graph?.nodes.filter((n) => !n.health?.hasContext) ?? [];
   const selectedNodeData = graph?.nodes.find((n) => n.id === selectedNode);
 
   return (
@@ -4349,56 +4343,161 @@ export default function App() {
               gap: 12,
             }}
           >
-            {/* System Overview */}
-            <DashboardCard title="System Overview">
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
-                <DashboardMetric
-                  value={graph!.nodes.length}
-                  label="Modules"
-                />
-                <DashboardMetric
-                  value={graph!.edges.length}
-                  label="Connections"
-                />
-                <DashboardMetric
-                  value={driftEdges.length}
-                  label="Drift"
-                  color={driftEdges.length > 0 ? "#f85149" : "#3fb950"}
-                />
-                <DashboardMetric
-                  value={missingContextNodes.length}
-                  label="No context"
-                  color={missingContextNodes.length > 0 ? "#f0883e" : "#3fb950"}
-                />
-              </div>
-            </DashboardCard>
+            {/* Agents Found — replaces System Overview / Health & Risk */}
+            <div style={{ gridColumn: "1 / span 2" }}>
+              <DashboardCard
+                title="Agents Found"
+                rightHeaderContent={
+                  <span style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 11, color: "#8b949e" }}>
+                    {(graph?.agents?.agents ?? []).length} surface{(graph?.agents?.agents ?? []).length === 1 ? "" : "s"}
+                    {" · "}
+                    {graph!.nodes.length} modules
+                    {" · "}
+                    {graph!.edges.length} connections
+                  </span>
+                }
+              >
+                {(graph?.agents?.agents ?? []).length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "#8b949e", lineHeight: 1.55 }}>
+                    <div style={{ color: "#e6edf3", marginBottom: 8 }}>
+                      No agent surfaces found in this repository.
+                    </div>
+                    <div style={{ fontSize: 11, color: "#6e7681", marginBottom: 6 }}>
+                      Searched for:
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "JetBrains Mono, ui-monospace, monospace",
+                        fontSize: 11,
+                        color: "#8b949e",
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {(graph?.agents?.searchedFor?.length
+                        ? graph.agents.searchedFor
+                        : [
+                            "openai",
+                            "@anthropic-ai/sdk",
+                            "groq-sdk",
+                            "retell-ai",
+                            "api.openai.com",
+                            "api.anthropic.com",
+                            "api.groq.com",
+                            "api.retellai.com",
+                          ]
+                      ).join(" · ")}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                    {(graph?.agents?.agents ?? []).map((a) => {
+                      const selected = selectedAgentFile === a.file;
+                      const base = a.file.split("/").pop() ?? a.file;
+                      return (
+                        <button
+                          key={a.file}
+                          type="button"
+                          onClick={() =>
+                            setSelectedAgentFile((prev) =>
+                              prev === a.file ? null : a.file
+                            )
+                          }
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns: "minmax(0, 1.4fr) 88px minmax(0, 1fr) minmax(0, 1fr) 36px",
+                            gap: 8,
+                            alignItems: "center",
+                            width: "100%",
+                            textAlign: "left",
+                            background: selected ? "rgba(88,166,255,0.1)" : "transparent",
+                            border: "0",
+                            borderBottom: "1px solid #22272e",
+                            borderLeft: selected
+                              ? "2px solid #58a6ff"
+                              : "2px solid transparent",
+                            padding: "8px 6px",
+                            cursor: "pointer",
+                            color: "#e6edf3",
+                          }}
+                          title={a.evidence}
+                        >
+                          <span
+                            style={{
+                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
+                              fontSize: 11.5,
+                              color: selected ? "#58a6ff" : "#e6edf3",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={a.file}
+                          >
+                            {base}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
+                              fontSize: 11,
+                              color: "#8b949e",
+                            }}
+                          >
+                            {a.provider}
+                          </span>
+                          <span style={{ fontSize: 11.5, color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {a.model ?? "model not determinable"}
+                          </span>
+                          <span style={{ fontSize: 11.5, color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {a.toolCandidates.length > 0
+                              ? `${a.toolCandidates.length} tool${a.toolCandidates.length === 1 ? "" : "s"}`
+                              : "tools not declared in repo"}
+                          </span>
+                          <span
+                            style={{
+                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
+                              fontSize: 10,
+                              color: a.confidence === "low" ? "#d29922" : "#3fb950",
+                              textAlign: "right",
+                            }}
+                            title={a.confidence === "low" ? "Low confidence — import/URL only" : "High confidence — construction + provider"}
+                          >
+                            {a.confidence === "low" ? "low" : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </DashboardCard>
+            </div>
 
-            {/* Health & Risk */}
-            <DashboardCard title="Health & Risk">
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
-                <DashboardMetric
-                  value={criticalViolationsCount}
-                  label="Critical"
-                  color={criticalViolationsCount > 0 ? "#f85149" : "#3fb950"}
-                  subLabel={criticalViolationsCount > 0 ? `↑ ${criticalViolationsCount} active` : "none"}
-                  subColor="#f85149"
-                />
-                <DashboardMetric
-                  value={highViolationsCount}
-                  label="High severity"
-                  color={highViolationsCount > 0 ? "#d29922" : "#3fb950"}
-                  subLabel={highViolationsCount > 0 ? `↑ ${highViolationsCount} open` : "none"}
-                  subColor="#d29922"
-                />
-                <DashboardMetric
-                  value={activeViolations.length}
-                  label="Total violations"
-                  color="#e6edf3"
-                  subLabel="— all time"
-                  subColor="#7d8590"
-                />
+            {/* Not scanned — Python agent frameworks invisible to the JS/TS graph */}
+            {(graph?.agents?.pythonAgents?.length ?? 0) > 0 && (
+              <div style={{ gridColumn: "1 / span 2" }}>
+                <DashboardCard title="Not Scanned">
+                  <div style={{ fontSize: 12.5, color: "#e6edf3", lineHeight: 1.55, marginBottom: 10 }}>
+                    {graph!.agents!.pythonAgents.length} Python file
+                    {graph!.agents!.pythonAgents.length === 1 ? "" : "s"} import an agent
+                    framework and are not in the graph.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {graph!.agents!.pythonAgents.map((p) => (
+                      <div
+                        key={p}
+                        style={{
+                          fontFamily: "JetBrains Mono, ui-monospace, monospace",
+                          fontSize: 11.5,
+                          color: "#f85149",
+                          padding: "4px 0",
+                          borderBottom: "1px solid #22272e",
+                        }}
+                      >
+                        {p}
+                      </div>
+                    ))}
+                  </div>
+                </DashboardCard>
               </div>
-            </DashboardCard>
+            )}
 
             {/* Agent Tasks (full width) */}
             {tasksForWorkspace.filter((t) => t.dismissed !== true).length > 0 && (

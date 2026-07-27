@@ -202,6 +202,8 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  /** Agent inventory from scan (scripts/agent-inventory.ts). */
+  agents?: AgentInventoryResult;
   layers?: Array<{
     id: string;
     name: string;
@@ -215,6 +217,25 @@ export interface ArchGraph {
     languageLesson?: string;
   }>;
 }
+
+/** Per-file agent surface detected at scan time. */
+export type AgentSurface = {
+  file: string;
+  provider: string;
+  evidence: string;
+  model: string | null;
+  systemPrompt: string | null;
+  toolCandidates: string[];
+  confidence: "high" | "low";
+};
+
+export type AgentInventoryResult = {
+  agents: AgentSurface[];
+  scannedFiles: number;
+  languages: Record<string, number>;
+  pythonAgents: string[];
+  searchedFor: string[];
+};
 
 // ── Scene model (iCraft-style authored scenes) ────────────────────────────────
 
