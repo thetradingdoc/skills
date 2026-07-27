@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
+import ReachView from "./ReachView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -802,7 +803,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach">("2d");
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
 
@@ -7682,7 +7683,24 @@ export default function App() {
                 >
                   Agents
                 </button>
-                {graphViewMode !== "agents" && (
+                <button
+                  type="button"
+                  title="Reach matrix"
+                  onClick={() => setGraphViewMode("reach")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "reach" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "reach" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "reach" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Reach
+                </button>
+                {graphViewMode !== "agents" && graphViewMode !== "reach" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -7908,6 +7926,8 @@ export default function App() {
           >
             {graphViewMode === "agents" ? (
               <AgentsView agents={graph?.agents} />
+            ) : graphViewMode === "reach" ? (
+              <ReachView agents={graph?.agents} />
             ) : (
             <ArchCanvas
               graph={effectiveGraph!}
