@@ -29,7 +29,6 @@ import { NodePopup } from "./NodePopup";
 import { NodeIntelPanel } from "./NodeIntelPanel";
 import { Arch3DView } from "./Arch3DView";
 import { computeDepthLayout } from "./layout/depthLayout";
-import { computeLayerLayout } from "./layout/layerLayout";
 import { computeDomainLayout, domainFromPath, type DomainRegion } from "./layout/domainLayout";
 import { computeElkLayout } from "./layout/elkLayout";
 import type { LayoutMode } from "./types";
@@ -1356,18 +1355,6 @@ interface Props {
   onLayoutModeChange?: (mode: LayoutMode) => void;
   /** When the agent returns a graphCommand, apply it to highlight/filter the canvas. */
   agentGraphCommand?: GraphCommand | null;
-  /** Proposed virtual nodes from the agent (ghost nodes). */
-  proposedNodes?: Array<{
-    id: string;
-    label: string;
-    layer?: string;
-    description?: string;
-    archNodeId?: string;
-  }>;
-  /** Proposed virtual edges between nodes. */
-  proposedEdges?: Array<{ fromId: string; toId: string; edgeType?: string }>;
-  /** When materialize task failed, ghost nodes show error state (red border). */
-  ghostNodeStatus?: "ghost" | "error";
   /** For NodePopup Traces/Eval tabs. */
   workspaceId?: string | null;
   accessToken?: string | null;
@@ -1436,9 +1423,6 @@ export function ArchCanvas({
   layoutMode: layoutModeProp,
   onLayoutModeChange,
   agentGraphCommand,
-  proposedNodes,
-  proposedEdges,
-  ghostNodeStatus,
   workspaceId,
   accessToken,
   violationBeingFixedKey,
@@ -1529,8 +1513,7 @@ export function ArchCanvas({
   }, [viewportToApply, viewMode]);
 
   useEffect(() => {
-    const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
-    if (effectiveLayoutMode !== "elk" || graph.nodes.length === 0 || isGreenfieldOnly) {
+    if (effectiveLayoutMode !== "elk" || graph.nodes.length === 0) {
       setElkPositions(null);
       return;
     }
@@ -1539,7 +1522,7 @@ export function ArchCanvas({
       if (!cancelled) setElkPositions(r.nodePositions);
     });
     return () => { cancelled = true; };
-  }, [effectiveLayoutMode, graph, proposedNodes?.length]);
+  }, [effectiveLayoutMode, graph]);
 
   useEffect(() => {
     if (!scene) return;
@@ -1634,12 +1617,12 @@ export function ArchCanvas({
   );
 
   useEffect(() => {
-    const total = graph.nodes.length + (proposedNodes?.length ?? 0);
+    const total = graph.nodes.length;
     const rf = reactFlowInstanceRef.current;
     if (!rf || total === 0) return;
     const padding = flowDimensions.width > flowDimensions.height ? 0.05 : 0.12;
     rf.fitView({ padding });
-  }, [graph.nodes.length, graph.generatedAt, proposedNodes?.length, flowDimensions.width, flowDimensions.height]);
+  }, [graph.nodes.length, graph.generatedAt, flowDimensions.width, flowDimensions.height]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1727,8 +1710,7 @@ export function ArchCanvas({
 
   const rawBuild = useCallback(() => {
     const nodeIds = graph.nodes.map((n) => n.id).sort().join(",");
-    const proposedIds = (proposedNodes ?? []).map((p) => p.id).sort().join(",");
-    const graphKey = `${graph.generatedAt ?? 0}-${nodeIds}-${proposedIds}`;
+    const graphKey = `${graph.generatedAt ?? 0}-${nodeIds}`;
     const isGraphChange = prevGraphKeyRef.current !== graphKey;
     prevGraphKeyRef.current = graphKey;
     if (isGraphChange) setBuilding(true);
@@ -1761,15 +1743,10 @@ export function ArchCanvas({
     // fall back to the unfiltered graph so the canvas is never completely blank.
     const effectiveGraphForRender =
       personaFiltered.nodes.length > 0 ? personaFiltered : filtered;
-    const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
     let nodePositions: Map<string, { x: number; y: number }>;
     let layerBands: Array<{ id: string; layer: string; x: number; y: number; width: number; height: number }>;
     let domainRegions: DomainRegion[] = [];
-    if (isGreenfieldOnly) {
-      const r = computeLayerLayout(proposedNodes ?? []);
-      nodePositions = r.nodePositions;
-      layerBands = r.layerBands;
-    } else if (effectiveLayoutMode === "domain") {
+    if (effectiveLayoutMode === "domain") {
       const r = computeDomainLayout(personaFiltered);
       nodePositions = r.nodePositions;
       layerBands = r.layerBands;
@@ -1953,11 +1930,6 @@ export function ArchCanvas({
       };
     });
 
-    const baseNodeIds = new Set(graph.nodes.map((n) => n.id));
-    const virtualNodesList = [...(proposedNodes ?? [])]
-      .filter((v) => !baseNodeIds.has(v.id))
-      .sort((a, b) => a.id.localeCompare(b.id));
-
     const allowedAnnIds = activeSceneState?.annotationIds
       ? new Set(activeSceneState.annotationIds)
       : null;
@@ -2069,48 +2041,6 @@ export function ArchCanvas({
         };
       }),
       ...annotationNodes,
-      ...virtualNodesList.map((v) => {
-        const pos = nodePositions.get(v.id);
-        const basePos = !pos && v.archNodeId ? nodePositions.get(v.archNodeId) : null;
-        const position = pos
-          ? pos
-          : basePos
-            ? { x: basePos.x + NODE_W + 24, y: basePos.y }
-            : { x: 60, y: 80 };
-        const isError = ghostNodeStatus === "error";
-        return {
-          id: v.id,
-          type: "arch",
-          position,
-          data: {
-            id: v.id,
-            label: v.label,
-            path: v.archNodeId ?? v.id,
-            layer: (v.layer as NodeLayer | undefined) ?? "Uncategorized",
-            description: v.description ?? "Proposed node (virtual)",
-            semanticSignals: { exports: [], externalImports: [], fileCount: 0 },
-            files: [],
-            health: { hasDocs: false, hasTests: false, hasContext: false },
-            contextRawContent: undefined,
-            status: "new",
-            isDrift: false,
-            driftReason: undefined,
-            isEntryPoint: false,
-            depth: undefined,
-            isVirtual: true,
-            isVirtualError: isError,
-            isSelected: false,
-          } as unknown as ArchNode & { isSelected: boolean },
-          style: {
-            background: "transparent",
-            border: "none",
-            padding: 0,
-            width: NODE_W,
-            opacity: 1,
-            transition: "opacity 0.2s ease",
-          },
-        };
-      }),
     ];
 
     const nodeById = new Map(effectiveGraphForRender.nodes.map((n) => [n.id, n]));
@@ -2173,31 +2103,6 @@ export function ArchCanvas({
       };
     });
 
-    const allNodeIds = new Set([
-      ...personaFiltered.nodes.map((n) => n.id),
-      ...virtualNodesList.map((v) => v.id),
-    ]);
-
-    const virtualEdges: Edge[] = (proposedEdges ?? [])
-      .filter((e) => allNodeIds.has(e.fromId) && allNodeIds.has(e.toId))
-      .map((e, idx) => ({
-        id: `virtual-${idx}-${e.fromId}->${e.toId}`,
-        source: e.fromId,
-        target: e.toId,
-        type: "arch",
-        data: {
-          isDrift: false,
-          importance: undefined,
-          isLayerViolation: false,
-        },
-        style: {
-          opacity: 1,
-          strokeDasharray: "4 4",
-          strokeWidth: 1.5,
-          transition: "opacity 0.2s ease, stroke-width 0.2s ease",
-        },
-      }));
-
     setCanvasDebug({
       graphNodes: graph.nodes.length,
       filteredNodes: filtered.nodes.length,
@@ -2210,7 +2115,7 @@ export function ArchCanvas({
       legendHighlightType: legendHighlight ? legendHighlight.type : "none",
     });
     setNodes(rfNodes);
-    setEdges([...baseEdges, ...virtualEdges]);
+    setEdges(baseEdges);
     setBuilding(false);
   }, [
     graph,
@@ -2218,9 +2123,6 @@ export function ArchCanvas({
     violationBeingFixedKey,
     edgeFilter,
     tracePathNodeIds,
-    proposedNodes,
-    proposedEdges,
-    ghostNodeStatus,
     issuesByNodeId,
     annotations,
     density,
@@ -2351,23 +2253,17 @@ export function ArchCanvas({
       const l = (n.layer ?? "Uncategorized") as string;
       seen.set(l, (seen.get(l) ?? 0) + 1);
     }
-    for (const v of proposedNodes ?? []) {
-      const l = (v.layer ?? "Uncategorized") as string;
-      seen.set(l, (seen.get(l) ?? 0) + 1);
-    }
     return Array.from(seen.entries());
-  }, [graph, proposedNodes]);
+  }, [graph]);
 
   const isEmptyWorkspace =
     graph.nodes.length === 0 &&
-    !graph.projectRoot &&
-    (proposedNodes?.length ?? 0) === 0;
+    !graph.projectRoot;
 
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
   const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
   const [hoveredEdgePos, setHoveredEdgePos] = useState<{ x: number; y: number } | null>(null);
-  const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
   const densityFactor = densityScale[density] ?? 1;
   const hoveredNodeData = useMemo(
     () => graph.nodes.find((n) => n.id === hoveredNodeId) ?? null,
@@ -2457,7 +2353,7 @@ export function ArchCanvas({
                 fontFamily: "monospace",
               }}
             >
-              Paste a GitHub repo URL in the sidebar to scan it, or use the chat below to ask the AI to design your architecture.
+              Paste a GitHub repo URL in the sidebar to scan it, or use chat to ask questions about your architecture.
             </div>
             </div>
           </div>
@@ -2599,7 +2495,6 @@ export function ArchCanvas({
       {viewMode === "3d" ? (
         <Arch3DView
           graph={graph}
-          proposedNodes={proposedNodes}
           selectedNode={selectedNode}
           onNodeSelect={onNodeSelect}
           legendHighlight={legendHighlight}

@@ -765,12 +765,6 @@ export default function App() {
   );
   const [chatLoading, setChatLoading] = useState(false);
   const [agentGraphCommand, setAgentGraphCommand] = useState<GraphCommand | null>(null);
-  const [virtualNodes, setVirtualNodes] = useState<
-    Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }>
-  >([]);
-  const [virtualEdges, setVirtualEdges] = useState<
-    Array<{ fromId: string; toId: string; edgeType?: string }>
-  >([]);
   const [activeViolations, setActiveViolations] = useState<CriticViolation[]>([]);
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
@@ -813,27 +807,10 @@ export default function App() {
     [backgroundTasks, activeWorkspaceId]
   );
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [materializeError, setMaterializeError] = useState<string | null>(null);
   const [lastCriticResult, setLastCriticResult] = useState<{
     score: number;
     report: string;
     violations: CriticViolation[];
-  } | null>(null);
-  const [greenfieldSessionId, setGreenfieldSessionId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem("greenfieldSessionId");
-    } catch {
-      return null;
-    }
-  });
-  const [greenfieldAcceptanceCriteria, setGreenfieldAcceptanceCriteria] = useState<{
-    functional: string[];
-    visual: string[];
-    architectural: string[];
-  } | null>(null);
-  const [lastMaterializedSnapshot, setLastMaterializedSnapshot] = useState<{
-    targetRoot: string;
-    created: string[];
   } | null>(null);
 
   const criticalViolationsCount = activeViolations.filter(
@@ -861,7 +838,6 @@ export default function App() {
   const [signupRepos, setSignupRepos] = useState("");
   const [signupPendingConfirmation, setSignupPendingConfirmation] = useState(false);
   const [showNewRepoConfirm, setShowNewRepoConfirm] = useState(false);
-  const [showReplaceDraftPrompt, setShowReplaceDraftPrompt] = useState(false);
   const [showWorkspaceDropUp, setShowWorkspaceDropUp] = useState(false);
   const [savedWorkspaces, setSavedWorkspaces] = useState<
     Array<{
@@ -889,10 +865,6 @@ export default function App() {
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [loadingArchived, setLoadingArchived] = useState(false);
   const [loadingWorkspaceId, setLoadingWorkspaceId] = useState<string | null>(null);
-  const [showMaterializeModal, setShowMaterializeModal] = useState(false);
-  const [materializeTargetPath, setMaterializeTargetPath] = useState("");
-  const [materializeLoading, setMaterializeLoading] = useState(false);
-  const [implementLoading, setImplementLoading] = useState(false);
   const [authStatus, setAuthStatus] = useState<"unknown" | "ok" | "mismatch">("unknown");
   const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
   const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
@@ -902,14 +874,6 @@ export default function App() {
   const [threadSearch, setThreadSearch] = useState("");
   const [threadListLoading, setThreadListLoading] = useState(false);
   const [tokenWarning, setTokenWarning] = useState<{ input: number; output: number; overBudget?: boolean } | null>(null);
-  const [editingVirtualNodeId, setEditingVirtualNodeId] = useState<string | null>(null);
-  const [editingDraft, setEditingDraft] = useState<{ label: string; archNodeId: string } | null>(null);
-  const [designHistory, setDesignHistory] = useState<
-    Array<{
-      nodes: Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }>;
-      edges: Array<{ fromId: string; toId: string; edgeType?: string }>;
-    }>
-  >([]);
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
   const [canvasDensity, setCanvasDensity] = useState<CanvasDensity>("standard");
   const [presentationMode, setPresentationMode] = useState(false);
@@ -958,8 +922,6 @@ export default function App() {
   const chatSessionsRef = useRef<Record<string, ArchitectureChatMessage[]>>(chatSessions);
   const [runtimeSnapshot, setRuntimeSnapshot] = useState<WorkspaceRuntimeSnapshot | null>(null);
   const [runtimeLive, setRuntimeLive] = useState(false);
-
-  const isGreenfieldMode = !!graph && graph.nodes.length === 0;
 
   const downloadText = useCallback((filename: string, mime: string, text: string) => {
     const blob = new Blob([text], { type: mime });
@@ -1088,117 +1050,6 @@ export default function App() {
     }
   }, [activeWorkspaceId, accessToken]);
 
-  useEffect(() => {
-    try {
-      if (greenfieldSessionId) localStorage.setItem("greenfieldSessionId", greenfieldSessionId);
-      else localStorage.removeItem("greenfieldSessionId");
-    } catch {
-      // ignore
-    }
-  }, [greenfieldSessionId]);
-
-  useEffect(() => {
-    if (!isGreenfieldMode) return;
-    if (!accessToken) return;
-    if (greenfieldSessionId) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/greenfield/session`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ workspaceId: activeWorkspaceId ?? undefined }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
-        const sid = typeof data.sessionId === "string" ? data.sessionId : null;
-        if (!sid) return;
-        if (!cancelled) setGreenfieldSessionId(sid);
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isGreenfieldMode, accessToken, greenfieldSessionId, activeWorkspaceId]);
-
-  useEffect(() => {
-    if (!isGreenfieldMode) return;
-    if (!accessToken) return;
-    if (!greenfieldSessionId) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(greenfieldSessionId)}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
-        if (cancelled) return;
-        const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-        const edges = Array.isArray(data.edges) ? data.edges : [];
-        setVirtualNodes(
-          nodes
-            .filter((n: any) => n && typeof n.id === "string")
-            .map((n: any) => ({
-              id: n.id,
-              label: typeof n.label === "string" ? n.label : n.id,
-              layer: typeof n.layer === "string" ? n.layer : undefined,
-              description: typeof n.description === "string" ? n.description : undefined,
-              archNodeId: typeof n.archNodeId === "string" ? n.archNodeId : undefined,
-            }))
-        );
-        setVirtualEdges(
-          edges
-            .filter((e: any) => e && typeof e.source === "string" && typeof e.target === "string")
-            .map((e: any) => ({ fromId: e.source, toId: e.target }))
-        );
-      } catch {
-        // ignore
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isGreenfieldMode, accessToken, greenfieldSessionId]);
-
-  useEffect(() => {
-    if (!isGreenfieldMode) return;
-    if (!accessToken) return;
-    if (!greenfieldSessionId) return;
-
-    const handle = window.setTimeout(() => {
-      const nodesPayload = virtualNodes.map((n) => ({
-        id: n.id,
-        label: n.label,
-        layer: n.layer,
-        description: n.description,
-        archNodeId: n.archNodeId,
-      }));
-      const edgesPayload = virtualEdges.map((e) => ({ source: e.fromId, target: e.toId }));
-      fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(greenfieldSessionId)}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          nodes: nodesPayload,
-          edges: edgesPayload,
-          workspaceId: activeWorkspaceId ?? undefined,
-        }),
-      }).catch(() => {});
-    }, 600);
-
-    return () => window.clearTimeout(handle);
-  }, [isGreenfieldMode, accessToken, greenfieldSessionId, virtualNodes, virtualEdges, activeWorkspaceId]);
-
   const handleSignOut = useCallback(async () => {
     if (!supabase || isSigningOut) return;
     setIsSigningOut(true);
@@ -1219,10 +1070,6 @@ export default function App() {
       setActiveChatId("1");
       setChatSessions({ "1": [] });
       setAiQuestion("");
-      setVirtualNodes([]);
-      setVirtualEdges([]);
-      setGreenfieldSessionId(null);
-      setGreenfieldAcceptanceCriteria(null);
       setActiveViolations([]);
       setViolationsRestoreError(null);
       setAgentGraphCommand(null);
@@ -1252,10 +1099,6 @@ export default function App() {
     setActiveChatId("1");
     setChatSessions({ "1": [] });
     setAiQuestion("");
-    setVirtualNodes([]);
-    setVirtualEdges([]);
-    setGreenfieldSessionId(null);
-    setGreenfieldAcceptanceCriteria(null);
     setActiveViolations([]);
     setViolationsRestoreError(null);
     setAgentGraphCommand(null);
@@ -1543,8 +1386,6 @@ export default function App() {
       setGraph(null);
       setActiveViolations([]);
       setViolationsRestoreError(null);
-      setVirtualNodes([]);
-      setVirtualEdges([]);
       setSelectedNode(null);
       setError(null);
     } catch (err) {
@@ -2256,8 +2097,7 @@ export default function App() {
       if (inFlight) return;
 
       const clientTaskId = crypto.randomUUID?.() ?? `task-${Date.now()}`;
-      const mode: "greenfield" | "analysis" =
-        graph.nodes.length === 0 ? "greenfield" : "analysis";
+      const mode = "analysis" as const;
       const taskSteps = ["Send question", "Run critic review", "Update graph"];
       setBackgroundTasks((prev) => [
         ...prev,
@@ -2351,25 +2191,6 @@ export default function App() {
       }
 
         const answer = data.answer ?? "No response.";
-        const acceptanceCriteria =
-          data.acceptanceCriteria &&
-          typeof data.acceptanceCriteria === "object" &&
-          Array.isArray((data.acceptanceCriteria as any).functional)
-            ? {
-                functional: Array.isArray((data.acceptanceCriteria as any).functional)
-                  ? ((data.acceptanceCriteria as any).functional as any[]).filter((x) => typeof x === "string")
-                  : [],
-                visual: Array.isArray((data.acceptanceCriteria as any).visual)
-                  ? ((data.acceptanceCriteria as any).visual as any[]).filter((x) => typeof x === "string")
-                  : [],
-                architectural: Array.isArray((data.acceptanceCriteria as any).architectural)
-                  ? ((data.acceptanceCriteria as any).architectural as any[]).filter((x) => typeof x === "string")
-                  : [],
-              }
-            : null;
-        if (acceptanceCriteria) {
-          setGreenfieldAcceptanceCriteria(acceptanceCriteria);
-        }
         if (data.showInsightsPanel === true) {
           setShowInsightsPanel(true);
         }
@@ -2405,34 +2226,13 @@ export default function App() {
           : [];
         if (graphCommands.length > 0) {
         setAgentGraphCommand(graphCommands[0]);
-        const newNodes: Array<{ id: string; label: string; layer?: string; archNodeId?: string; description?: string }> = [];
-        const newEdges: Array<{ fromId: string; toId: string; edgeType?: string }> = [];
         for (const cmd of graphCommands) {
           if (cmd.action === "filter_edge_type") {
             const f = cmd.edgeType === "arch" ? "architectural" : cmd.edgeType;
             setActiveFilters(new Set([f]));
           } else if (cmd.action === "focus_node") {
             setSelectedNode(cmd.nodeId);
-          } else if (cmd.action === "create_node") {
-            newNodes.push({
-              id: cmd.id,
-              label: cmd.label,
-              layer: cmd.layer,
-              archNodeId: cmd.archNodeId,
-              description: cmd.description,
-            });
-          } else if (cmd.action === "connect") {
-            newEdges.push({
-              fromId: cmd.fromId,
-              toId: cmd.toId,
-              edgeType: cmd.edgeType,
-            });
           }
-        }
-        if (newNodes.length > 0 || newEdges.length > 0) {
-          setVirtualNodes((prev) => [...prev, ...newNodes]);
-          setVirtualEdges((prev) => [...prev, ...newEdges]);
-          setMaterializeError(null);
         }
       } else if (relevantNodeIds.length > 0) {
         setAgentGraphCommand({ action: "highlight_nodes", nodeIds: relevantNodeIds });
@@ -2547,9 +2347,6 @@ export default function App() {
             history,
             workspaceId: activeWorkspaceId ?? undefined,
             ...(activeThreadId ? { threadId: activeThreadId } : {}),
-            ...(graph.nodes.length === 0 && greenfieldSessionId
-              ? { greenfieldSessionId }
-              : {}),
             ...(pdfToSend ? { pdfBase64: pdfToSend.base64, pdfFileName: pdfToSend.name } : {}),
           }),
         });
@@ -2694,7 +2491,6 @@ export default function App() {
       selectedNode,
       accessToken,
       activeWorkspaceId,
-      greenfieldSessionId,
       activeThreadId,
       pdfAttachment,
       docAttachment,
@@ -2823,411 +2619,6 @@ export default function App() {
       return remaining;
     });
   }, []);
-
-  const handleConfirmNode = useCallback(
-    async (node: { id: string; label: string; layer?: string; archNodeId?: string }) => {
-      if (!graph) return;
-      try {
-        if (!accessToken) throw new Error("Please sign in first.");
-        const res = await fetch(`${API_BASE}/scaffold-node`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({
-            projectRoot: graph.projectRoot,
-            archNodeId: node.archNodeId ?? node.id,
-            relPath: node.archNodeId ?? node.id,
-            layer: node.layer,
-            kind: "module",
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || res.statusText);
-        }
-        // Remove confirmed node and its virtual edges; then refresh scan to persist the new module.
-        setVirtualNodes((prev) => prev.filter((v) => v.id !== node.id));
-        setVirtualEdges((prev) =>
-          prev.filter((e) => e.fromId !== node.id && e.toId !== node.id)
-        );
-        if (activeWorkspaceId && accessToken) {
-          try {
-            const r = await fetch(`${API_BASE}/scan/refresh`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${accessToken}`,
-              },
-              body: JSON.stringify({ workspaceId: activeWorkspaceId }),
-            });
-            const refreshData = await r.json().catch(() => ({}));
-            if (r.ok && refreshData.nodes) {
-              setGraph(analyseGraph(refreshData));
-            }
-          } catch {
-            // Non-fatal
-          }
-        }
-      } catch (err) {
-        console.error("Scaffold failed:", err);
-      }
-    },
-    [graph, accessToken, activeWorkspaceId]
-  );
-
-  const handleUpdateVirtualNode = useCallback(
-    (nodeId: string, updates: { label?: string; archNodeId?: string }) => {
-      setEditingVirtualNodeId(null);
-      setDesignHistory((h) => [...h.slice(-4), { nodes: virtualNodes, edges: virtualEdges }]);
-      setVirtualNodes((prev) =>
-        prev.map((v) =>
-          v.id === nodeId
-            ? { ...v, ...(updates.label !== undefined && { label: updates.label }), ...(updates.archNodeId !== undefined && { archNodeId: updates.archNodeId }) }
-            : v
-        )
-      );
-    },
-    [virtualNodes, virtualEdges]
-  );
-
-  const handleUndoDesign = useCallback(() => {
-    const prev = designHistory[designHistory.length - 1];
-    if (!prev) return;
-    setDesignHistory((h) => h.slice(0, -1));
-    setVirtualNodes(prev.nodes);
-    setVirtualEdges(prev.edges);
-    setEditingVirtualNodeId(null);
-    setEditingDraft(null);
-  }, [designHistory]);
-
-  const handleDiscardNode = useCallback(
-    (nodeId: string) => {
-      setDesignHistory((h) => [...h.slice(-4), { nodes: virtualNodes, edges: virtualEdges }]);
-      setVirtualNodes((prev) => prev.filter((v) => v.id !== nodeId));
-      setVirtualEdges((prev) =>
-        prev.filter((e) => e.fromId !== nodeId && e.toId !== nodeId)
-      );
-      setEditingVirtualNodeId((id) => (id === nodeId ? null : id));
-    },
-    [virtualNodes, virtualEdges]
-  );
-
-  const handleResetGreenfieldDraft = useCallback(async () => {
-    setDesignHistory([]);
-    setEditingVirtualNodeId(null);
-    setEditingDraft(null);
-    setVirtualNodes([]);
-    setVirtualEdges([]);
-    setGreenfieldAcceptanceCriteria(null);
-    const sid = greenfieldSessionId;
-    setGreenfieldSessionId(null);
-    if (!sid || !accessToken) return;
-    try {
-      await fetch(`${API_BASE}/greenfield/draft/${encodeURIComponent(sid)}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-    } catch {
-      // ignore
-    }
-  }, [greenfieldSessionId, accessToken]);
-
-  const handleMaterialize = useCallback(async () => {
-    const targetRoot = materializeTargetPath.trim();
-    if (!targetRoot || !accessToken || virtualNodes.length === 0) return;
-    setMaterializeError(null);
-    const materializeTaskId = crypto.randomUUID?.() ?? `materialize-${Date.now()}`;
-    const matSteps = ["Validate nodes", "Write files", "Rescan workspace"];
-    setBackgroundTasks((prev) => [
-      ...prev,
-      {
-        id: materializeTaskId,
-        label: "Materialize architecture",
-        mode: "greenfield",
-        kind: "materialize",
-        status: "running" as const,
-        steps: matSteps,
-        currentStep: 0,
-        totalSteps: matSteps.length,
-        createdAt: Date.now(),
-        reviewed: false,
-        dismissed: false,
-        toastDismissed: false,
-        workspaceId: activeWorkspaceId ?? undefined,
-      },
-    ]);
-    setActiveTaskId(materializeTaskId);
-    setMaterializeLoading(true);
-    const nodesPayload = virtualNodes.map((vn) => ({
-      id: vn.id,
-      label: vn.label,
-      layer: vn.layer,
-      archNodeId: vn.archNodeId ?? vn.id,
-    }));
-
-    const applyMaterializeResult = async (data: any) => {
-      const created = Array.isArray(data.created) ? data.created : [];
-      if (created.length > 0) setLastMaterializedSnapshot({ targetRoot, created });
-      const railId = typeof data.railId === "string" ? data.railId : null;
-      const verificationPassed =
-        (data?.verification && typeof data.verification.passed === "boolean" && data.verification.passed === true) ||
-        data?.verificationPassed === true;
-      const materializeNeedsReview = Array.isArray(data.errors) && data.errors.length > 0;
-      setBackgroundTasks((prev) =>
-        prev.map((t) =>
-          t.id === materializeTaskId
-            ? {
-                ...t,
-                status: materializeNeedsReview ? "needs_review" : "completed",
-                currentStep: t.totalSteps,
-                railId: railId ?? t.railId,
-                result: data,
-              }
-            : t
-        )
-      );
-      setChatSessions((prev) => {
-        const current = prev[activeChatId] ?? [];
-        const msg = railId
-          ? verificationPassed
-            ? `Verification passed. Approval required to apply. Rail: ${railId}.`
-            : `Verification failed. Approval blocked. Rail: ${railId}.`
-          : `Materialized ${created.length} node(s)${data.errors?.length ? `; ${data.errors.length} error(s)` : ""}.`;
-        return {
-          ...prev,
-          [activeChatId]: [...current, { role: "assistant", content: msg }],
-        };
-      });
-      setShowMaterializeModal(false);
-      if (railId) {
-        return;
-      }
-      setVirtualNodes([]);
-      setVirtualEdges([]);
-      setDesignHistory([]);
-      setMaterializeTargetPath("");
-      if (data.recommendRescan && activeWorkspaceId && accessToken) {
-        try {
-          const r = await fetch(`${API_BASE}/scan/refresh`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${accessToken}`,
-            },
-            body: JSON.stringify({ workspaceId: activeWorkspaceId }),
-          });
-          const refreshData = await r.json().catch(() => ({}));
-          if (r.ok && refreshData.nodes) {
-            setGraph(analyseGraph(refreshData));
-          }
-        } catch {
-          // Non-fatal
-        }
-      } else if (targetRoot && /github\.com[/:]/i.test(targetRoot)) {
-        setRepoUrl(targetRoot);
-        await scanRepo(targetRoot);
-      }
-    };
-
-    try {
-      const lastUserMsg =
-        chatHistory
-          .slice()
-          .reverse()
-          .find((m) => m.role === "user")?.content ?? "Greenfield materialize";
-      const idempotencyKey = `materialize-${targetRoot}-${virtualNodes.map((n) => n.id).sort().join(",")}`;
-      const res = await fetch(`${API_BASE}/materialize-async`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-          "Idempotency-Key": idempotencyKey,
-        },
-        body: JSON.stringify({
-          targetRoot,
-          nodes: nodesPayload,
-          useRailFlow: isGreenfieldMode,
-          sessionId: isGreenfieldMode ? greenfieldSessionId ?? undefined : undefined,
-          outcome: isGreenfieldMode ? lastUserMsg : undefined,
-          acceptanceCriteria: isGreenfieldMode ? greenfieldAcceptanceCriteria ?? undefined : undefined,
-          lastCritique: lastCriticResult
-            ? {
-                criticScore: lastCriticResult.score,
-                message: lastCriticResult.report,
-                violations: lastCriticResult.violations,
-              }
-            : undefined,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || res.statusText);
-      }
-      const remoteTaskId = typeof data.taskId === "string" ? data.taskId : null;
-      if (!remoteTaskId) {
-        throw new Error("Server did not return a taskId for materialize.");
-      }
-
-      setBackgroundTasks((prev) =>
-        prev.map((t) => (t.id === materializeTaskId ? { ...t, remoteTaskId } : t))
-      );
-
-      tasksPollAbortRef.current.set(remoteTaskId, false);
-
-      const poll = async (attempt: number) => {
-        if (tasksPollAbortRef.current.get(remoteTaskId)) return;
-        try {
-          const r = await fetch(`${API_BASE}/tasks/${remoteTaskId}`);
-          const payload = await r.json().catch(() => ({}));
-          if (!r.ok) {
-            throw new Error(payload.error || r.statusText);
-          }
-          const status = payload.status as "pending" | "running" | "completed" | "failed" | "cancelled";
-          if (status === "pending" || status === "running") {
-            const delay = Math.min(2000 + attempt * 500, 8000);
-            setTimeout(() => poll(attempt + 1), delay);
-            return;
-          }
-          if (status === "failed" || status === "cancelled") {
-            const msg = typeof payload.error === "string" ? payload.error : "Materialize failed.";
-            setMaterializeError(msg);
-            setBackgroundTasks((prev) =>
-              prev.map((t) =>
-                t.id === materializeTaskId
-                  ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
-                  : t
-              )
-            );
-            setChatSessions((prev) => {
-              const current = prev[activeChatId] ?? [];
-              return {
-                ...prev,
-                [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
-              };
-            });
-            setShowMaterializeModal(false);
-            return;
-          }
-          if (status === "completed") {
-            await applyMaterializeResult(payload.result ?? {});
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          setMaterializeError(msg);
-          setBackgroundTasks((prev) =>
-            prev.map((t) =>
-              t.id === materializeTaskId
-                ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
-                : t
-            )
-          );
-          setChatSessions((prev) => {
-            const current = prev[activeChatId] ?? [];
-            return {
-              ...prev,
-              [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
-            };
-          });
-          setShowMaterializeModal(false);
-        } finally {
-          setMaterializeLoading(false);
-        }
-      };
-
-      poll(0);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setMaterializeError(msg);
-      setBackgroundTasks((prev) =>
-        prev.map((t) =>
-          t.id === materializeTaskId
-            ? { ...t, status: "failed" as const, error: msg, currentStep: t.totalSteps }
-            : t
-        )
-      );
-      setChatSessions((prev) => {
-        const current = prev[activeChatId] ?? [];
-        return {
-          ...prev,
-          [activeChatId]: [...current, { role: "assistant", content: `Materialize failed: ${msg}` }],
-        };
-      });
-      setShowMaterializeModal(false);
-      setMaterializeLoading(false);
-    }
-  }, [
-    materializeTargetPath,
-    accessToken,
-    virtualNodes,
-    chatHistory,
-    isGreenfieldMode,
-    greenfieldSessionId,
-    greenfieldAcceptanceCriteria,
-    lastCriticResult,
-    activeChatId,
-    scanRepo,
-    activeWorkspaceId,
-  ]);
-
-  const handleImplement = useCallback(async () => {
-    const targetRoot = materializeTargetPath.trim();
-    if (!targetRoot || !accessToken || !greenfieldSessionId || !activeWorkspaceId || virtualNodes.length === 0) return;
-    setMaterializeError(null);
-    setImplementLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/greenfield/implement`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          sessionId: greenfieldSessionId,
-          workspaceId: activeWorkspaceId,
-          targetRoot,
-          acceptanceCriteria: greenfieldAcceptanceCriteria ?? undefined,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.error || res.statusText);
-      }
-      const railIds = Array.isArray(data.railIds) ? data.railIds : [];
-      const errors = Array.isArray(data.errors) ? data.errors : [];
-      setShowMaterializeModal(false);
-      setChatSessions((prev) => {
-        const current = prev[activeChatId] ?? [];
-        const msg =
-          railIds.length > 0
-            ? `Started implementing ${railIds.length} node(s). Execution is running in the background.${
-                errors.length > 0 ? ` (${errors.length} failed: ${errors.join("; ")})` : ""
-              }`
-            : errors.length > 0
-              ? `Implement failed: ${errors.join("; ")}`
-              : "No nodes implemented.";
-        return { ...prev, [activeChatId]: [...current, { role: "assistant", content: msg }] };
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setMaterializeError(msg);
-      setChatSessions((prev) => {
-        const current = prev[activeChatId] ?? [];
-        return { ...prev, [activeChatId]: [...current, { role: "assistant", content: `Implement failed: ${msg}` }] };
-      });
-    } finally {
-      setImplementLoading(false);
-    }
-  }, [
-    materializeTargetPath,
-    accessToken,
-    greenfieldSessionId,
-    activeWorkspaceId,
-    virtualNodes.length,
-    greenfieldAcceptanceCriteria,
-    activeChatId,
-  ]);
 
   const handleDismissViolation = useCallback(
     (v: CriticViolation) => {
@@ -4949,64 +4340,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Greenfield entry CTA when graph is empty and no proposed nodes */}
-        {sidebarTab === "dashboard" &&
-          graph?.nodes.length === 0 &&
-          (virtualNodes?.length ?? 0) === 0 && (
-            <div
-              style={{
-                background: "#111827",
-                borderRadius: 8,
-                padding: 12,
-                border: "1px dashed #4b5563",
-                marginBottom: 8,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 12,
-                  color: "#e5e7eb",
-                  marginBottom: 6,
-                  fontWeight: 600,
-                }}
-              >
-                Start in Greenfield Mode
-              </div>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "#9ca3af",
-                  marginBottom: 10,
-                }}
-              >
-                Design a new architecture from scratch. The agent will propose modules and
-                connections on the canvas without requiring a scanned repository.
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setSidebarTab("chat");
-                  setAiQuestion(
-                    graph?.projectName
-                      ? `Design a clean, modular architecture for ${graph.projectName} from scratch.`
-                      : "Design a clean, modular architecture for a new project from scratch."
-                  );
-                }}
-                style={{
-                  padding: "6px 10px",
-                  fontSize: 12,
-                  background: "#4c1d95",
-                  color: "#e5e7eb",
-                  borderRadius: 6,
-                  border: "1px solid #7c3aed",
-                  cursor: "pointer",
-                }}
-              >
-                Design from scratch
-              </button>
-            </div>
-          )}
-
         {/* Dashboard content: project overview, health, execution, violations, governance, proposed nodes */}
         {sidebarTab === "dashboard" && (
           <div
@@ -5020,11 +4353,11 @@ export default function App() {
             <DashboardCard title="System Overview">
               <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
                 <DashboardMetric
-                  value={graph!.nodes.length + (virtualNodes?.length ?? 0)}
+                  value={graph!.nodes.length}
                   label="Modules"
                 />
                 <DashboardMetric
-                  value={graph!.edges.length + (virtualEdges?.length ?? 0)}
+                  value={graph!.edges.length}
                   label="Connections"
                 />
                 <DashboardMetric
@@ -5528,361 +4861,6 @@ export default function App() {
           </div>
         )}
 
-        {virtualNodes.length > 0 && (
-        <div
-          style={{
-              background: "#1c2128",
-              borderRadius: 8,
-              padding: 12,
-              border: "1px solid #4b5563",
-              marginBottom: 8,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 8,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "#a78bfa",
-                  textTransform: "uppercase",
-                  letterSpacing: 1,
-                }}
-              >
-                ◈ Proposed nodes
-              </div>
-              {designHistory.length > 0 && (
-                <button
-                  onClick={handleUndoDesign}
-                  style={{
-                    padding: "2px 6px",
-                    fontSize: 10,
-                    background: "#21262d",
-                    color: "#58a6ff",
-                    border: "1px solid #30363d",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                  }}
-                  title="Undo last change"
-                >
-                  Undo
-                </button>
-              )}
-            </div>
-            {materializeError && (
-              <div
-                style={{
-                  marginBottom: 8,
-                  padding: 8,
-                  borderRadius: 6,
-                  background: "rgba(248,81,73,0.12)",
-                  border: "1px solid #f85149",
-                  color: "#f85149",
-                  fontSize: 11,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 8,
-                }}
-              >
-                <span>{materializeError}</span>
-                <button
-                  type="button"
-                  onClick={() => setMaterializeError(null)}
-                  style={{
-                    padding: "2px 6px",
-                    fontSize: 10,
-                    background: "transparent",
-                    color: "#f85149",
-                    border: "1px solid #f85149",
-                    borderRadius: 4,
-                    cursor: "pointer",
-                  }}
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-            {virtualNodes.map((vn) => (
-              <div
-                key={vn.id}
-                style={{
-                  padding: "6px 0",
-                  borderBottom: "1px solid #21262d",
-                  gap: 6,
-                }}
-              >
-                {editingVirtualNodeId === vn.id && editingDraft ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <input
-                      value={editingDraft.label}
-                      onChange={(e) =>
-                        setEditingDraft((d) => (d ? { ...d, label: e.target.value } : d))
-                      }
-                      placeholder="Label"
-                      autoFocus
-                      style={{
-                        padding: "4px 6px",
-                        fontSize: 12,
-                        background: "#0d1117",
-                        border: "1px solid #30363d",
-                        borderRadius: 4,
-                        color: "#e6edf3",
-                        outline: "none",
-                      }}
-                    />
-                    <input
-                      value={editingDraft.archNodeId}
-                      onChange={(e) =>
-                        setEditingDraft((d) => (d ? { ...d, archNodeId: e.target.value } : d))
-                      }
-                      placeholder="Folder path"
-                      style={{
-                        padding: "4px 6px",
-                        fontSize: 11,
-                        background: "#0d1117",
-                        border: "1px solid #30363d",
-                        borderRadius: 4,
-                        color: "#e6edf3",
-                        outline: "none",
-                      }}
-                    />
-                    <div style={{ display: "flex", gap: 4 }}>
-                      <button
-                        onClick={() => {
-                          handleUpdateVirtualNode(vn.id, {
-                            label: editingDraft.label,
-                            archNodeId: editingDraft.archNodeId,
-                          });
-                          setEditingDraft(null);
-                        }}
-                        style={{
-                          padding: "3px 8px",
-                          fontSize: 10,
-                          background: "#238636",
-                          color: "white",
-                          border: "none",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => {
-                          setEditingVirtualNodeId(null);
-                          setEditingDraft(null);
-                        }}
-                        style={{
-                          padding: "3px 8px",
-                          fontSize: 10,
-                          background: "#30363d",
-                          color: "#e6edf3",
-                          border: "none",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                        }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          color: "#e2e8f0",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {vn.label}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 10,
-            color: "#7d8590",
-                        }}
-                      >
-                        {vn.archNodeId ?? vn.id} · {vn.layer ?? "Uncategorized"}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap" }}>
-                      {accessToken && activeWorkspaceId && greenfieldSessionId && (
-                          <button
-                            onClick={async () => {
-                              try {
-                                const res = await fetch(
-                                  `${API_BASE}/greenfield/nodes/${encodeURIComponent(vn.id)}/to-rail`,
-                                  {
-                                    method: "POST",
-                                    headers: {
-                                      "Content-Type": "application/json",
-                                      Authorization: `Bearer ${accessToken}`,
-                                    },
-                                    body: JSON.stringify({
-                                      sessionId: greenfieldSessionId,
-                                      workspaceId: activeWorkspaceId,
-                                    }),
-                                  }
-                                );
-                                const data = await res.json().catch(() => ({}));
-                                if (!res.ok) {
-                                  console.warn(
-                                    typeof data.error === "string" ? data.error : "Create & run failed."
-                                  );
-                                  return;
-                                }
-                                const railId = data.railId;
-                                if (railId) {
-                                  console.info("Greenfield rail started:", railId);
-                                }
-                              } catch (err) {
-                                console.warn(err instanceof Error ? err.message : "Create & run failed.");
-                              }
-                            }}
-                            style={{
-                              padding: "3px 8px",
-                              fontSize: 10,
-                              background: "#238636",
-                              color: "white",
-                              border: "1px solid #238636",
-                              borderRadius: 4,
-                              cursor: "pointer",
-                            }}
-                            title="Create rail and start execution"
-                          >
-                            Run
-                          </button>
-                      )}
-                      <button
-                        onClick={() => {
-                          setEditingVirtualNodeId(vn.id);
-                          setEditingDraft({
-                            label: vn.label,
-                            archNodeId: vn.archNodeId ?? vn.id,
-                          });
-                        }}
-                        style={{
-                          padding: "3px 8px",
-                          fontSize: 10,
-                          background: "#21262d",
-                          color: "#58a6ff",
-                          border: "1px solid #30363d",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                        }}
-                        title="Edit label and path"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleConfirmNode(vn)}
-                        style={{
-                          padding: "3px 8px",
-                          fontSize: 10,
-                          background: "#238636",
-                          color: "white",
-                          border: "none",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                        }}
-                        title="Scaffold this node on disk"
-                      >
-                        ✓
-                      </button>
-                      <button
-                        onClick={() => handleDiscardNode(vn.id)}
-                        style={{
-                          padding: "3px 8px",
-                          fontSize: 10,
-                          background: "#21262d",
-                          color: "#f85149",
-                          border: "1px solid #f85149",
-                          borderRadius: 4,
-                          cursor: "pointer",
-                        }}
-                        title="Discard this proposal"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-            <button
-              onClick={() => {
-                setMaterializeTargetPath(graph?.projectRoot ?? "");
-                setShowMaterializeModal(true);
-              }}
-              disabled={
-                tasksForWorkspace.some(
-                  (t) =>
-                    (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
-                )
-              }
-              style={{
-                width: "100%",
-                marginTop: 10,
-                padding: "8px 12px",
-                background: "#7c3aed",
-                color: "#fff",
-                border: "none",
-                borderRadius: 6,
-                fontSize: 12,
-                cursor: "pointer",
-                fontWeight: 600,
-                opacity: tasksForWorkspace.some(
-                  (t) => (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
-                )
-                  ? 0.5
-                  : 1,
-              }}
-              title={
-                tasksForWorkspace.some(
-                  (t) => (t.hallucinationIndex ?? 0) > 0.5 && t.hallucinationAcknowledged !== true
-                )
-                  ? "Acknowledge drift in the task detail panel first"
-                  : "Create folders and index files for all proposed nodes"
-              }
-            >
-              Materialize this Architecture
-            </button>
-            <button
-              onClick={handleResetGreenfieldDraft}
-              style={{
-                width: "100%",
-                marginTop: 8,
-                padding: "8px 12px",
-                background: "#0d1117",
-                color: "#f85149",
-                border: "1px solid #f85149",
-                borderRadius: 6,
-                fontSize: 12,
-                cursor: "pointer",
-                fontWeight: 600,
-              }}
-              title="Delete the saved draft and start over"
-            >
-              Reset Greenfield Draft
-            </button>
-          </div>
-        )}
-
         {sidebarTab === "code" && (
           <CodeViewerPanel
             node={selectedNodeData ?? null}
@@ -5929,23 +4907,12 @@ export default function App() {
               fontSize: 10,
               textTransform: "uppercase",
               letterSpacing: 0.5,
-              background:
-                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
-                  ? "rgba(22,163,74,0.16)"
-                  : "rgba(59,130,246,0.16)",
-              color:
-                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
-                  ? "#4ade80"
-                  : "#93c5fd",
-              border:
-                graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
-                  ? "1px solid rgba(34,197,94,0.4)"
-                  : "1px solid rgba(59,130,246,0.4)",
+              background: "rgba(59,130,246,0.16)",
+              color: "#93c5fd",
+              border: "1px solid rgba(59,130,246,0.4)",
             }}
           >
-            {graph?.nodes.length === 0 && (virtualNodes?.length ?? 0) > 0
-              ? "Greenfield"
-              : "Analysis"}
+            Analysis
           </span>
           <button
             type="button"
@@ -6627,7 +5594,7 @@ export default function App() {
                     </div>
                     {(task.hallucinationIndex ?? 0) > 0.5 && !task.hallucinationAcknowledged && (
                       <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 4 }}>
-                        Acknowledge drift to allow materialize.
+                        High drift score — review the assistant response before acting on it.
                       </div>
                     )}
                     {!task.hallucinationAcknowledged && (
@@ -6652,142 +5619,6 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                )}
-                {(task.kind === "materialize" || task.label === "Materialize architecture") &&
-                  (() => {
-                    const paths: string[] =
-                      task.status === "completed" && task.result && typeof task.result === "object" && Array.isArray((task.result as { created?: string[] }).created)
-                        ? (task.result as { created: string[] }).created
-                        : virtualNodes.map((n) => {
-                            const id = n.archNodeId ?? n.id;
-                            return /\.(ts|tsx|js|jsx)$/.test(id) ? id : `${id}/index.ts`;
-                          });
-                    if (paths.length === 0) return null;
-                    const isDone = task.status === "completed";
-                    return (
-                      <div style={{ marginBottom: 8 }}>
-                        <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
-                          <strong>Files</strong>
-                        </div>
-                        <div
-                          style={{
-                            maxHeight: 100,
-                            overflowY: "auto",
-                            padding: "6px 8px",
-                            background: "#0d1117",
-                            borderRadius: 4,
-                            border: "1px solid #21262d",
-                            fontSize: 10,
-                            fontFamily: "monospace",
-                            color: "#9ca3af",
-                          }}
-                        >
-                          {paths.map((p, i) => (
-                            <div
-                              key={i}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 6,
-                                padding: "2px 0",
-                              }}
-                            >
-                              <span style={{ color: isDone ? "#22c55e" : "#6b7280", flexShrink: 0 }}>
-                                {isDone ? "✓" : "⏳"}
-                              </span>
-                              <span style={{ wordBreak: "break-all" }}>{p}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })()}
-                {(task.kind === "materialize" || task.label === "Materialize architecture") &&
-                  task.status === "failed" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (virtualNodes.length > 0 && materializeTargetPath.trim()) {
-                        handleMaterialize();
-                      } else {
-                        setShowMaterializeModal(true);
-                      }
-                    }}
-                    style={{
-                      marginTop: 4,
-                      padding: "6px 12px",
-                      fontSize: 11,
-                      background: "rgba(34,197,94,0.2)",
-                      color: "#4ade80",
-                      border: "1px solid #22c55e",
-                      borderRadius: 6,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Retry materialize
-                  </button>
-                )}
-                {task.status === "completed" &&
-                  task.label === "Materialize architecture" &&
-                  lastMaterializedSnapshot && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!lastMaterializedSnapshot || !accessToken) return;
-                      try {
-                        const res = await fetch(`${API_BASE}/materialize/undo`, {
-                          method: "POST",
-                          headers: {
-                            "Content-Type": "application/json",
-                            Authorization: `Bearer ${accessToken}`,
-                          },
-                          body: JSON.stringify({
-                            targetRoot: lastMaterializedSnapshot.targetRoot,
-                            created: lastMaterializedSnapshot.created,
-                          }),
-                        });
-                        const data = await res.json().catch(() => ({}));
-                        if (!res.ok) {
-                          throw new Error(data.error || res.statusText);
-                        }
-                        setLastMaterializedSnapshot(null);
-                        setChatSessions((prev) => {
-                          const current = prev[activeChatId] ?? [];
-                          const msg = data.message ?? "Undo materialization completed.";
-                          return {
-                            ...prev,
-                            [activeChatId]: [...current, { role: "assistant", content: msg }],
-                          };
-                        });
-                        if (lastMaterializedSnapshot.targetRoot) {
-                          setRepoUrl(lastMaterializedSnapshot.targetRoot);
-                          await scanRepo(lastMaterializedSnapshot.targetRoot);
-                        }
-                      } catch (err) {
-                        const msg = err instanceof Error ? err.message : String(err);
-                        setMaterializeError(msg);
-                        setChatSessions((prev) => {
-                          const current = prev[activeChatId] ?? [];
-                          return {
-                            ...prev,
-                            [activeChatId]: [...current, { role: "assistant", content: `Undo failed: ${msg}` }],
-                          };
-                        });
-                      }
-                    }}
-                    style={{
-                      marginTop: 4,
-                      padding: "4px 8px",
-                      fontSize: 10,
-                      background: "rgba(248,81,73,0.15)",
-                      color: "#f87171",
-                      border: "1px solid #f87171",
-                      borderRadius: 4,
-                      cursor: "pointer",
-                    }}
-                  >
-                    Undo materialization
-                  </button>
                 )}
               </div>
             );
@@ -7391,103 +6222,6 @@ export default function App() {
             )}
           </div>
 
-          {virtualNodes.length > 0 && (
-            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <button
-                onClick={() => handleAsk("Please revise this design.")}
-                disabled={chatLoading}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  background: "#21262d",
-                  color: "#58a6ff",
-                  border: "1px solid #30363d",
-                  borderRadius: 6,
-                  cursor: chatLoading ? "wait" : "pointer",
-                }}
-                title="Ask the agent to revise the proposed architecture"
-              >
-                Fix this
-              </button>
-            </div>
-          )}
-
-          {lastMaterializedSnapshot && (
-            <div
-              style={{
-                padding: "8px 10px",
-                background: "rgba(34,197,94,0.1)",
-                border: "1px solid rgba(34,197,94,0.3)",
-                borderRadius: 6,
-                fontSize: 11,
-                color: "#4ade80",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: 8,
-              }}
-            >
-              <span>Materialized {lastMaterializedSnapshot.created.length} file(s) into {lastMaterializedSnapshot.targetRoot}</span>
-              <button
-                type="button"
-                onClick={async () => {
-                  if (!lastMaterializedSnapshot || !accessToken) return;
-                  try {
-                    const res = await fetch(`${API_BASE}/materialize/undo`, {
-                      method: "POST",
-                      headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${accessToken}`,
-                      },
-                      body: JSON.stringify({
-                        targetRoot: lastMaterializedSnapshot.targetRoot,
-                        created: lastMaterializedSnapshot.created,
-                      }),
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok) {
-                      throw new Error(data.error || res.statusText);
-                    }
-                    setLastMaterializedSnapshot(null);
-                    setChatSessions((prev) => {
-                      const current = prev[activeChatId] ?? [];
-                      const msg = data.message ?? "Undo materialization completed.";
-                      return {
-                        ...prev,
-                        [activeChatId]: [...current, { role: "assistant", content: msg }],
-                      };
-                    });
-                    if (lastMaterializedSnapshot.targetRoot) {
-                      setRepoUrl(lastMaterializedSnapshot.targetRoot);
-                      await scanRepo(lastMaterializedSnapshot.targetRoot);
-                    }
-                  } catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    setMaterializeError(msg);
-                    setChatSessions((prev) => {
-                      const current = prev[activeChatId] ?? [];
-                      return {
-                        ...prev,
-                        [activeChatId]: [...current, { role: "assistant", content: `Undo failed: ${msg}` }],
-                      };
-                    });
-                  }
-                }}
-                style={{
-                  padding: "2px 8px",
-                  fontSize: 10,
-                  background: "transparent",
-                  color: "#4ade80",
-                  border: "1px solid rgba(34,197,94,0.5)",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                }}
-              >
-                Undo
-              </button>
-            </div>
-          )}
-
           {tokenWarning && (
             <div
               style={{
@@ -7733,11 +6467,7 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     setShowWorkspaceDropUp(false);
-                    if (virtualNodes.length > 0 && greenfieldSessionId) {
-                      setShowReplaceDraftPrompt(true);
-                    } else {
-                      setShowNewRepoConfirm(true);
-                    }
+                    setShowNewRepoConfirm(true);
                   }}
                   style={{
                     width: "100%",
@@ -7958,89 +6688,6 @@ export default function App() {
         />
       )}
 
-      {showReplaceDraftPrompt && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 100,
-          }}
-          onClick={() => setShowReplaceDraftPrompt(false)}
-        >
-          <div
-            style={{
-              background: "#21262d",
-              border: "1px solid #30363d",
-              borderRadius: 8,
-              padding: 20,
-              maxWidth: 380,
-              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ marginBottom: 12, fontSize: 14, color: "#e6edf3" }}>
-              Replace existing draft?
-            </div>
-            <div style={{ marginBottom: 16, fontSize: 12, color: "#9ca3af" }}>
-              You have an unsaved Greenfield draft. What would you like to do?
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <button
-                onClick={() => setShowReplaceDraftPrompt(false)}
-                style={{
-                  padding: "8px 16px",
-                  background: "#30363d",
-                  color: "#e6edf3",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowReplaceDraftPrompt(false);
-                  // Keep existing — stay on current draft
-                }}
-                style={{
-                  padding: "8px 16px",
-                  background: "#238636",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Keep existing
-              </button>
-              <button
-                onClick={() => {
-                  setShowReplaceDraftPrompt(false);
-                  handleNewRepo();
-                }}
-                style={{
-                  padding: "8px 16px",
-                  background: "#f85149",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Replace
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {showNewRepoConfirm && (
         <div
           style={{
@@ -8102,175 +6749,6 @@ export default function App() {
         </div>
       )}
 
-      {showMaterializeModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 100,
-          }}
-          onClick={() => !materializeLoading && !implementLoading && setShowMaterializeModal(false)}
-        >
-          <div
-            style={{
-              background: "#21262d",
-              border: "1px solid #30363d",
-              borderRadius: 8,
-              padding: 20,
-              maxWidth: 400,
-              width: "90%",
-              boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ marginBottom: 12, fontSize: 14, color: "#e6edf3" }}>
-              Materialize or Implement
-            </div>
-            <div
-              style={{
-                marginBottom: 12,
-                fontSize: 11,
-                color: "#7d8590",
-              }}
-            >
-              <strong>Materialize</strong> — creates folders and index stubs. <strong>Implement</strong> — runs the
-              code writer to generate real implementations for each node.
-            </div>
-            <div style={{ marginBottom: 12, fontSize: 12, color: "#7d8590" }}>
-              Enter the target folder path where modules will be created:
-            </div>
-            {virtualNodes.length > 0 && (() => {
-              const base = materializeTargetPath.trim();
-              const paths = virtualNodes.map((vn) => {
-                const path = vn.archNodeId ?? vn.id;
-                return path.includes(".") ? path : `${path}/index.ts`;
-              });
-              const fullPaths = base ? paths.map((p) => `${base}/${p}`) : paths;
-              const tree: Record<string, unknown> = {};
-              for (const p of fullPaths) {
-                const parts = p.split("/").filter(Boolean);
-                let cur: Record<string, unknown> = tree;
-                for (let i = 0; i < parts.length; i++) {
-                  const key = parts[i];
-                  const isFile = i === parts.length - 1 && (key.includes(".") || key === "index.ts");
-                  if (isFile) {
-                    cur[key] = "file";
-                  } else {
-                    if (!(key in cur) || cur[key] === "file") cur[key] = {};
-                    cur = cur[key] as Record<string, unknown>;
-                  }
-                }
-              }
-              const renderTree = (obj: Record<string, unknown>, indent: number) => {
-                return Object.entries(obj).map(([k, v]) =>
-                  v === "file" ? (
-                    <div key={k} style={{ fontFamily: "monospace", marginLeft: indent * 12, marginBottom: 2, color: "#94a3b8" }}>
-                      {k}
-                    </div>
-                  ) : (
-                    <div key={k}>
-                      <div style={{ fontFamily: "monospace", marginLeft: indent * 12, marginBottom: 2, color: "#a78bfa" }}>
-                        {k}/
-                      </div>
-                      {renderTree((v as Record<string, unknown>) ?? {}, indent + 1)}
-                    </div>
-                  )
-                );
-              };
-              return (
-                <div
-                  style={{
-                    marginBottom: 12,
-                    padding: 8,
-                    background: "#0d1117",
-                    borderRadius: 6,
-                    fontSize: 11,
-                    color: "#7d8590",
-                    maxHeight: 140,
-                    overflowY: "auto",
-                  }}
-                >
-                  <div style={{ marginBottom: 6, color: "#a78bfa" }}>
-                    Will create {virtualNodes.length} node(s):
-                  </div>
-                  {renderTree(tree, 0)}
-                </div>
-              );
-            })()}
-            <input
-              type="text"
-              value={materializeTargetPath}
-              onChange={(e) => setMaterializeTargetPath(e.target.value)}
-              placeholder="/path/to/project"
-              disabled={materializeLoading}
-              style={{
-                width: "100%",
-                padding: "8px 10px",
-                fontSize: 13,
-                background: "#0d1117",
-                border: "1px solid #30363d",
-                borderRadius: 6,
-                color: "#e6edf3",
-                outline: "none",
-                boxSizing: "border-box",
-                marginBottom: 16,
-              }}
-            />
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
-              <button
-                onClick={() => !materializeLoading && !implementLoading && setShowMaterializeModal(false)}
-                disabled={materializeLoading || implementLoading}
-                style={{
-                  padding: "8px 16px",
-                  background: "#30363d",
-                  color: "#e6edf3",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleMaterialize}
-                disabled={materializeLoading || implementLoading || !materializeTargetPath.trim()}
-                style={{
-                  padding: "8px 16px",
-                  background: "#6e40c9",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
-                  fontSize: 13,
-                }}
-              >
-                {materializeLoading ? "Creating…" : "Materialize"}
-              </button>
-              <button
-                onClick={handleImplement}
-                disabled={materializeLoading || implementLoading || !materializeTargetPath.trim()}
-                style={{
-                  padding: "8px 16px",
-                  background: "#238636",
-                  color: "white",
-                  border: "none",
-                  borderRadius: 6,
-                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
-                  fontSize: 13,
-                }}
-                title="Create rails and run the code writer for each node"
-              >
-                {implementLoading ? "Implementing…" : "Implement"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
 
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -8328,7 +6806,7 @@ export default function App() {
                       if (t) handleRenameWorkspaceTitle(t);
                       setWorkspaceTitleEditing(false);
                     } else if (e.key === "Escape") {
-                      setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                      setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
                       setWorkspaceTitleEditing(false);
                     }
                   }}
@@ -8347,7 +6825,7 @@ export default function App() {
                 <span
                   onClick={() => {
                     if (activeWorkspaceId && accessToken) {
-                      setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                      setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
                       setWorkspaceTitleEditing(true);
                     }
                   }}
@@ -8362,7 +6840,7 @@ export default function App() {
                     cursor: activeWorkspaceId && accessToken ? "pointer" : "default",
                   }}
                 >
-                  {graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace")}
+                  {graph.projectName ?? "My workspace"}
                 </span>
               )}
               <button
@@ -8524,7 +7002,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
-                          setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
+                          setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
                           setWorkspaceTitleEditing(true);
                           setShowWorkspaceMenu(false);
                         }}
@@ -9293,16 +7771,8 @@ export default function App() {
               layoutMode={graphLayoutMode}
               onLayoutModeChange={setGraphLayoutMode as any}
               agentGraphCommand={agentGraphCommand}
-              proposedNodes={virtualNodes}
-              proposedEdges={virtualEdges}
               theme={canvasTheme}
               density={canvasDensity}
-              ghostNodeStatus={
-                virtualNodes.length > 0 &&
-                tasksForWorkspace.some((t) => t.kind === "materialize" && t.status === "failed")
-                  ? "error"
-                  : undefined
-              }
               workspaceId={activeWorkspaceId ?? undefined}
               accessToken={accessToken}
               annotations={workspaceAnnotations}

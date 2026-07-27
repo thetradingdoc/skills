@@ -9,7 +9,6 @@ import type {
   WorkspaceRuntimeSnapshot,
 } from "./types";
 import { computeDepthLayout } from "./layout/depthLayout";
-import { computeLayerLayout } from "./layout/layerLayout";
 import { computeDomainLayout } from "./layout/domainLayout";
 import { computeElkLayout } from "./layout/elkLayout";
 import { layoutTo3D, layerToY3D, LAYOUT_SCALE } from "./layout/layoutTo3D";
@@ -40,7 +39,6 @@ type LegendHighlight =
 
 interface Arch3DViewProps {
   graph: ArchGraph;
-  proposedNodes?: Array<{ id: string; label?: string; archNodeId?: string; layer?: string; description?: string }>;
   selectedNode: string | null;
   onNodeSelect: (nodeId: string | null) => void;
   legendHighlight?: LegendHighlight | null;
@@ -112,7 +110,6 @@ function toNode(
 
 export function Arch3DView({
   graph,
-  proposedNodes,
   selectedNode,
   onNodeSelect,
   legendHighlight = null,
@@ -127,13 +124,11 @@ export function Arch3DView({
   runtimeSnapshot = null,
   captureViewRef,
 }: Arch3DViewProps) {
-  const isGreenfield =
-    graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
   const layoutMode = (scene?.settings?.layoutMode as "depth" | "domain" | "elk") ?? "depth";
 
   const [elkPositions, setElkPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
   useEffect(() => {
-    if (layoutMode !== "elk" || isGreenfield) {
+    if (layoutMode !== "elk" || graph.nodes.length === 0) {
       setElkPositions(null);
       return;
     }
@@ -142,23 +137,16 @@ export function Arch3DView({
       if (!cancelled) setElkPositions(res.nodePositions);
     });
     return () => { cancelled = true; };
-  }, [layoutMode, isGreenfield, graph.nodes.length, graph.edges?.length]);
+  }, [layoutMode, graph.nodes.length, graph.edges?.length]);
 
-  const syncLayout = isGreenfield
-    ? computeLayerLayout(
-        (proposedNodes ?? []).map((n) => ({
-          id: n.id,
-          label: n.label ?? n.id,
-          layer: n.layer,
-        }))
-      )
-    : layoutMode === "domain"
+  const syncLayout =
+    layoutMode === "domain"
       ? computeDomainLayout(graph)
       : layoutMode === "elk" && elkPositions && elkPositions.size > 0
         ? { nodePositions: elkPositions, layerBands: [] as LayerBand[] }
         : computeDepthLayout(graph);
   const { nodePositions, layerBands } = syncLayout;
-  const nodes = isGreenfield ? proposedNodes ?? [] : graph.nodes;
+  const nodes = graph.nodes;
   const nodeCountByLayer = useMemo(() => {
     const m = new Map<string, number>();
     for (const n of nodes) {
