@@ -2246,6 +2246,7 @@ export function ArchCanvas({
   }, [legendHighlight, graph, edgeFilter, setNodes, setEdges, focusMode, selectedNode]);
 
   const [showLayerBands, setShowLayerBands] = useState(true);
+  const [legendCollapsed, setLegendCollapsed] = useState(false);
 
   const legendLayers = useMemo(() => {
     const seen = new Map<string, number>();
@@ -2289,6 +2290,8 @@ export function ArchCanvas({
   return (
     <div
       style={{
+        display: "flex",
+        flexDirection: "column",
         flex: 1,
         minHeight: 0,
         minWidth: 0,
@@ -2360,7 +2363,8 @@ export function ArchCanvas({
         </div>
       )}
 
-      {graph.nodes.length > 0 &&
+      {isFlagEnabled("perf_hud") &&
+        graph.nodes.length > 0 &&
         (flowDimensions.width === 0 ||
           flowDimensions.height === 0 ||
           (canvasDebug?.rfNodes ?? 0) === 0) && (
@@ -2958,29 +2962,58 @@ export function ArchCanvas({
           background: canvasTheme[theme].panelBg,
           border: `1px solid ${canvasTheme[theme].panelBorder}`,
           borderRadius: 10,
-          padding: "12px 14px",
+          padding: legendCollapsed ? "8px 10px" : "12px 14px",
           backdropFilter: "blur(12px)",
-          minWidth: 180,
+          minWidth: legendCollapsed ? undefined : 180,
           maxWidth: 220,
           maxHeight: "calc(100vh - 180px)",
-          overflowY: "auto",
+          overflowY: legendCollapsed ? "hidden" : "auto",
           overflowX: "hidden",
           boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
         }}
       >
         <div
           style={{
-            fontSize: 9,
-              color: canvasTheme[theme].subtleText,
-            marginBottom: 10,
-            lineHeight: 1.4,
-            fontFamily: "monospace",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            marginBottom: legendCollapsed ? 0 : 10,
           }}
-          title="Click any item to highlight it on the graph. Click again to clear."
         >
-          Click to highlight
+          <div
+            style={{
+              fontSize: 9,
+              color: canvasTheme[theme].subtleText,
+              lineHeight: 1.4,
+              fontFamily: "monospace",
+            }}
+            title="Click any item to highlight it on the graph. Click again to clear."
+          >
+            {legendCollapsed ? "Legend" : "Click to highlight"}
+          </div>
+          <button
+            type="button"
+            onClick={() => setLegendCollapsed((v) => !v)}
+            style={{
+              fontSize: 9,
+              padding: "2px 6px",
+              borderRadius: 999,
+              border: `1px solid ${canvasTheme[theme].legendDivider}`,
+              background: "transparent",
+              color: canvasTheme[theme].subtleText,
+              cursor: "pointer",
+              fontFamily: "monospace",
+              flexShrink: 0,
+            }}
+            title={legendCollapsed ? "Expand legend" : "Collapse legend"}
+          >
+            {legendCollapsed ? "▸" : "▾"}
+          </button>
         </div>
 
+        {!legendCollapsed && (
+        <>
         <div style={{ marginBottom: 10 }}>
           <div
             style={{
@@ -3500,6 +3533,8 @@ export function ArchCanvas({
               + Add note
             </button>
           </div>
+        )}
+        </>
         )}
       </div>
       )}
