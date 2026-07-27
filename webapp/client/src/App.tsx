@@ -22,7 +22,6 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { supabase, getSupabaseConfigError } from "./supabaseClient";
 import { logAuthHashErrors, logAuthStateChange } from "./authDebug";
-import { JiraConnectModal } from "./JiraConnectModal";
 import { WorkspaceMembersPanel } from "./WorkspaceMembersPanel";
 import { ActivityLogPanel } from "./ActivityLogPanel";
 import { AnnotationCommentsPanel } from "./AnnotationCommentsPanel";
@@ -30,7 +29,6 @@ import { ScanHistoryPanel } from "./ScanHistoryPanel";
 import { SnapshotSelectorPanel } from "./SnapshotSelectorPanel";
 import { ConnectGitHubModal } from "./ConnectGitHubModal";
 
-import { deriveProjectKey, isValidProjectKey } from "./utils/deriveProjectKey";
 import {
   exportArchitectureSvg,
   exportArchitectureMarkdown,
@@ -81,17 +79,6 @@ async function ensureProfile(accessToken: string): Promise<void> {
 
 function violationKey(v: CriticViolation): string {
   return `${v.type}:${v.sourceNodeId}:${v.targetNodeId ?? ""}`;
-}
-
-/** Normalize Jira API auth errors to a user-friendly message. */
-function normalizeJiraError(msg: string): string {
-  const lower = msg.toLowerCase();
-  if (
-    /\b(401|403)\b|unauthorized|invalid credentials|authentication failed|token.*invalid|token.*expired|revoked/i.test(lower)
-  ) {
-    return "Jira token invalid — reconnect in the Governance panel.";
-  }
-  return msg;
 }
 
 /** Pure merge of violations into graph nodes, including jiraKey/jiraStatus (p14). */
@@ -1053,69 +1040,11 @@ export default function App() {
     { "1": [] }
   );
   const [chatLoading, setChatLoading] = useState(false);
-  const [jiraIssues, setJiraIssues] = useState<
-    Array<{ key: string; summary: string; status: string; type: string; priority?: string; baseUrl: string; labels?: string[] }>
-  >([]);
-  const [jiraLoading, setJiraLoading] = useState(false);
-  const [jiraError, setJiraError] = useState<string | null>(null);
-  const [jiraFilterByRepo, setJiraFilterByRepo] = useState(() => {
-    try {
-      const v = localStorage.getItem("jiraFilterByRepo");
-      return v === "false" ? false : true;
-    } catch {
-      return true;
-    }
-  });
-  const [jiraRepoName, setJiraRepoName] = useState<string | undefined>();
-  const [jiraConfigured, setJiraConfigured] = useState<boolean | null>(null);
-  const [jiraConnectedEmail, setJiraConnectedEmail] = useState<string | null>(null);
-  const [jiraProjectKey, setJiraProjectKey] = useState<string | null>(null);
-  const [editingJiraProjectKey, setEditingJiraProjectKey] = useState(false);
-  const [jiraProjectKeyDraft, setJiraProjectKeyDraft] = useState("");
-  const [jiraProjects, setJiraProjects] = useState<Array<{ key: string; name: string }>>([]);
-  const [jiraProjectsLoading, setJiraProjectsLoading] = useState(false);
-  const [jiraConfigSource, setJiraConfigSource] = useState<"db" | null>(null);
-  const [staleMismatches, setStaleMismatches] = useState<
-    Array<{ key: string; summary: string; reason: string; storedModule: string | null }>
-  >([]);
-  const [showJiraConnectModal, setShowJiraConnectModal] = useState(false);
-  const [showJiraDisconnectConfirm, setShowJiraDisconnectConfirm] = useState(false);
-  const [autoExecuteEnabled, setAutoExecuteEnabled] = useState<boolean>(false);
-  const [autoExecuteSaving, setAutoExecuteSaving] = useState<boolean>(false);
   const [materializeDiffWarning, setMaterializeDiffWarning] = useState<{
     message: string;
     limits?: { maxChangedFiles?: number; maxTotalBytes?: number };
     actual?: { changedFiles?: number; totalBytes?: number };
   } | null>(null);
-  const [jiraProjectKeyReady, setJiraProjectKeyReady] = useState(false);
-  const [jiraCriticalOnly, setJiraCriticalOnly] = useState(false);
-  const issuesByNodeId = useMemo(() => {
-    const archLabelRe = /^archNodeId:(.+)$/;
-    const map: Record<string, Array<{ key: string; summary: string; baseUrl: string }>> = {};
-    const isCriticalIssue = (i: any): boolean => {
-      const priority = (i.priority ?? "").toString().toLowerCase();
-      const severity = (i.severity ?? "").toString().toLowerCase();
-      const labels: string[] = Array.isArray(i.labels) ? i.labels : [];
-      if (priority.includes("critical") || priority.includes("highest")) return true;
-      if (severity === "critical") return true;
-      if (labels.some((l) => l.toLowerCase().includes("critical"))) return true;
-      return false;
-    };
-    for (const i of jiraIssues) {
-      if (jiraCriticalOnly && !isCriticalIssue(i)) continue;
-      const labels = i.labels ?? [];
-      for (const label of labels) {
-        const m = label.match(archLabelRe);
-        if (m) {
-          const nodeId = m[1];
-          if (!map[nodeId]) map[nodeId] = [];
-          map[nodeId].push({ key: i.key, summary: i.summary, baseUrl: i.baseUrl });
-          break;
-        }
-      }
-    }
-    return map;
-  }, [jiraIssues, jiraCriticalOnly]);
   const [agentGraphCommand, setAgentGraphCommand] = useState<GraphCommand | null>(null);
   const [virtualNodes, setVirtualNodes] = useState<
     Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }>
@@ -1328,11 +1257,6 @@ export default function App() {
   const highViolationsCount = activeViolations.filter(
     (v) => v.severity === "high"
   ).length;
-  const trackedViolationsCount = activeViolations.filter(
-    (v) => !!v.jiraKey
-  ).length;
-  const untrackedViolationsCount =
-    activeViolations.length - trackedViolationsCount;
   // ── Autosave ──────────────────────────────────────────────────────────────
   const [autosaveEnabled, setAutosaveEnabled] = useState<boolean>(() => {
     try {
@@ -1441,8 +1365,6 @@ export default function App() {
   const leftPanelUserToggledRef = useRef(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const graphRef = useRef<typeof graph>(graph);
-  const skipNextJiraFetchRef = useRef(false);
-  const trackViolationRef = useRef<(v: CriticViolation) => void>(() => {});
   const fixPromptRef = useRef<string | null>(null);
   const workspaceDropUpRef = useRef<HTMLDivElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2115,13 +2037,6 @@ export default function App() {
       setActiveViolations([]);
       setViolationsRestoreError(null);
       setAgentGraphCommand(null);
-      setJiraConfigured(null);
-      setJiraConnectedEmail(null);
-      setJiraProjectKey(null);
-      setJiraConfigSource(null);
-      setJiraProjectKeyReady(false);
-      setJiraIssues([]);
-      setJiraError(null);
     } finally {
       setIsSigningOut(false);
     }
@@ -2143,8 +2058,6 @@ export default function App() {
     setRepoUrl("");
     setActiveWorkspaceId(null);
     setActiveWorkspaceIsOwner(false);
-    setJiraProjectKey(null);
-    setJiraProjectKeyReady(false);
     setSelectedNode(null);
     setChatTabs([{ id: "1", label: "Chat 1" }]);
     setActiveChatId("1");
@@ -2620,10 +2533,6 @@ export default function App() {
           setWorkspaceScene(scene);
           const annotations = (data.annotations ?? []) as WorkspaceAnnotation[];
           setWorkspaceAnnotations(annotations);
-          const jiraKey = data.jiraProjectKey as string | null | undefined;
-          setJiraProjectKey(jiraKey ?? (repo ? deriveProjectKey(repo) : null));
-          setJiraProjectKeyReady(true);
-          setAutoExecuteEnabled(Boolean(data.autoExecuteEnabled));
           setActiveWorkspaceIsOwner(Boolean(data.isOwner));
           setShowWorkspaceDropUp(false);
           setError(null);
@@ -3072,8 +2981,6 @@ export default function App() {
         if (data.workspaceId) {
           setActiveWorkspaceId(data.workspaceId);
           setActiveWorkspaceIsOwner(true);
-          setJiraProjectKey((data.jiraProjectKey as string | null | undefined) ?? (url ? deriveProjectKey(url) : null));
-          setJiraProjectKeyReady(true);
           // lastWorkspaceId is also maintained by the autosave effect,
           // but we eagerly set it here for faster restore on refresh.
           try {
@@ -3253,14 +3160,6 @@ export default function App() {
           };
         });
 
-        // Auto-create Jira tickets for critical violations (only when Jira is configured)
-        if (jiraConfigured === true) {
-          for (const v of violations) {
-            if (v.severity === "critical") {
-              trackViolationRef.current(v);
-            }
-          }
-        }
       }
 
         const answer = data.answer ?? "No response.";
@@ -3468,11 +3367,6 @@ export default function App() {
         if (!token) {
           throw new Error("Please sign in first.");
         }
-        const trackMatch = /^\s*(track|create\s+jira|track\s+in\s+jira)\s*$/i.test(fullQuestion.trim());
-        const untrackedViolations = activeViolations.filter((v) => !v.jiraKey);
-        const pendingViolations =
-          trackMatch && untrackedViolations.length > 0 ? untrackedViolations : undefined;
-
         const res = await fetch(`${API_BASE}/chat-async`, {
           method: "POST",
           headers: {
@@ -3490,7 +3384,6 @@ export default function App() {
               ? { greenfieldSessionId }
               : {}),
             ...(pdfToSend ? { pdfBase64: pdfToSend.base64, pdfFileName: pdfToSend.name } : {}),
-            ...(pendingViolations ? { pendingViolations } : {}),
           }),
         });
 
@@ -3633,13 +3526,11 @@ export default function App() {
       graph,
       selectedNode,
       accessToken,
-      jiraConfigured,
       activeWorkspaceId,
       greenfieldSessionId,
       activeThreadId,
       pdfAttachment,
       docAttachment,
-      activeViolations,
     ]
   );
 
@@ -3765,295 +3656,6 @@ export default function App() {
       return remaining;
     });
   }, []);
-
-  const fetchJiraTests = useCallback(
-    async (filterByRepo?: boolean, projectKeyOverride?: string) => {
-      setJiraLoading(true);
-      setJiraError(null);
-      try {
-        if (!accessToken) {
-          setJiraIssues([]);
-          return;
-        }
-        const params = new URLSearchParams();
-        if (repoUrl) params.set("repoUrl", repoUrl);
-        if (activeWorkspaceId) params.set("workspaceId", activeWorkspaceId);
-        if (projectKeyOverride) params.set("projectKey", projectKeyOverride);
-        if (filterByRepo ?? jiraFilterByRepo) params.set("filterByRepo", "true");
-        else params.set("filterByRepo", "false");
-        if (activeWorkspaceId) params.set("includeStaleDetection", "true");
-        const res = await fetch(`${API_BASE}/jira-issues?${params}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          if (data.error === "project_key_required") {
-            setJiraError("No project selected");
-          } else {
-            throw new Error(data.error || res.statusText);
-          }
-          return;
-        }
-        setJiraConfigured(true);
-        setJiraIssues(data.issues ?? []);
-        setJiraRepoName(data.repoName);
-        setStaleMismatches(data.staleMismatches ?? []);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setJiraError(normalizeJiraError(msg));
-        setJiraIssues([]);
-        setStaleMismatches([]);
-      } finally {
-        setJiraLoading(false);
-      }
-    },
-    [repoUrl, jiraFilterByRepo, accessToken, activeWorkspaceId]
-  );
-
-  const addLabelToIssue = useCallback(
-    async (issueKey: string, label: string) => {
-      if (!accessToken) {
-        setJiraError("Please sign in first.");
-        return;
-      }
-      const prevIssues = jiraIssues;
-      setJiraIssues((prev) =>
-        prev.map((i) =>
-          i.key === issueKey ? { ...i, labels: [...(i.labels ?? []), label] } : i
-        )
-      );
-      try {
-        const res = await fetch(`${API_BASE}/jira-add-label`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ issueKey, label }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || res.statusText);
-      } catch (err) {
-        setJiraIssues(prevIssues);
-        const msg = err instanceof Error ? err.message : String(err);
-        setJiraError(normalizeJiraError(msg));
-      }
-    },
-    [accessToken, jiraIssues]
-  );
-
-  const handleDisconnectJira = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetch(`${API_BASE}/integrations/jira`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) throw new Error("Failed to disconnect");
-      setShowJiraDisconnectConfirm(false);
-      setJiraConfigured(false);
-      setJiraConnectedEmail(null);
-      setJiraProjectKey(null);
-      setJiraConfigSource(null);
-      setJiraIssues([]);
-      setStaleMismatches([]);
-      setJiraError(null);
-    } catch (err) {
-      setJiraError(err instanceof Error ? err.message : String(err));
-    }
-  }, [accessToken]);
-
-  const saveProjectKey = useCallback(
-    (k: string) => {
-      const key = k.trim().toUpperCase();
-      if (!key || !activeWorkspaceId || !accessToken) return;
-      if (!isValidProjectKey(key)) return;
-      fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/jira-project-key`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ projectKey: key }),
-      })
-        .then(async (r) => {
-          if (r.ok) {
-            skipNextJiraFetchRef.current = true;
-            setJiraProjectKey(key);
-            setEditingJiraProjectKey(false);
-            // Fetch with new key explicitly to avoid race with state update
-            await fetchJiraTests(undefined, key);
-          }
-        })
-        .catch(() => {});
-    },
-    [activeWorkspaceId, accessToken, fetchJiraTests]
-  );
-
-  const cancelProjectKeyEdit = useCallback(() => {
-    setJiraProjectKeyDraft(jiraProjectKey ?? "");
-    setEditingJiraProjectKey(false);
-  }, [jiraProjectKey]);
-
-  const clearProjectKey = useCallback(() => {
-    if (!activeWorkspaceId || !accessToken) return;
-    fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/jira-project-key`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ projectKey: null }),
-    })
-      .then((r) => {
-        if (r.ok) {
-          setJiraProjectKey(null);
-          setEditingJiraProjectKey(false);
-          setJiraProjectKeyDraft("");
-          setJiraIssues([]);
-          setJiraError(null);
-        }
-      })
-      .catch(() => {});
-  }, [activeWorkspaceId, accessToken]);
-
-  const toggleAutoExecute = useCallback(() => {
-    if (!activeWorkspaceId || !accessToken || autoExecuteSaving) return;
-    const next = !autoExecuteEnabled;
-    setAutoExecuteSaving(true);
-    fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/auto-execute`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ enabled: next }),
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          // Best-effort: surface error in console; UI remains unchanged.
-          const data = await r.json().catch(() => ({}));
-          console.warn("Failed to update auto-execute flag:", data?.error ?? r.statusText);
-          return;
-        }
-        setAutoExecuteEnabled(next);
-      })
-      .catch((err) => {
-        console.warn("Failed to update auto-execute flag:", err);
-      })
-      .finally(() => setAutoExecuteSaving(false));
-  }, [activeWorkspaceId, accessToken, autoExecuteEnabled, autoExecuteSaving]);
-
-  useEffect(() => {
-    if (!accessToken) {
-      setJiraConfigured(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/jira-status`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = (await res.json().catch(() => ({}))) as { configured?: boolean; source?: "db" | "env"; error?: string; code?: string };
-        if (!cancelled) {
-          setJiraConfigured(!!data?.configured);
-          setJiraConfigSource(data?.configured && data?.source === "db" ? "db" : null);
-          if (data?.code === "jira_decrypt_failed" && data?.error) {
-            setJiraError(data.error);
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setJiraConfigured(false);
-          setJiraConfigSource(null);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [accessToken]);
-
-  useEffect(() => {
-    if (!accessToken || jiraConfigured !== true) {
-      setJiraConnectedEmail(null);
-      setJiraConfigSource(null);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/integrations`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = (await res.json()) as {
-          integrations?: Array<{ provider?: string; email?: string }>;
-        };
-        if (!cancelled && data?.integrations) {
-          const jira = data.integrations.find((i) => i.provider === "jira");
-          setJiraConnectedEmail(jira?.email ?? null);
-        }
-      } catch {
-        if (!cancelled) {
-          setJiraConnectedEmail(null);
-          setJiraConfigSource(null);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [accessToken, jiraConfigured]);
-
-  useEffect(() => {
-    if (!repoUrl && (!graph || (graph.nodes.length === 0 && !graph.projectRoot))) {
-      setJiraIssues([]);
-      setJiraError(null);
-      return;
-    }
-    if (jiraConfigured !== true) return;
-    if (loadingWorkspaceId) return;
-    if (activeWorkspaceId && !jiraProjectKeyReady) return;
-    if (activeWorkspaceId && !jiraProjectKey) return;
-    if (skipNextJiraFetchRef.current) {
-      skipNextJiraFetchRef.current = false;
-      return;
-    }
-    fetchJiraTests();
-  }, [fetchJiraTests, repoUrl, graph, jiraConfigured, loadingWorkspaceId, jiraProjectKeyReady, activeWorkspaceId, jiraProjectKey]);
-
-  useEffect(() => {
-    if (jiraError && /not configured|JIRA_/i.test(jiraError)) {
-      setJiraConfigured(false);
-      setJiraConnectedEmail(null);
-      setJiraConfigSource(null);
-    }
-  }, [jiraError]);
-
-  // Jira polling: sync violation status from Jira every 5 min when configured
-  useEffect(() => {
-    if (jiraConfigured !== true || !activeWorkspaceId || !accessToken) return;
-    const interval = window.setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/jira-sync`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ workspaceId: activeWorkspaceId }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data.synced) {
-          const { violations } = await fetchViolationsRaw(activeWorkspaceId);
-          if (violations.length > 0) {
-            setGraph((prev) => (prev ? mergeViolationsIntoGraph(prev, violations) : prev));
-            setActiveViolations(violations);
-          }
-        }
-      } catch {
-        // non-fatal; ignore
-      }
-    }, 5 * 60 * 1000);
-    return () => window.clearInterval(interval);
-  }, [jiraConfigured, activeWorkspaceId, accessToken, fetchViolationsRaw]);
 
   const handleConfirmNode = useCallback(
     async (node: { id: string; label: string; layer?: string; archNodeId?: string }) => {
@@ -4703,96 +4305,6 @@ export default function App() {
     },
     [graph]
   );
-
-  const handleTrackViolation = useCallback(
-    async (v: CriticViolation) => {
-      if (!graph) return;
-      const vKey = violationKey(v);
-      setJiraError(null);
-      try {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
-
-        const srcNode = graph.nodes.find((n) => n.id === v.sourceNodeId || n.path === v.sourceNodeId);
-        const archModulePath = srcNode?.path ?? v.sourceNodeId;
-        const archModuleFiles = srcNode?.files;
-
-        const res = await fetch(`${API_BASE}/jira-violation`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            ...(v as any).id ? { violationId: (v as any).id } : { violation: v },
-            projectRoot: graph.projectRoot,
-            projectName: graph.projectName ?? "",
-            workspaceId: activeWorkspaceId ?? undefined,
-            archModulePath,
-            ...(archModuleFiles != null && { archModuleFiles }),
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (data.error === "project_key_required") {
-            setJiraError("Set a project key in the sidebar to track violations in Jira.");
-            setEditingJiraProjectKey(true);
-          } else {
-            throw new Error(data.error || res.statusText);
-          }
-          return;
-        }
-
-        const key = data.key as string | undefined;
-        const jiraStatus = "To Do";
-        if (!key) {
-          setJiraError("Failed to create Jira ticket: no issue key returned.");
-          return;
-        }
-
-        setActiveViolations((prev) =>
-          prev.map((existing) =>
-            violationKey(existing) === vKey
-              ? { ...existing, jiraKey: key, jiraStatus, trackedAt: Date.now() }
-              : existing
-          )
-        );
-
-        setGraph((prev) => {
-          if (!prev) return prev;
-          const affectedIds = new Set([v.sourceNodeId, v.targetNodeId].filter(Boolean));
-          return {
-            ...prev,
-            nodes: prev.nodes.map((node) => {
-              if (!affectedIds.has(node.id)) return node;
-              const existingVs = node.violationState?.violations ?? [];
-              const updatedVs = existingVs.map((nv) =>
-                nv.type === v.type &&
-                nv.sourceNodeId === v.sourceNodeId &&
-                nv.targetNodeId === v.targetNodeId
-                  ? { ...nv, jiraKey: key, jiraStatus }
-                  : nv
-              );
-              return {
-                ...node,
-                violationState: {
-                  violations: updatedVs,
-                  highestSeverity: node.violationState?.highestSeverity ?? v.severity,
-                },
-              } as ArchNode;
-            }),
-          };
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (jiraConfigured === true) {
-          setJiraError(`Failed to create Jira ticket: ${normalizeJiraError(msg)}`);
-        }
-      }
-    },
-    [graph, accessToken, jiraConfigured, activeWorkspaceId]
-  );
-
-  useEffect(() => {
-    trackViolationRef.current = handleTrackViolation;
-  }, [handleTrackViolation]);
 
   // Responsive: auto-collapse left panel on narrow viewports unless user toggled it.
   useEffect(() => {
@@ -6518,27 +6030,7 @@ export default function App() {
             }}
           >
             {/* System Overview */}
-            <DashboardCard
-              title="System Overview"
-              rightHeaderContent={
-                <button
-                  onClick={() => fetchJiraTests()}
-                  disabled={jiraLoading}
-                  style={{
-                    padding: "4px 8px",
-                    fontSize: 11,
-                    height: 24,
-                    background: "#21262d",
-                    color: "#e6edf3",
-                    border: "1px solid #30363d",
-                    borderRadius: 6,
-                    cursor: jiraLoading ? "wait" : "pointer",
-                  }}
-                >
-                  {jiraLoading ? "⟳" : "↻"} Refresh
-                </button>
-              }
-            >
+            <DashboardCard title="System Overview">
               <div style={{ display: "flex", flexWrap: "wrap", gap: 20 }}>
                 <DashboardMetric
                   value={graph!.nodes.length + (virtualNodes?.length ?? 0)}
@@ -6584,17 +6076,6 @@ export default function App() {
                   color="#e6edf3"
                   subLabel="— all time"
                   subColor="#7d8590"
-                />
-                <DashboardMetric
-                  value={trackedViolationsCount}
-                  label="Tracked in Jira"
-                  color="#3fb950"
-                  subLabel={
-                    untrackedViolationsCount > 0
-                      ? `↓ ${untrackedViolationsCount} untracked`
-                      : "all tracked"
-                  }
-                  subColor="#3fb950"
                 />
               </div>
             </DashboardCard>
@@ -7085,7 +6566,6 @@ export default function App() {
                       { v: "architectural" as const, l: "Arch" },
                       { v: "violations" as const, l: "Violations" },
                       { v: "drift" as const, l: "Drift" },
-                      { v: "jira" as const, l: "Jira" },
                     ] as const
                   ).map(({ v, l }) => {
                     const isActive =
@@ -7292,51 +6772,6 @@ export default function App() {
                     Could not restore violations: {violationsRestoreError}
                   </div>
                 )}
-                {jiraError && activeViolations.length > 0 && (
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      margin: "0 12px 8px",
-                      background: "rgba(248,81,73,0.12)",
-                      border: "1px solid rgba(248,81,73,0.3)",
-                      borderRadius: 6,
-                      fontSize: 10,
-                      color: "#f87171",
-                    }}
-                  >
-                    {jiraError}
-                  </div>
-                )}
-                {activeViolations.length > 0 && jiraConfigured === true && !jiraProjectKeyReady && !jiraError && (
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      margin: "0 12px 8px",
-                      background: "rgba(248,81,73,0.12)",
-                      border: "1px solid rgba(248,81,73,0.3)",
-                      borderRadius: 6,
-                      fontSize: 10,
-                      color: "#f87171",
-                    }}
-                  >
-                    Jira is connected, but no project key is selected. Select a project in the Governance panel to track violations.
-                  </div>
-                )}
-                {activeViolations.length > 0 && jiraConfigured === false && !jiraError && (
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      margin: "0 12px 8px",
-                      background: "rgba(248,81,73,0.12)",
-                      border: "1px solid rgba(248,81,73,0.3)",
-                      borderRadius: 6,
-                      fontSize: 10,
-                      color: "#f87171",
-                    }}
-                  >
-                    Jira is not connected or credentials are invalid. Reconnect in the Governance panel.
-                  </div>
-                )}
                 {activeViolations.length === 0 && !violationsRestoreError ? (
                   <div style={{ padding: "8px 12px 12px", fontSize: 11, color: "#7d8590" }}>
                     No active violations. Ask the agent about your architecture to find issues.
@@ -7419,25 +6854,6 @@ export default function App() {
                               >
                                 {v.severity}
                               </span>
-                              <span
-                                style={{
-                                  fontSize: 9,
-                                  padding: "2px 6px",
-                                  borderRadius: 3,
-                                  background: "#1e2d4544",
-                                  color: "#94a3b8",
-                                  whiteSpace: "nowrap",
-                                }}
-                                title="Jira priority"
-                              >
-                                {v.severity === "critical"
-                                  ? "Highest"
-                                  : v.severity === "high"
-                                    ? "High"
-                                    : v.severity === "medium"
-                                      ? "Medium"
-                                      : "Low"}
-                              </span>
                               <span style={{ fontSize: 10, color: "#8b949e", flex: 1 }}>
                                 {v.sourceNodeId}
                                 {v.targetNodeId ? ` → ${v.targetNodeId}` : ""}
@@ -7468,97 +6884,55 @@ export default function App() {
                             >
                               {v.description}
                             </div>
-                            {!v.jiraKey && (
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {violationRailStatus[violationKey(v)] ? (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSidebarTab("dashboard");
-                                      setMainViewMode("board");
-                                      setSelectedRailId(violationRailStatus[violationKey(v)].railId);
-                                    }}
-                                    style={{
-                                      flex: 1,
-                                      padding: "5px 0",
-                                      fontSize: 10,
-                                      background: "#1e3a5f",
-                                      color: "#58a6ff",
-                                      border: "1px solid #2563eb",
-                                      borderRadius: 4,
-                                      cursor: "pointer",
-                                      letterSpacing: "0.08em",
-                                      textTransform: "uppercase",
-                                    }}
-                                  >
-                                    Rail: {violationRailStatus[violationKey(v)].state} · View
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleFixViolation(v);
-                                    }}
-                                    disabled={violationBeingFixed === violationKey(v)}
-                                    style={{
-                                      flex: 1,
-                                      padding: "5px 0",
-                                      fontSize: 10,
-                                      background: violationBeingFixed === violationKey(v) ? "#388934" : "#238636",
-                                      color: "white",
-                                      border: "none",
-                                      borderRadius: 4,
-                                      cursor: violationBeingFixed === violationKey(v) ? "wait" : "pointer",
-                                      opacity: violationBeingFixed === violationKey(v) ? 0.9 : 1,
-                                      letterSpacing: "0.08em",
-                                      textTransform: "uppercase",
-                                    }}
-                                  >
-                                    {violationBeingFixed === violationKey(v) ? "Creating rail…" : "✦ Fix now"}
-                                  </button>
-                                )}
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {violationRailStatus[violationKey(v)] ? (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    if (!jiraProjectKey && activeWorkspaceId) {
-                                      setJiraProjectKeyDraft("");
-                                      setEditingJiraProjectKey(true);
-                                      return;
-                                    }
-                                    handleTrackViolation(v);
+                                    setSidebarTab("dashboard");
+                                    setMainViewMode("board");
+                                    setSelectedRailId(violationRailStatus[violationKey(v)].railId);
                                   }}
-                                  disabled={jiraConfigured !== true}
-                                  title={
-                                    jiraConfigured !== true
-                                      ? "Connect Jira to track violations"
-                                      : !jiraProjectKey && activeWorkspaceId
-                                        ? "Select project above"
-                                        : "Track in Jira"
-                                  }
                                   style={{
                                     flex: 1,
                                     padding: "5px 0",
                                     fontSize: 10,
-                                    background: "#21262d",
+                                    background: "#1e3a5f",
                                     color: "#58a6ff",
-                                    border: "1px solid #1f6feb",
+                                    border: "1px solid #2563eb",
                                     borderRadius: 4,
-                                    cursor: jiraConfigured === true ? "pointer" : "not-allowed",
-                                    opacity: jiraConfigured === true ? 1 : 0.5,
+                                    cursor: "pointer",
                                     letterSpacing: "0.08em",
                                     textTransform: "uppercase",
                                   }}
                                 >
-                                  {jiraProjectKey ? "⬡ Track in Jira" : "Select project"}
+                                  Rail: {violationRailStatus[violationKey(v)].state} · View
                                 </button>
-                              </div>
-                            )}
-                            {v.jiraKey && (
-                              <div style={{ fontSize: 10, color: "#7d8590", marginTop: 4 }}>
-                                Tracked as {v.jiraKey}
-                                {v.jiraStatus ? ` · ${v.jiraStatus}` : ""}
-                              </div>
-                            )}
+                              ) : (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleFixViolation(v);
+                                  }}
+                                  disabled={violationBeingFixed === violationKey(v)}
+                                  style={{
+                                    flex: 1,
+                                    padding: "5px 0",
+                                    fontSize: 10,
+                                    background: violationBeingFixed === violationKey(v) ? "#388934" : "#238636",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: 4,
+                                    cursor: violationBeingFixed === violationKey(v) ? "wait" : "pointer",
+                                    opacity: violationBeingFixed === violationKey(v) ? 0.9 : 1,
+                                    letterSpacing: "0.08em",
+                                    textTransform: "uppercase",
+                                  }}
+                                >
+                                  {violationBeingFixed === violationKey(v) ? "Creating rail…" : "✦ Fix now"}
+                                </button>
+                              )}
+                            </div>
                           </div>
                         ))}
                     </div>
@@ -7566,512 +6940,6 @@ export default function App() {
               </div>
             </DashboardCard>
 
-            {/* Governance */}
-            <div style={{ gridColumn: "1 / span 2" }}>
-              <DashboardCard title="Governance">
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "flex-start",
-                    flexWrap: "wrap",
-                    gap: 10,
-                  }}
-                >
-                  <div style={{ minWidth: 200, maxWidth: 420 }}>
-                    <div style={{ color: "#7d8590", fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>
-                      Jira
-                    </div>
-                    {jiraConfigured === null && (
-                      <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>Checking…</div>
-                    )}
-                    {jiraConfigured === true && jiraConnectedEmail && (
-                      <div style={{ color: "#484f58", fontSize: 10, marginTop: 2 }}>
-                        Connected as {jiraConnectedEmail}
-                      </div>
-                    )}
-                    {jiraConfigured === true && activeWorkspaceId && (
-                      <div style={{ marginTop: 6, fontSize: 10 }}>
-                        <div style={{ color: "#7d8590", marginBottom: 4 }}>Project</div>
-                        {editingJiraProjectKey ? (
-                          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                            {jiraProjectsLoading ? (
-                              <div style={{ color: "#7d8590", fontSize: 11 }}>Loading projects…</div>
-                            ) : jiraProjects.length > 0 ? (
-                              <select
-                                value={jiraProjectKeyDraft === "__clear__" ? "" : (jiraProjects.some((p) => p.key === jiraProjectKeyDraft) ? jiraProjectKeyDraft : "")}
-                                onChange={(e) => {
-                                  const v = e.target.value;
-                                  if (v === "__clear__") {
-                                    clearProjectKey();
-                                    setEditingJiraProjectKey(false);
-                                    return;
-                                  }
-                                  setJiraProjectKeyDraft(v);
-                                }}
-                                style={{
-                                  padding: "6px 8px",
-                                  fontSize: 11,
-                                  background: "#0d1117",
-                                  border: "1px solid #30363d",
-                                  borderRadius: 4,
-                                  color: "#e6edf3",
-                                  outline: "none",
-                                }}
-                              >
-                                <option value="">Select a project</option>
-                                <option value="__clear__">— Clear project —</option>
-                                {jiraProjects.map((p) => (
-                                  <option key={p.key} value={p.key}>
-                                    {p.key} — {p.name}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : null}
-                            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                                <input
-                                  value={jiraProjectKeyDraft}
-                                  onChange={(e) => setJiraProjectKeyDraft(e.target.value.toUpperCase())}
-                                  placeholder={jiraProjects.length > 0 ? "Or type key" : "e.g. DOCLITTLE"}
-                                  style={{
-                                    flex: 1,
-                                    padding: "4px 8px",
-                                    fontSize: 11,
-                                    background: "#0d1117",
-                                    border: "1px solid #30363d",
-                                    borderRadius: 4,
-                                    color: "#e6edf3",
-                                    outline: "none",
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") saveProjectKey(jiraProjectKeyDraft);
-                                    else if (e.key === "Escape") cancelProjectKeyEdit();
-                                  }}
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => saveProjectKey(jiraProjectKeyDraft)}
-                                  style={{
-                                    padding: "4px 8px",
-                                    fontSize: 10,
-                                    background: "#238636",
-                                    color: "white",
-                                    border: "none",
-                                    borderRadius: 4,
-                                    cursor: "pointer",
-                                  }}
-                                >
-                                  ✓
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={cancelProjectKeyEdit}
-                                  style={{
-                                    padding: "4px 6px",
-                                    fontSize: 10,
-                                    background: "transparent",
-                                    color: "#8b949e",
-                                    border: "1px solid #30363d",
-                                    borderRadius: 4,
-                                    cursor: "pointer",
-                                  }}
-                                  title="Cancel and return to list"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                              {jiraProjectKeyDraft && !isValidProjectKey(jiraProjectKeyDraft) && (
-                                <div style={{ fontSize: 10, color: "#f85149" }}>
-                                  Invalid key (no trailing hyphen, 2–10 chars)
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              padding: "4px 8px",
-                              background: "#0d1117",
-                              borderRadius: 4,
-                              border: "1px solid #30363d",
-                              cursor: "pointer",
-                              color: jiraProjectKey ? "#e6edf3" : "#7d8590",
-                            }}
-                            onClick={() => {
-                              setJiraProjectKeyDraft(jiraProjectKey ?? "");
-                              setEditingJiraProjectKey(true);
-                              setJiraProjectsLoading(true);
-                              fetch(`${API_BASE}/jira-projects`, { headers: { Authorization: `Bearer ${accessToken}` } })
-                                .then((r) => r.json())
-                                .then((d: { projects?: Array<{ key: string; name: string }> }) => setJiraProjects(d?.projects ?? []))
-                                .catch(() => setJiraProjects([]))
-                                .finally(() => setJiraProjectsLoading(false));
-                            }}
-                            title="Select which Jira project to fetch issues from"
-                          >
-                            <span style={{ flex: 1 }}>{jiraProjectKey ?? "Select project"}</span>
-                            {jiraProjectKey && (
-                              <button
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); clearProjectKey(); }}
-                                style={{
-                                  padding: "2px 6px",
-                                  fontSize: 9,
-                                  background: "transparent",
-                                  color: "#8b949e",
-                                  border: "1px solid #30363d",
-                                  borderRadius: 4,
-                                  cursor: "pointer",
-                                }}
-                                title="Clear project key"
-                              >
-                                Clear
-                              </button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    {jiraConfigured === true && activeWorkspaceId && !jiraProjectKey && (
-                      <div
-                        style={{
-                          marginTop: 4,
-                          fontSize: 10,
-                          color: "#d29922",
-                          maxWidth: 420,
-                        }}
-                      >
-                        No project set. Select one to scope Jira searches.
-                      </div>
-                    )}
-                  </div>
-
-                  <div style={{ flex: 1, minWidth: 220 }}>
-                    {activeWorkspaceId && (
-                      <div
-                        style={{
-                          marginBottom: 8,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          gap: 8,
-                          flexWrap: "wrap",
-                        }}
-                      >
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2, maxWidth: 260 }}>
-                      <div style={{ fontSize: 11, color: "#e6edf3" }}>Auto-implement ready todos</div>
-                      <div style={{ fontSize: 10, color: "#7d8590", lineHeight: 1.5 }}>
-                        When enabled, the agent can automatically start executing todos whose
-                        dependencies are satisfied, when triggered from chat or the board.
-                        All executions still respect safety limits.
-                      </div>
-                    </div>
-                        <button
-                          type="button"
-                          onClick={toggleAutoExecute}
-                          disabled={autoExecuteSaving}
-                          style={{
-                            padding: "4px 10px",
-                            fontSize: 10,
-                            height: 22,
-                            background: autoExecuteEnabled ? "#238636" : "#21262d",
-                            color: autoExecuteEnabled ? "white" : "#7d8590",
-                            border: `1px solid ${autoExecuteEnabled ? "#238636" : "#30363d"}`,
-                            borderRadius: 999,
-                            cursor: autoExecuteSaving ? "wait" : "pointer",
-                            minWidth: 80,
-                          }}
-                        >
-                          {autoExecuteEnabled ? "Enabled" : "Disabled"}
-                        </button>
-                      </div>
-                    )}
-
-                    {jiraConfigured !== true ? (
-                      <button
-                        onClick={() => setShowJiraConnectModal(true)}
-                        style={{
-                          padding: "4px 10px",
-                          fontSize: 10,
-                          height: 22,
-                          background: "#21262d",
-                          color: "#7d8590",
-                          border: "1px solid #30363d",
-                          borderRadius: 6,
-                          cursor: "pointer",
-                          marginBottom: 8,
-                        }}
-                      >
-                        Connect Jira
-                      </button>
-                    ) : (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
-                        <button
-                          onClick={() => {
-                            setJiraFilterByRepo((v) => {
-                              const next = !v;
-                              try {
-                                localStorage.setItem("jiraFilterByRepo", String(next));
-                              } catch { /* ignore */ }
-                              fetchJiraTests(next);
-                              return next;
-                            });
-                          }}
-                          disabled={jiraLoading}
-                          style={{
-                            padding: "4px 6px",
-                            fontSize: 10,
-                            height: 22,
-                            background: jiraFilterByRepo ? "#238636" : "#21262d",
-                            color: jiraFilterByRepo ? "white" : "#7d8590",
-                            border: `1px solid ${jiraFilterByRepo ? "#238636" : "#30363d"}`,
-                            borderRadius: 6,
-                            cursor: jiraLoading ? "wait" : "pointer",
-                          }}
-                          title={jiraFilterByRepo ? "Filter: show only issues labeled with this repo" : "Filter: show all unresolved issues in the project"}
-                        >
-                          {jiraFilterByRepo ? "This repo" : "Show all"}
-                        </button>
-                        <button
-                          onClick={() => setShowJiraDisconnectConfirm(true)}
-                          style={{
-                            padding: "4px 6px",
-                            fontSize: 10,
-                            height: 22,
-                            background: "transparent",
-                            color: "#8b949e",
-                            border: "1px solid #30363d",
-                            borderRadius: 6,
-                            cursor: "pointer",
-                          }}
-                          title="Disconnect Jira"
-                        >
-                          Disconnect
-                        </button>
-                      </div>
-                    )}
-
-                    {staleMismatches.length > 0 && jiraConfigured === true && (
-                      <div
-                        style={{
-                          marginBottom: 8,
-                          padding: "8px 10px",
-                          background: "rgba(210, 153, 34, 0.1)",
-                          border: "1px solid rgba(210, 153, 34, 0.4)",
-                          borderRadius: 6,
-                          fontSize: 11,
-                        }}
-                      >
-                        <div style={{ color: "#d29922", fontWeight: 600, marginBottom: 6 }}>
-                          {staleMismatches.length} issue{staleMismatches.length !== 1 ? "s" : ""} may be stale
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                          {staleMismatches.map((m) => {
-                            const baseUrl =
-                              jiraIssues.find((i) => i.key === m.key)?.baseUrl ??
-                              jiraIssues[0]?.baseUrl;
-                            return (
-                              <div
-                                key={m.key}
-                                style={{
-                                  padding: "4px 6px",
-                                  background: "#0d1117",
-                                  borderRadius: 4,
-                                  borderLeft: "2px solid #d29922",
-                                }}
-                              >
-                                {baseUrl ? (
-                                  <a
-                                    href={`${baseUrl}/browse/${m.key}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{ color: "#58a6ff", textDecoration: "none", fontWeight: 500 }}
-                                  >
-                                    {m.key}
-                                  </a>
-                                ) : (
-                                  <span style={{ color: "#e6edf3", fontWeight: 500 }}>{m.key}</span>
-                                )}
-                                <span style={{ color: "#7d8590", marginLeft: 4 }}>— {m.summary}</span>
-                                <div style={{ fontSize: 10, color: "#8b949e", marginTop: 2 }}>
-                                  {m.reason === "orphaned"
-                                    ? "Module deleted"
-                                    : m.reason === "changed"
-                                      ? "Module fingerprint changed"
-                                      : m.reason}
-                                  {m.storedModule && (
-                                    <span style={{ marginLeft: 4 }}>({m.storedModule})</span>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    {jiraError && (
-                      jiraError === "No project selected" ? (
-                        <div
-                          style={{
-                            fontSize: 11,
-                            marginBottom: 8,
-                            padding: "6px 10px",
-                            borderRadius: 999,
-                            border: "1px solid #30363d",
-                            background: "#111827",
-                            color: "#9ca3af",
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 6,
-                          }}
-                        >
-                          <span
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              background: "#4b5563",
-                            }}
-                          />
-                          <span>{jiraError}</span>
-                        </div>
-                      ) : (
-                        <div style={{ fontSize: 11, color: "#f85149", marginBottom: 8 }}>{jiraError}</div>
-                      )
-                    )}
-
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                      <div style={{ fontSize: 11, color: "#7d8590" }}>Jira issues</div>
-                      <label
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          fontSize: 10,
-                          color: "#7d8590",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={jiraCriticalOnly}
-                          onChange={(e) => setJiraCriticalOnly(e.target.checked)}
-                          style={{ margin: 0 }}
-                        />
-                        <span>Highlight critical only</span>
-                      </label>
-                    </div>
-                    <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11 }}>
-                      {jiraIssues.length === 0 && !jiraLoading && !jiraError && (
-                        <div
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            padding: "4px 8px",
-                            borderRadius: 999,
-                            border: "1px solid #30363d",
-                            background: "#0d1117",
-                            color: "#7d8590",
-                            marginBottom: 4,
-                          }}
-                        >
-                          {jiraConfigured !== true
-                            ? "Connect Jira to link architecture violations to issues"
-                            : activeWorkspaceId && !jiraProjectKeyReady
-                              ? "Loading Jira issues…"
-                              : !jiraProjectKey && activeWorkspaceId
-                                ? "Choose a project above to view Jira issues"
-                                : "No unresolved Jira issues for this project"}
-                        </div>
-                      )}
-                      {jiraIssues.map((j) => {
-                        const canAddToRepo =
-                          !jiraFilterByRepo &&
-                          jiraRepoName &&
-                          !(j.labels ?? []).includes(jiraRepoName);
-                        return (
-                          <div
-                            key={j.key}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 6,
-                              padding: "4px 0",
-                              borderBottom: "1px solid #21262d",
-                            }}
-                          >
-                            {j.priority && (
-                              <span
-                                style={{
-                                  fontSize: 9,
-                                  padding: "2px 6px",
-                                  borderRadius: 4,
-                                  fontWeight: 600,
-                                  textTransform: "uppercase",
-                                  letterSpacing: "0.05em",
-                                  background:
-                                    /high|critical|highest|high/i.test(j.priority)
-                                      ? "#f8514922"
-                                      : /medium|medium/i.test(j.priority)
-                                        ? "#eab30822"
-                                        : "#1e2d4544",
-                                  color:
-                                    /high|critical|highest|high/i.test(j.priority)
-                                      ? "#f85149"
-                                      : /medium|medium/i.test(j.priority)
-                                        ? "#eab308"
-                                        : "#94a3b8",
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {j.priority}
-                              </span>
-                            )}
-                            <a
-                              href={`${j.baseUrl}/browse/${j.key}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              style={{
-                                flex: 1,
-                                minWidth: 0,
-                                color: "#58a6ff",
-                                textDecoration: "none",
-                              }}
-                            >
-                              <span style={{ color: "#8b949e" }}>{j.key}</span> {j.summary}
-                              <span style={{ color: "#7d8590", marginLeft: 6 }}>{j.status}</span>
-                            </a>
-                            {canAddToRepo && (
-                              <button
-                                onClick={() => addLabelToIssue(j.key, jiraRepoName!)}
-                                style={{
-                                  padding: "2px 6px",
-                                  fontSize: 10,
-                                  height: 20,
-                                  flexShrink: 0,
-                                  background: "#21262d",
-                                  color: "#58a6ff",
-                                  border: "1px solid #30363d",
-                                  borderRadius: 4,
-                                  cursor: "pointer",
-                                }}
-                              >
-                                + Repo
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </DashboardCard>
-            </div>
           </div>
         )}
 
@@ -12600,7 +11468,6 @@ export default function App() {
               workspaceId={activeWorkspaceId ?? undefined}
               accessToken={accessToken}
               violationBeingFixedKey={violationBeingFixed}
-              issuesByNodeId={issuesByNodeId}
               annotations={workspaceAnnotations}
               onAnnotationsChange={fetchAnnotations}
               onOpenComments={(annId) => setSelectedAnnotationForComments(annId)}
@@ -14339,93 +13206,6 @@ export default function App() {
                 }}
               >
                 Continue
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showJiraConnectModal && (
-        <JiraConnectModal
-          accessToken={accessToken}
-          onConnected={async () => {
-            setShowJiraConnectModal(false);
-            setJiraConfigured(true);
-            try {
-              const res = await fetch(`${API_BASE}/jira-status`, {
-                headers: { Authorization: `Bearer ${accessToken}` },
-              });
-              const data = (await res.json().catch(() => ({}))) as { configured?: boolean; source?: "db" | "env" };
-              setJiraConfigSource(data?.configured && data?.source === "db" ? "db" : null);
-            } catch {
-              setJiraConfigSource(null);
-            }
-            fetchJiraTests();
-          }}
-          onClose={() => setShowJiraConnectModal(false)}
-        />
-      )}
-
-      {showJiraDisconnectConfirm && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 100,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-          onClick={() => setShowJiraDisconnectConfirm(false)}
-        >
-          <div
-            style={{
-              background: "#161b22",
-              border: "1px solid #30363d",
-              borderRadius: 12,
-              padding: 24,
-              maxWidth: 360,
-              color: "#e6edf3",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
-              Remove Jira connection?
-            </div>
-            <p style={{ fontSize: 13, color: "#8b949e", marginBottom: 20, lineHeight: 1.5 }}>
-              Your Jira credentials will be removed. You’ll need to reconnect to track violations again.
-            </p>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                onClick={() => setShowJiraDisconnectConfirm(false)}
-                style={{
-                  padding: "8px 16px",
-                  background: "transparent",
-                  color: "#8b949e",
-                  border: "1px solid #30363d",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleDisconnectJira()}
-                style={{
-                  padding: "8px 16px",
-                  background: "#da3633",
-                  color: "white",
-                  border: "1px solid #da3633",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 13,
-                }}
-              >
-                Remove
               </button>
             </div>
           </div>
