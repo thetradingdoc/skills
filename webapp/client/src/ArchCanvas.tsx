@@ -2497,22 +2497,42 @@ export function ArchCanvas({
       )}
 
       {viewMode === "3d" ? (
-        <Arch3DView
-          graph={graph}
-          selectedNode={selectedNode}
-          onNodeSelect={onNodeSelect}
-          legendHighlight={legendHighlight}
-          tracePathNodeIds={tracePathNodeIds}
-          workspaceId={workspaceId}
-          accessToken={accessToken}
-          annotations={annotations}
-          scene={scene}
-          sceneEditMode={sceneEditMode}
-          onSceneChange={onSceneChange}
-          activeSceneStateId={activeSceneStateId}
-          runtimeSnapshot={runtimeSnapshot}
-          captureViewRef={viewMode === "3d" ? captureViewRef : undefined}
-        />
+        <div
+          data-testid="arch-3d-container"
+          style={{
+            display: "flex",
+            flex: 1,
+            minHeight: 0,
+            minWidth: 0,
+            position: "relative",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+            }}
+          >
+            <Arch3DView
+              graph={graph}
+              selectedNode={selectedNode}
+              onNodeSelect={onNodeSelect}
+              legendHighlight={legendHighlight}
+              tracePathNodeIds={tracePathNodeIds}
+              workspaceId={workspaceId}
+              accessToken={accessToken}
+              annotations={annotations}
+              scene={scene}
+              sceneEditMode={sceneEditMode}
+              onSceneChange={onSceneChange}
+              activeSceneStateId={activeSceneStateId}
+              runtimeSnapshot={runtimeSnapshot}
+              captureViewRef={viewMode === "3d" ? captureViewRef : undefined}
+            />
+          </div>
+        </div>
       ) : (
       <div
         ref={flowParentRef}
