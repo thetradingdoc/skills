@@ -225,6 +225,36 @@ export type AgentTool = {
   description: string | null;
   params: string[];
   note?: string;
+  reach?: ToolReach;
+};
+
+export type ResourceKind = "db" | "service" | "external" | "fs";
+export type ResourceClass =
+  | "patient"
+  | "money"
+  | "external"
+  | "internal"
+  | "unclassified";
+
+export type ReachResource = {
+  kind: ResourceKind;
+  name: string;
+  class: ResourceClass;
+  depth: number;
+  path: string[];
+  evidence: string;
+};
+
+export type ToolReach = {
+  resources: ReachResource[];
+  truncated: boolean;
+  truncationNote: string | null;
+};
+
+export type AgentAuthFinding = {
+  found: boolean;
+  location: string | null;
+  evidence: string;
 };
 
 export type AgentSurfaceKind = "agent" | "helper" | "unknown";
@@ -248,6 +278,7 @@ export type AgentSurface = {
   kindSignal: string;
   loopKind: AgentLoopKind | null;
   tools: AgentTool[];
+  auth?: AgentAuthFinding;
 };
 
 export type AgentInventoryResult = {

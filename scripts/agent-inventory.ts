@@ -9,6 +9,15 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import {
+  detectAgentAuth,
+  loadClassifyConfig,
+  resolveHandlerViaKellyExecutor,
+  traceToolHandler,
+  writeClassifyConfig,
+  type AgentAuthFinding,
+  type ToolReach,
+} from "./resource-trace";
 
 export type AgentTool = {
   name: string;
@@ -17,6 +26,8 @@ export type AgentTool = {
   params: string[];
   /** When the tool lives only in a hosted console / external config. */
   note?: string;
+  /** Resources reached from the handler (when resolvable). */
+  reach?: ToolReach;
 };
 
 export type AgentSurfaceKind = "agent" | "helper" | "unknown";
@@ -39,6 +50,8 @@ export type AgentSurface = {
   kindSignal: string;
   loopKind: AgentLoopKind | null;
   tools: AgentTool[];
+  /** Auth / identity check before tools, if any. */
+  auth?: AgentAuthFinding;
 };
 
 export type AgentInventory = {
@@ -686,11 +699,12 @@ function classifySurface(
 }
 
 function enrichSurface(
-  base: Omit<AgentSurface, "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates"> & {
+  base: Omit<AgentSurface, "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates" | "auth"> & {
     toolCandidates?: string[];
   },
   text: string,
-  repoRoot: string
+  repoRoot: string,
+  classifyCfg?: ReturnType<typeof loadClassifyConfig>
 ): AgentSurface {
   let tools = extractTools(text, base.file, repoRoot);
 
@@ -755,6 +769,32 @@ function enrichSurface(
     ];
   }
 
+  // Resolve handlers for catalog tools that dispatch through KellyToolExecutor
+  if (kind === "agent") {
+    for (const t of tools) {
+      if (!t.handler && t.name !== "(hosted)") {
+        const via = resolveHandlerViaKellyExecutor(repoRoot, t.name);
+        if (via) {
+          t.handler = via;
+          if (t.note) t.note = `${t.note}; handler resolved via KellyToolExecutor`;
+          else t.note = "handler resolved via KellyToolExecutor";
+        }
+      }
+    }
+  }
+
+  // Resource reach tracing + auth (agents only). Config is mutated in place;
+  // caller (buildAgentInventory) persists once at the end.
+  let auth: AgentAuthFinding | undefined;
+  if (kind === "agent") {
+    const cfg = classifyCfg ?? loadClassifyConfig(repoRoot);
+    for (const t of tools) {
+      if (!t.handler || t.name === "(hosted)") continue;
+      t.reach = traceToolHandler(repoRoot, t.handler, t.name, cfg);
+    }
+    auth = detectAgentAuth(repoRoot, base.file, text);
+  }
+
   return {
     ...base,
     toolCandidates: tools.filter((t) => t.name !== "(hosted)").map((t) => t.name),
@@ -762,6 +802,7 @@ function enrichSurface(
     kindSignal,
     loopKind: kind === "agent" ? loopKind ?? "unknown" : null,
     tools: kind === "agent" ? tools : [],
+    auth,
   };
 }
 
@@ -769,7 +810,8 @@ function analyzeJsTsFile(
   absPath: string,
   rel: string,
   active: string[],
-  repoRoot: string
+  repoRoot: string,
+  classifyCfg: ReturnType<typeof loadClassifyConfig>
 ): AgentSurface | null {
   // Prefer missing: tests and ops scripts are not product agent surfaces.
   if (/(^|\/)(__tests__|tests?|e2e|scripts?)(\/|$)/i.test(rel)) {
@@ -794,9 +836,9 @@ function analyzeJsTsFile(
   const finish = (
     partial: Omit<
       AgentSurface,
-      "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates"
+      "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates" | "auth"
     >
-  ) => enrichSurface(partial, text, repoRoot);
+  ) => enrichSurface(partial, text, repoRoot, classifyCfg);
 
   // Hosted platform handlers (even without SDK construction in-file)
   if (
@@ -950,6 +992,7 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
     ...active,
     ...PROVIDER_HTTP_HOSTS.map((h) => `https://${h.host}`),
   ];
+  const classifyCfg = loadClassifyConfig(root);
 
   const allFiles = walkFiles(root);
   const languages: Record<string, number> = {};
@@ -978,7 +1021,7 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
     if (!CODE_EXT.has(ext)) continue;
     if (rel.includes("node_modules/") || rel.includes("/dist/")) continue;
     scannedFiles += 1;
-    const surface = analyzeJsTsFile(abs, rel, active, root);
+    const surface = analyzeJsTsFile(abs, rel, active, root, classifyCfg);
     if (surface) agents.push(surface);
   }
 
@@ -994,6 +1037,12 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
   const deduped = [...byFile.values()].sort((a, b) =>
     a.file.localeCompare(b.file)
   );
+
+  // Drop unclassified keys that gained an explicit class
+  classifyCfg.unclassified = classifyCfg.unclassified.filter(
+    (k) => !classifyCfg.resources[k] || classifyCfg.resources[k] === "unclassified"
+  );
+  writeClassifyConfig(root, classifyCfg);
 
   return {
     agents: deduped,
