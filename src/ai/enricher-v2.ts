@@ -135,34 +135,331 @@ const EXTERNAL_LAYER_HINTS: Array<{
   { packages: /^(jwt|passport|bcrypt|argon2)/, layer: "Business Logic" },
 ];
 
-function inferLayer(node: ArchNode): NodeLayer {
+/** Model / agent SDKs — import evidence for Reasoning (path keywords are fallback only). */
+const REASONING_PACKAGES = [
+  "openai",
+  "anthropic",
+  "@anthropic-ai/sdk",
+  "groq-sdk",
+  "retell-sdk",
+  "retell-client",
+  "retell-ai",
+  "cohere",
+  "mistralai",
+  "together-ai",
+  "replicate",
+  "@google/generative-ai",
+  "@aws-sdk/client-bedrock-runtime",
+  "@google-cloud/vertexai",
+  "langchain",
+  "llamaindex",
+  "crewai",
+  "autogen",
+  "semantic-kernel",
+  "livekit-agents",
+  "pipecat",
+  "vapi",
+] as const;
+
+/** Vector / embedding clients — import evidence for Memory. */
+const MEMORY_PACKAGES = [
+  "pinecone",
+  "@pinecone-database/pinecone",
+  "weaviate",
+  "chromadb",
+  "qdrant",
+  "@qdrant/js-client-rest",
+  "pgvector",
+  "faiss",
+] as const;
+
+const AGENT_KEYWORD_LAYERS: Set<NodeLayer> = new Set([
+  "Reasoning",
+  "Memory",
+  "Safety",
+]);
+
+/** Tools is detected as agent evidence but is not a NodeLayer — see assignLayer. */
+type AgentEvidenceLayer = "Reasoning" | "Memory" | "Safety" | "Tools";
+
+export type AgentLayerEvidence = {
+  layer: AgentEvidenceLayer;
+  evidence: string;
+};
+
+function normalizePkgName(pkg: string): string {
+  return pkg.toLowerCase().replace(/^@/, "").trim();
+}
+
+function packageMatchesKnown(imported: string, known: string): boolean {
+  const a = normalizePkgName(imported);
+  const b = normalizePkgName(known);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.startsWith(b + "/") || b.startsWith(a + "/")) return true;
+  const a0 = a.split("/")[0] ?? a;
+  const b0 = b.split("/")[0] ?? b;
+  // Avoid short false positives (e.g. "ai")
+  if (a0.length >= 4 && a0 === b0) return true;
+  return false;
+}
+
+function findMatchingPackage(
+  imports: string[],
+  known: readonly string[]
+): string | undefined {
+  for (const imp of imports) {
+    for (const k of known) {
+      if (packageMatchesKnown(imp, k)) return k;
+    }
+  }
+  return undefined;
+}
+
+const CONTENT_IMPORT_RE =
+  /(?:require\s*\(\s*['"]([^'"]+)['"]\s*\)|from\s+['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\))/g;
+
+const SAFETY_CONTENT_RE =
+  /(?:pii|phi).{0,40}redact|redact.{0,40}(?:pii|phi)|(?:^|[^a-z])(?:run|apply|check|enforce)Guardrail|moderation\.create|\/v1\/moderations|content.?filter.{0,40}(?:llm|model|prompt|completion)/i;
+
+const MEMORY_STATE_RE =
+  /conversation.?state|conversation.?memory|voice_conversation_memory|appendConversationMemory|session.?ssot|transcript.?stor|persist(?:s|ed|ing)?.{0,40}transcript|chat.?history|INSERT\s+INTO\s+health_sessions/i;
+
+const MEMORY_VECTOR_MENTION_RE =
+  /(?:require|from|import)\s*\(?\s*['"][^'"]*(?:pinecone|weaviate|chromadb|qdrant|pgvector|faiss)/i;
+
+const TOOL_DEF_RE =
+  /\btools?\s*[:=]|function.?definitions?|tool_choice|type\s*:\s*['"]function['"]|executeTool|tool-allowlist|toolAllowlist/i;
+
+/** Path buckets where content mentions of pinecone/guardrail are usually incidental. */
+function isIncidentalAgentPath(nodeId: string): boolean {
+  return /(^|\/)(migrations?|scripts?|tests?|e2e|__tests__|fixtures?|seeds?|config|\.github)(\/|$)/i.test(
+    nodeId
+  );
+}
+
+function isCodeSourceFile(relPath: string): boolean {
+  return /\.(js|jsx|ts|tsx|mjs|cjs)$/i.test(relPath);
+}
+
+function collectImportsFromFiles(
+  node: ArchNode,
+  projectRoot: string,
+  maxFiles = 80
+): string[] {
+  const found = new Set<string>();
+  const files = (node.files ?? []).filter(isCodeSourceFile);
+  const slice =
+    files.length <= maxFiles
+      ? files
+      : [
+          ...files.filter((f) =>
+            /llm|agent|rag|pinecone|retell|groq|openai|anthropic|embedding|vector|redact|guard|moderat|tool|memory|transcript|session/i.test(
+              f
+            )
+          ),
+          ...files.slice(0, maxFiles),
+        ].slice(0, maxFiles * 2);
+
+  for (const rel of slice) {
+    const abs = path.isAbsolute(rel) ? rel : path.join(projectRoot, rel);
+    let text: string;
+    try {
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+      text = fs.readFileSync(abs, "utf8");
+    } catch {
+      continue;
+    }
+    if (text.length > 400_000) text = text.slice(0, 400_000);
+    CONTENT_IMPORT_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CONTENT_IMPORT_RE.exec(text)) !== null) {
+      const spec = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+      if (!spec || spec.startsWith(".")) continue;
+      const raw = spec.startsWith("@")
+        ? spec.split("/").slice(0, 2).join("/")
+        : spec.split("/")[0] ?? spec;
+      if (raw) found.add(raw);
+    }
+  }
+  return [...found];
+}
+
+function sampleFileText(
+  node: ArchNode,
+  projectRoot: string,
+  maxFiles = 40
+): string {
+  const parts: string[] = [];
+  const files = (node.files ?? []).filter(isCodeSourceFile);
+  const preferred = files.filter((f) =>
+    /redact|guard|safety|moderat|pii|phi|memory|transcript|session|tool|llm|agent|rag|pinecone|embedding|retell|groq|openai/i.test(
+      f
+    )
+  );
+  const ordered = [...preferred, ...files.filter((f) => !preferred.includes(f))];
+  for (const rel of ordered.slice(0, maxFiles)) {
+    const abs = path.isAbsolute(rel) ? rel : path.join(projectRoot, rel);
+    try {
+      if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) continue;
+      let text = fs.readFileSync(abs, "utf8");
+      if (text.length > 80_000) text = text.slice(0, 80_000);
+      parts.push(rel + "\n" + text);
+    } catch {
+      /* ignore */
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Import / content evidence for agent layers.
+ * Priority when multiple hit: Reasoning > Memory > Safety > Tools.
+ * Keyword path rules are NOT consulted here — callers use them as fallback.
+ */
+export function detectAgentLayerEvidence(
+  node: ArchNode,
+  projectRoot: string
+): AgentLayerEvidence | null {
+  const sig = node.semanticSignals ?? {
+    exports: [],
+    externalImports: [],
+    fileCount: 0,
+  };
+  let imports = [...(sig.externalImports ?? [])];
+
+  const reasoningFromImports = findMatchingPackage(imports, REASONING_PACKAGES);
+  if (reasoningFromImports) {
+    return {
+      layer: "Reasoning",
+      evidence: `imports ${reasoningFromImports}`,
+    };
+  }
+
+  const memoryFromImports = findMatchingPackage(imports, MEMORY_PACKAGES);
+  if (memoryFromImports) {
+    return {
+      layer: "Memory",
+      evidence: `imports ${memoryFromImports}`,
+    };
+  }
+
+  // Imports truncated / incomplete — scan file contents for known packages.
+  // Soft content signals skipped for incidental paths (config/migrations/scripts/CI).
+  const incidental = isIncidentalAgentPath(node.id);
+  if (projectRoot && (node.files?.length ?? 0) > 0) {
+    const contentImports = collectImportsFromFiles(node, projectRoot);
+    imports = [...new Set([...imports, ...contentImports])];
+
+    const reasoningContent = findMatchingPackage(imports, REASONING_PACKAGES);
+    if (reasoningContent) {
+      return {
+        layer: "Reasoning",
+        evidence: `imports ${reasoningContent} (file content)`,
+      };
+    }
+    const memoryContent = findMatchingPackage(imports, MEMORY_PACKAGES);
+    if (memoryContent) {
+      return {
+        layer: "Memory",
+        evidence: `imports ${memoryContent} (file content)`,
+      };
+    }
+
+    if (incidental) {
+      return null;
+    }
+
+    const body = sampleFileText(node, projectRoot);
+    const fileNames = (node.files ?? []).join(" ");
+
+    if (
+      /\bretell-ai\b|\bretell-sdk\b|retell-client|require\s*\(\s*['"]retell(?:-ai|-sdk)?['"]|from\s+['"]retell|new\s+Retell\b|class\s+RetellWebSocket|livekit-agents/i.test(
+        body
+      ) ||
+      /(?:^|\/)retell-handler\.js|(?:^|\/)retell-websocket\.js|kelly-pa-video-orchestrator/i.test(
+        fileNames
+      )
+    ) {
+      return {
+        layer: "Reasoning",
+        evidence: "Retell/LiveKit agent runtime usage in module files",
+      };
+    }
+
+    if (
+      SAFETY_CONTENT_RE.test(body) ||
+      /pii-redactor|phi-safe|redaction-service/i.test(fileNames)
+    ) {
+      return {
+        layer: "Safety",
+        evidence:
+          "PII/PHI redaction, guardrail, or model-output validation in module files",
+      };
+    }
+    if (
+      MEMORY_STATE_RE.test(body) ||
+      MEMORY_STATE_RE.test(fileNames) ||
+      MEMORY_VECTOR_MENTION_RE.test(body)
+    ) {
+      return {
+        layer: "Memory",
+        evidence: MEMORY_VECTOR_MENTION_RE.test(body)
+          ? "vector store / embedding client import in module files"
+          : "persists conversation/session/transcript state",
+      };
+    }
+    if (
+      TOOL_DEF_RE.test(body) ||
+      (sig.exports ?? []).some((e) =>
+        /tool|executeTool|runTool|invokeTool/i.test(e)
+      )
+    ) {
+      return {
+        layer: "Tools",
+        evidence: "exports or defines model tool/function handlers",
+      };
+    }
+  }
+
+  return null;
+}
+
+function inferLayerFromKeywords(
+  node: ArchNode,
+  opts?: { skipAgentKeywordLayers?: boolean }
+): NodeLayer | null {
   const segments = node.id.toLowerCase().split("/");
   const lastName = segments[segments.length - 1] ?? "";
   const allParts = segments.join(" ");
 
+  for (const rule of LAYER_RULES) {
+    if (
+      opts?.skipAgentKeywordLayers &&
+      AGENT_KEYWORD_LAYERS.has(rule.layer)
+    ) {
+      continue;
+    }
+    if (rule.patterns.some((p) => p.test(lastName) || p.test(allParts))) {
+      return rule.layer;
+    }
+  }
+  return null;
+}
+
+function inferLayerFromExternalsAndExports(node: ArchNode): NodeLayer {
   const sig = node.semanticSignals ?? {
     exports: [],
     externalImports: [],
     fileCount: 0,
   };
 
-  // 1. Check folder/file name patterns
-  for (const rule of LAYER_RULES) {
-    if (rule.patterns.some((p) => p.test(lastName) || p.test(allParts))) {
-      return rule.layer;
-    }
-  }
-
-  // 2. Check external imports
   for (const hint of EXTERNAL_LAYER_HINTS) {
-    if (
-      (sig.externalImports ?? []).some((pkg) => hint.packages.test(pkg))
-    ) {
+    if ((sig.externalImports ?? []).some((pkg) => hint.packages.test(pkg))) {
       return hint.layer;
     }
   }
 
-  // 3. Check export names
   const exportStr = (sig.exports ?? []).join(" ").toLowerCase();
   if (/route|controller|handler|endpoint/.test(exportStr))
     return "Business Logic";
@@ -171,6 +468,49 @@ function inferLayer(node: ArchNode): NodeLayer {
   if (/util|helper|format|parse/.test(exportStr)) return "Utilities";
 
   return "Uncategorized";
+}
+
+/**
+ * Resolve layer: agent import/content evidence wins over path keywords.
+ * Tools is agent evidence but not a NodeLayer — falls through to non-agent keywords.
+ */
+function assignLayer(
+  node: ArchNode,
+  agentHit: AgentLayerEvidence | null
+): { layer: NodeLayer; evidence?: string } {
+  if (
+    agentHit &&
+    (agentHit.layer === "Reasoning" ||
+      agentHit.layer === "Memory" ||
+      agentHit.layer === "Safety")
+  ) {
+    return { layer: agentHit.layer, evidence: agentHit.evidence };
+  }
+
+  const skipAgentKeywords = agentHit?.layer === "Tools";
+  const keywordLayer = inferLayerFromKeywords(node, {
+    skipAgentKeywordLayers: skipAgentKeywords,
+  });
+  if (keywordLayer) {
+    return {
+      layer: keywordLayer,
+      evidence: agentHit
+        ? `Tools signal (${agentHit.evidence}); keyword fallback → ${keywordLayer}`
+        : undefined,
+    };
+  }
+
+  return {
+    layer: inferLayerFromExternalsAndExports(node),
+    evidence: agentHit
+      ? `Tools signal (${agentHit.evidence}); non-keyword fallback`
+      : undefined,
+  };
+}
+
+/** @deprecated Prefer assignLayer with precomputed agent evidence. Kept for callers. */
+function inferLayer(node: ArchNode, projectRoot = ""): NodeLayer {
+  return assignLayer(node, detectAgentLayerEvidence(node, projectRoot)).layer;
 }
 
 function inferLabel(node: ArchNode, layer: NodeLayer): string {
@@ -324,22 +664,60 @@ function getModuleDir(nodeId: string, projectRoot: string): string {
 
 // ── Main heuristic enricher ──────────────────────────────────────────────────
 export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph> {
+  const projectRoot = graph.projectRoot ?? "";
+
+  // Pass 1: import/content evidence per node
+  const agentHits = new Map<string, AgentLayerEvidence>();
+  for (const node of graph.nodes) {
+    const hit = detectAgentLayerEvidence(node, projectRoot);
+    if (hit) agentHits.set(node.id, hit);
+  }
+
+  // Pass 2: Tools — modules referenced (imported) by a Reasoning module
+  const reasoningIds = new Set(
+    [...agentHits.entries()]
+      .filter(([, h]) => h.layer === "Reasoning")
+      .map(([id]) => id)
+  );
+  for (const edge of graph.edges ?? []) {
+    if (!reasoningIds.has(edge.source)) continue;
+    if (agentHits.has(edge.target)) continue;
+    agentHits.set(edge.target, {
+      layer: "Tools",
+      evidence: `referenced by Reasoning node ${edge.source}`,
+    });
+  }
+
   const nodes = graph.nodes.map((node) => {
-    const moduleDir = getModuleDir(node.id, graph.projectRoot);
+    const moduleDir = getModuleDir(node.id, projectRoot);
     const context = readContextFile(moduleDir);
+    const agentHit = agentHits.get(node.id) ?? null;
 
     if (context?.layer && isValidLayer(context.layer)) {
-      const layer = context.layer as NodeLayer;
+      // Import evidence wins over .context.md when they disagree on agent layers.
+      const fromContext = context.layer as NodeLayer;
+      const assigned =
+        agentHit &&
+        (agentHit.layer === "Reasoning" ||
+          agentHit.layer === "Memory" ||
+          agentHit.layer === "Safety")
+          ? { layer: agentHit.layer as NodeLayer, evidence: agentHit.evidence }
+          : { layer: fromContext, evidence: undefined };
+      const layer = assigned.layer;
       const kind = inferKind(node);
       const llmProvider = kind === "agent" ? inferLlmProvider(node) : undefined;
       const hasRAG = inferHasRAG(node);
       const toolCount = kind === "agent" ? inferToolCount(node) : undefined;
+      const baseDesc =
+        context.description ?? node.description ?? generateDescription(node, layer);
       return {
         ...node,
         layer,
         suggestedLabel: context.role ?? node.label,
         role: context.role ?? inferLabel(node, layer),
-        description: context.description ?? node.description ?? generateDescription(node, layer),
+        description: assigned.evidence
+          ? `${baseDesc} [${assigned.evidence}]`
+          : baseDesc,
         status: inferStatus(node),
         kind,
         ...(llmProvider && { llmProvider }),
@@ -351,18 +729,21 @@ export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph>
     if (
       node.layer &&
       node.layer !== "Uncategorized" &&
-      node.suggestedLabel
+      node.suggestedLabel &&
+      !agentHit
     ) {
       return node;
     }
 
-    const layer = inferLayer(node);
+    // Import/content agent evidence overrides a pre-stamped non-Uncategorized layer.
+    const { layer, evidence } = assignLayer(node, agentHit);
     const label = inferLabel(node, layer);
     const status = inferStatus(node);
     const kind = inferKind(node);
     const llmProvider = kind === "agent" ? inferLlmProvider(node) : undefined;
     const hasRAG = inferHasRAG(node);
     const toolCount = kind === "agent" ? inferToolCount(node) : undefined;
+    const baseDesc = node.description ?? generateDescription(node, layer);
 
     return {
       ...node,
@@ -370,7 +751,7 @@ export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph>
       suggestedLabel: label,
       role: label,
       status,
-      description: node.description ?? generateDescription(node, layer),
+      description: evidence ? `${baseDesc} [${evidence}]` : baseDesc,
       kind,
       ...(llmProvider && { llmProvider }),
       ...(hasRAG && { hasRAG: true }),
@@ -468,7 +849,7 @@ Return ONLY valid JSON (no markdown):
         });
         return merged;
       } catch {
-        const layer = inferLayer(node);
+        const layer = inferLayer(node, graph.projectRoot ?? "");
         return {
           ...node,
           layer,
