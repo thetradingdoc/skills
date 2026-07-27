@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "description": "Editorial reference model for a complete agent. Product artifact — not a constant buried in code.",
+  "layers": [
+    {
+      "id": "ingress",
+      "name": "Ingress",
+      "question": "How does a request reach this agent?",
+      "whatFillsIt": "HTTP routes, webhooks, WebSocket handlers, phone/voice adapters, or queue consumers that call into the agent.",
+      "whyItMatters": "Without a mapped ingress you cannot reason about who can invoke the agent or how identity arrives.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "context",
+      "name": "Context",
+      "question": "What prompt and configuration are assembled per turn?",
+      "whatFillsIt": "System prompts, prompt templates, per-turn config, and session context builders.",
+      "whyItMatters": "Context is the policy surface — what the model is allowed to know and how it is instructed.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "reasoning",
+      "name": "Reasoning",
+      "question": "Which model, provider, and control loop run the agent?",
+      "whatFillsIt": "Model client construction, provider/SDK, and the tool-loop or hosted control flow.",
+      "whyItMatters": "Reasoning is the decision engine; provider and loop shape latency, cost, and failure modes.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "essential"
+      }
+    },
+    {
+      "id": "tools",
+      "name": "Tools",
+      "question": "What can the agent call?",
+      "whatFillsIt": "Tool declarations with handlers (or hosted tool bindings) reachable from the agent loop.",
+      "whyItMatters": "Tools are the blast radius — every sensitive reach starts here.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "memory",
+      "name": "Memory",
+      "question": "What survives a turn or a session?",
+      "whatFillsIt": "Session stores, conversation history, KV/meta tables, and agent state snapshots.",
+      "whyItMatters": "Memory decides whether patient or money data persists beyond a single reply.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "optional"
+      }
+    },
+    {
+      "id": "knowledge",
+      "name": "Knowledge",
+      "question": "What does the agent retrieve from outside the turn?",
+      "whatFillsIt": "Vector store clients (Pinecone, Weaviate, Chroma, Qdrant, pgvector) and embedding / RAG calls.",
+      "whyItMatters": "Retrieval can pull PHI or proprietary text into the prompt without an explicit tool name.",
+      "requirement": {
+        "whenSensitive": "expected",
+        "whenNotSensitive": "optional"
+      }
+    },
+    {
+      "id": "data",
+      "name": "Data",
+      "question": "Which stores do the tools reach?",
+      "whatFillsIt": "Databases, tables, and external APIs attributed from tool reach (patient, money, internal).",
+      "whyItMatters": "Data is the sensitivity map — Guard and Reach exist to make this layer honest.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "safety",
+      "name": "Safety",
+      "question": "What validates, moderates, or redacts model output?",
+      "whatFillsIt": "Moderation endpoints, guardrail libraries, and PII/PHI redaction on the agent path.",
+      "whyItMatters": "Without safety, sensitive tools can leak through unchecked model text.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "optional"
+      }
+    },
+    {
+      "id": "observability",
+      "name": "Observability",
+      "question": "Are model and tool calls traced as first-class events?",
+      "whatFillsIt": "Tracing SDKs and logging that specifically records model calls or tool calls — not generic HTTP access logs.",
+      "whyItMatters": "You cannot debug or audit an agent that only leaves request logs.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "evaluation",
+      "name": "Evaluation",
+      "question": "How is the agent scored before release?",
+      "whatFillsIt": "Eval harnesses, test sets, scoring scripts, and CI workflows that run agent evaluations.",
+      "whyItMatters": "Without evaluation, regressions in safety or tool use ship silently.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    },
+    {
+      "id": "deployment",
+      "name": "Deployment",
+      "question": "Where does it run and how are secrets supplied?",
+      "whatFillsIt": "Runtime process entrypoints, env/secret references, and deploy configs that start the agent path.",
+      "whyItMatters": "Deployment is where keys leak and where the wrong model can be pointed at production data.",
+      "requirement": {
+        "whenSensitive": "essential",
+        "whenNotSensitive": "expected"
+      }
+    }
+  ]
+}

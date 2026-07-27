@@ -21,6 +21,8 @@ import {
   type AgentAuthFinding,
   type ToolReach,
 } from "./resource-trace";
+import { attachLayersToInventory } from "./agent-layers";
+import type { AgentLayerResult } from "./agent-layers";
 
 export type AgentTool = {
   name: string;
@@ -55,6 +57,8 @@ export type AgentSurface = {
   tools: AgentTool[];
   /** Auth / identity check before tools, if any. */
   auth?: AgentAuthFinding;
+  /** Reference-model layer fill for the Layers canvas. */
+  layers?: AgentLayerResult[];
 };
 
 export type AgentInventory = {
@@ -1062,6 +1066,10 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
   );
   scrubExtractionNoise(classifyCfg);
   writeClassifyConfig(root, classifyCfg);
+
+  // Reference-model layers (product artifact at arch-visualizer root)
+  const productRoot = path.resolve(__dirname, "..");
+  attachLayersToInventory(root, deduped, productRoot);
 
   return {
     agents: deduped,
