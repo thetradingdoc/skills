@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { ArchCanvas } from "./ArchCanvas";
+import AgentsView from "./AgentsView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -175,20 +176,35 @@ function RememberThisButton({
 
 function LittleLabsScene() {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [webglFailed, setWebglFailed] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || webglFailed) return;
 
     const w = window.innerWidth;
     const h = window.innerHeight;
+
+    let renderer: THREE.WebGLRenderer;
+    try {
+      const probe = document.createElement("canvas");
+      const gl =
+        probe.getContext("webgl") || probe.getContext("experimental-webgl");
+      if (!gl) {
+        setWebglFailed(true);
+        return;
+      }
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch {
+      setWebglFailed(true);
+      return;
+    }
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, w / h, 0.1, 1000);
     camera.position.set(-7, -5, 11);
     camera.lookAt(0, 0, 0);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
     renderer.shadowMap.enabled = true;
@@ -342,7 +358,23 @@ function LittleLabsScene() {
         container.removeChild(renderer.domElement);
       }
     };
-  }, []);
+  }, [webglFailed]);
+
+  if (webglFailed) {
+    return (
+      <div
+        aria-hidden
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 0,
+          pointerEvents: "none",
+          background:
+            "radial-gradient(ellipse at 30% 40%, #e8eef7 0%, #f5f7fb 45%, #ffffff 100%)",
+        }}
+      />
+    );
+  }
 
   return <div ref={containerRef} style={{ position: "fixed", inset: 0, zIndex: 0 }} />;
 }
@@ -770,7 +802,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents">("2d");
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
 
@@ -7633,58 +7665,79 @@ export default function App() {
                 >
                   3D
                 </button>
-                <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
-                {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    title={
-                      mode === "architecture"
-                        ? "Layer-based architecture"
-                        : mode === "domains"
-                          ? "Group by domain"
-                          : mode === "runtime"
-                            ? "Emphasize runtime flows"
-                            : "Blast radius on select"
-                    }
-                    onClick={() => setGraphCanvasViewMode(mode)}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: 10,
-                      fontFamily: "monospace",
-                      border: graphCanvasViewMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
-                      borderRadius: 8,
-                      background: graphCanvasViewMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
-                      color: graphCanvasViewMode === mode ? "#93c5fd" : "#9ca3af",
-                      cursor: "pointer",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {mode === "architecture" ? "Arch" : mode}
-                  </button>
-                ))}
-                <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
-                {(["depth", "domain", "elk"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    title={mode === "depth" ? "By layer (depth)" : mode === "domain" ? "By domain" : "ELK auto-layout"}
-                    onClick={() => setGraphLayoutMode(mode)}
-                    style={{
-                      padding: "4px 8px",
-                      fontSize: 10,
-                      fontFamily: "monospace",
-                      border: graphLayoutMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
-                      borderRadius: 8,
-                      background: graphLayoutMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
-                      color: graphLayoutMode === mode ? "#93c5fd" : "#9ca3af",
-                      cursor: "pointer",
-                      textTransform: "capitalize",
-                    }}
-                  >
-                    {mode}
-                  </button>
-                ))}
+                <button
+                  type="button"
+                  title="Agents view"
+                  onClick={() => setGraphViewMode("agents")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "agents" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "agents" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "agents" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Agents
+                </button>
+                {graphViewMode !== "agents" && (
+                  <>
+                    <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
+                    {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        title={
+                          mode === "architecture"
+                            ? "Layer-based architecture"
+                            : mode === "domains"
+                              ? "Group by domain"
+                              : mode === "runtime"
+                                ? "Emphasize runtime flows"
+                                : "Blast radius on select"
+                        }
+                        onClick={() => setGraphCanvasViewMode(mode)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 10,
+                          fontFamily: "monospace",
+                          border: graphCanvasViewMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                          borderRadius: 8,
+                          background: graphCanvasViewMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
+                          color: graphCanvasViewMode === mode ? "#93c5fd" : "#9ca3af",
+                          cursor: "pointer",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {mode === "architecture" ? "Arch" : mode}
+                      </button>
+                    ))}
+                    <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
+                    {(["depth", "domain", "elk"] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        title={mode === "depth" ? "By layer (depth)" : mode === "domain" ? "By domain" : "ELK auto-layout"}
+                        onClick={() => setGraphLayoutMode(mode)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 10,
+                          fontFamily: "monospace",
+                          border: graphLayoutMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                          borderRadius: 8,
+                          background: graphLayoutMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
+                          color: graphLayoutMode === mode ? "#93c5fd" : "#9ca3af",
+                          cursor: "pointer",
+                          textTransform: "capitalize",
+                        }}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -7853,6 +7906,9 @@ export default function App() {
               height: "100%",
             }}
           >
+            {graphViewMode === "agents" ? (
+              <AgentsView agents={graph?.agents} />
+            ) : (
             <ArchCanvas
               graph={effectiveGraph!}
               selectedNode={selectedNode}
@@ -7863,8 +7919,8 @@ export default function App() {
               nodeFilter={personaNodeFilters}
               persona={persona}
               searchResults={graphSearchResults}
-              viewMode={graphViewMode}
-              onViewModeChange={setGraphViewMode}
+              viewMode={graphViewMode === "3d" ? "3d" : "2d"}
+              onViewModeChange={(m) => setGraphViewMode(m)}
               canvasViewMode={graphCanvasViewMode}
               onCanvasViewModeChange={setGraphCanvasViewMode}
               layoutMode={graphLayoutMode}
@@ -7898,6 +7954,7 @@ export default function App() {
               runtimeLive={runtimeLive}
               vulnerableNodeIds={showSupplyChainRisk ? vulnerableNodeIds : undefined}
             />
+            )}
           </div>
         )}
         {showInsightsPanel && graph && (
