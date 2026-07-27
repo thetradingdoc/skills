@@ -251,6 +251,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
   return (
     <div
       data-testid="resources-view"
+      data-busy={busy ? "1" : "0"}
       style={{
         flex: 1,
         minHeight: 0,
@@ -274,6 +275,9 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
       >
         <div style={{ fontSize: 13, color: "#f3f4f6" }}>
           Resources — {classifiedCount} of {totalDistinct} classified
+          {unclassifiedOnly
+            ? ` · showing ${visible.length} unclassified`
+            : ` · showing ${visible.length}`}
         </div>
         <label style={{ fontSize: 11, color: "#9ca3af", display: "flex", gap: 6, alignItems: "center" }}>
           <input
@@ -353,6 +357,9 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
                       <button
                         key={c}
                         type="button"
+                        data-testid="resource-classify-btn"
+                        data-resource-key={row.key}
+                        data-class={c}
                         disabled={busy}
                         onClick={() => classifyKeys([row.key], c)}
                         style={{
@@ -366,7 +373,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
                           background:
                             row.class === c ? "rgba(29,78,216,0.25)" : "transparent",
                           color: "#d1d5db",
-                          cursor: "pointer",
+                          cursor: busy ? "wait" : "pointer",
                         }}
                       >
                         {c}
