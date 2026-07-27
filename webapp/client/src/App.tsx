@@ -3,6 +3,7 @@ import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
 import ResourcesView from "./ResourcesView";
+import GuardView from "./GuardView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -804,7 +805,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard">("2d");
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
 
@@ -7718,7 +7719,24 @@ export default function App() {
                 >
                   Resources
                 </button>
-                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && (
+                <button
+                  type="button"
+                  title="Guard rules"
+                  onClick={() => setGraphViewMode("guard")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "guard" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "guard" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "guard" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Guard
+                </button>
+                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -7951,6 +7969,23 @@ export default function App() {
                 agents={graph?.agents}
                 apiBase={API_BASE}
                 onGraphPatch={(patch) => setGraph((g) => (g ? patch(g) : g))}
+              />
+            ) : graphViewMode === "guard" ? (
+              <GuardView
+                agents={graph?.agents}
+                apiBase={API_BASE}
+                onOpenEvidence={({ agent, tool, cls }) => {
+                  setGraphViewMode("reach");
+                  // ReachView owns its own selection; stash for optional future deep-link
+                  try {
+                    sessionStorage.setItem(
+                      "arch_reach_focus",
+                      JSON.stringify({ agent, tool, cls })
+                    );
+                  } catch {
+                    /* ignore */
+                  }
+                }}
               />
             ) : (
             <ArchCanvas

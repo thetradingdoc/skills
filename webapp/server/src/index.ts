@@ -44,6 +44,7 @@ import { githubConnectRoutes } from "./githubConnect.js";
 import { soloWorkspaceRoutes } from "./soloWorkspace.js";
 import { resourceClassifyRoutes } from "./resourceClassify.js";
 import { traceDisputesRoutes } from "./traceDisputes.js";
+import { reachRulesRoutes } from "./reachRulesRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../client/dist");
@@ -61,7 +62,7 @@ app.use(
 );
 app.use(
   express.json({
-    limit: "10mb",
+    limit: "32mb",
   })
 );
 
@@ -70,6 +71,7 @@ const PORT = process.env.PORT ?? 4000;
 app.use("/api", scanRoutes);
 app.use("/api", resourceClassifyRoutes);
 app.use("/api", traceDisputesRoutes);
+app.use("/api", reachRulesRoutes);
 app.use("/api", chatRoutes);
 app.use("/api", fileContentRoutes);
 app.use("/api", validateRoutes);
