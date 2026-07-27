@@ -5,6 +5,7 @@ import ReachView from "./ReachView";
 import ResourcesView from "./ResourcesView";
 import GuardView from "./GuardView";
 import LayersView from "./LayersView";
+import StandardView from "./StandardView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -806,7 +807,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard">("2d");
   const [layersAgentFile, setLayersAgentFile] = useState<string | null>(null);
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
@@ -7694,6 +7695,23 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  title="Standard scorecard"
+                  onClick={() => setGraphViewMode("standard")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "standard" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "standard" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "standard" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Standard
+                </button>
+                <button
+                  type="button"
                   title="Agents view"
                   onClick={() => setGraphViewMode("agents")}
                   style={{
@@ -7760,7 +7778,7 @@ export default function App() {
                 >
                   Guard
                 </button>
-                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && graphViewMode !== "layers" && (
+                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && graphViewMode !== "layers" && graphViewMode !== "standard" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -7986,6 +8004,12 @@ export default function App() {
           >
             {graphViewMode === "layers" ? (
               <LayersView
+                agents={graph?.agents}
+                selectedAgentFile={layersAgentFile}
+                onSelectAgent={setLayersAgentFile}
+              />
+            ) : graphViewMode === "standard" ? (
+              <StandardView
                 agents={graph?.agents}
                 selectedAgentFile={layersAgentFile}
                 onSelectAgent={setLayersAgentFile}
