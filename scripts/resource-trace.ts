@@ -17,6 +17,15 @@ export type ResourceClass =
 
 export type CellState = "reaches" | "none" | "not-traced";
 
+export type ReachHop = {
+  /** Relative file path */
+  file: string;
+  line: number | null;
+  /** Source line or short snippet at the callsite */
+  snippet: string;
+  label: string;
+};
+
 export type ReachResource = {
   kind: ResourceKind;
   name: string;
@@ -26,6 +35,10 @@ export type ReachResource = {
   evidence: string;
   /** true when this is a heuristic suggestion, not a human decision */
   guess?: boolean;
+  /** Call chain with source lines for the evidence panel */
+  hops?: ReachHop[];
+  /** Query or call that proves the resource touch */
+  proof?: string;
 };
 
 export type ClassCell = {
@@ -106,7 +119,6 @@ const DEFAULT_CONFIG: ClassifyConfig = {
       "identity",
       "caller",
       "voice_call",
-      "session_meta",
       "opqrst",
       "records",
       "encounter",
@@ -381,10 +393,12 @@ function isDatabaseModule(absPath: string): boolean {
 
 type DatabaseCacheEntry = {
   fileRel: string;
-  /** Genuine table / collection names from SQL. */
+  /** Genuine table / collection names from SQL (inventory only — never attributed wholesale). */
   tables: string[];
-  /** Exported or function-scoped method → tables touched in that function. */
+  /** Exported function → tables that function queries. */
   methodTables: Record<string, string[]>;
+  /** Exported function → representative SQL proof snippet. */
+  methodProof: Record<string, string>;
 };
 
 const databaseModuleCache = new Map<string, DatabaseCacheEntry>();
@@ -404,41 +418,83 @@ export function extractDatabaseModule(
   const fileRel = path.relative(repoRoot, absPath).split(path.sep).join("/");
   const tables = new Set<string>();
 
-  // CREATE TABLE and SQL in backticks across the whole file
-  const sqlRe = /`([^`]{8,4000})`/g;
-  let m: RegExpExecArray | null;
-  while ((m = sqlRe.exec(text)) !== null) {
-    const chunk = m[1]!;
+  const collectSqlFrom = (chunk: string, into: Set<string>) => {
     if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN|CREATE\s+TABLE)\b/i.test(chunk)) {
-      continue;
+      return;
     }
     for (const t of extractSqlTables(chunk)) {
-      if (looksLikeTableName(t) || /^[a-z][a-z0-9_]*$/.test(t)) tables.add(t);
+      if (looksLikeTableName(t) || /^[a-z][a-z0-9_]*$/.test(t)) into.add(t);
     }
-  }
-  // CREATE TABLE IF NOT EXISTS outside templates
-  const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?([a-zA-Z_][a-zA-Z0-9_]*)[`"']?/gi;
-  while ((m = createRe.exec(text)) !== null) {
-    tables.add(m[1]!);
-  }
+  };
+
+  // Module-wide table inventory (for reporting only — never attributed wholesale)
+  const sqlRe = /`([^`]{8,4000})`/g;
+  let m: RegExpExecArray | null;
+  while ((m = sqlRe.exec(text)) !== null) collectSqlFrom(m[1]!, tables);
+  const sqlStrRe = /'(SELECT\s[^']{8,2000}|INSERT\s[^']{8,2000}|UPDATE\s[^']{8,2000}|DELETE\s[^']{8,2000})'/gi;
+  while ((m = sqlStrRe.exec(text)) !== null) collectSqlFrom(m[1]!, tables);
+  const createRe =
+    /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?([a-zA-Z_][a-zA-Z0-9_]*)[`"']?/gi;
+  while ((m = createRe.exec(text)) !== null) tables.add(m[1]!);
 
   const methodTables: Record<string, string[]> = {};
-  // function getFoo( / exports.getFoo = / getFoo: function
-  const fnRe =
-    /(?:(?:async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|(?:exports\.|module\.exports\.)([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?(?:function\s*\(|\([^)]*\)\s*=>)|([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(?:async\s*)?function\s*\()/g;
+  const methodProof: Record<string, string> = {};
+
+  // Object / export methods: name: (args) => { ... }  OR  name: function (...) {
+  // Also: function name(  /  exports.name =  /  async function name(
+  const startRe =
+    /(?:^|\n)\s*(?:async\s+)?(?:function\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*(?::\s*(?:async\s*)?(?:function\s*)?\(|=\s*(?:async\s*)?(?:function\s*)?\(|\()/gm;
+
   const starts: Array<{ name: string; index: number }> = [];
-  while ((m = fnRe.exec(text)) !== null) {
-    const name = m[1] || m[2] || m[3];
-    if (name) starts.push({ name, index: m.index });
+  while ((m = startRe.exec(text)) !== null) {
+    const name = m[1]!;
+    // Skip control / keywords
+    if (
+      [
+        "if",
+        "for",
+        "while",
+        "switch",
+        "catch",
+        "return",
+        "typeof",
+        "new",
+        "await",
+        "const",
+        "let",
+        "var",
+      ].includes(name)
+    ) {
+      continue;
+    }
+    starts.push({ name, index: m.index });
   }
+
   for (let i = 0; i < starts.length; i++) {
     const { name, index } = starts[i]!;
-    const brace = text.indexOf("{", index);
-    if (brace < 0) continue;
+    // Find opening '{' of the function body (skip param list, which may contain `= null`)
+    let openParen = text.indexOf("(", index);
+    if (openParen < 0 || openParen > index + 120) continue;
+    let paren = 0;
+    let braceStart = -1;
+    for (let j = openParen; j < text.length && j < openParen + 8000; j++) {
+      const ch = text[j]!;
+      if (ch === "(") paren++;
+      else if (ch === ")") {
+        paren--;
+        if (paren === 0) {
+          const arrow = text.slice(j + 1, j + 40).match(/^\s*(?:=>)?\s*\{/);
+          if (!arrow) break;
+          braceStart = j + 1 + text.slice(j + 1).indexOf("{");
+          break;
+        }
+      }
+    }
+    if (braceStart < 0) continue;
     let depth = 0;
-    let end = brace;
-    const limit = Math.min(text.length, brace + 100000);
-    for (let j = brace; j < limit; j++) {
+    let end = braceStart;
+    const limit = Math.min(text.length, braceStart + 120000);
+    for (let j = braceStart; j < limit; j++) {
       if (text[j] === "{") depth++;
       else if (text[j] === "}") {
         depth--;
@@ -448,22 +504,34 @@ export function extractDatabaseModule(
         }
       }
     }
-    const body = text.slice(brace, end + 1);
+    const body = text.slice(braceStart, end + 1);
     const local = new Set<string>();
+    const proofs: string[] = [];
     const bodySql = /`([^`]{8,4000})`/g;
     let bm: RegExpExecArray | null;
     while ((bm = bodySql.exec(body)) !== null) {
-      if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN)\b/i.test(bm[1]!)) continue;
-      for (const t of extractSqlTables(bm[1]!)) local.add(t);
+      const before = local.size;
+      collectSqlFrom(bm[1]!, local);
+      if (local.size > before) proofs.push(bm[1]!.replace(/\s+/g, " ").slice(0, 160));
     }
-    // Also string table refs in .prepare("...FROM foo")
-    if (local.size) methodTables[name] = [...local];
+    const bodyStr = /'(SELECT\s[^']+|INSERT\s[^']+|UPDATE\s[^']+|DELETE\s[^']+)'/gi;
+    while ((bm = bodyStr.exec(body)) !== null) {
+      const before = local.size;
+      collectSqlFrom(bm[1]!, local);
+      if (local.size > before) proofs.push(bm[1]!.replace(/\s+/g, " ").slice(0, 160));
+    }
+    if (local.size) {
+      // Prefer later definition if duplicates (object literal usually last)
+      methodTables[name] = [...local];
+      if (proofs[0]) methodProof[name] = proofs[0]!;
+    }
   }
 
   const entry: DatabaseCacheEntry = {
     fileRel,
     tables: [...tables].sort(),
     methodTables,
+    methodProof,
   };
   databaseModuleCache.set(absPath, entry);
   return entry;
@@ -528,19 +596,70 @@ function scanSnippet(
     });
   }
 
-  // db.method — call expressions, NOT tables
+  // db.method — call OR property reference (e.g. const fn = db.getPatient…; fn())
   if (emitDbCalls) {
-    const dbMethodRe = /\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
+    const dbMethodRe = /\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    const skipDbProps = new Set([
+      "db",
+      "prepare",
+      "exec",
+      "transaction",
+      "query",
+      "run",
+      "get",
+      "all",
+      "pragma",
+      "close",
+      "serialize",
+      "parallelize",
+    ]);
+    const seenMethods = new Set<string>();
     while ((m = dbMethodRe.exec(text)) !== null) {
       const method = m[1]!;
-      if (["db", "prepare", "exec", "transaction"].includes(method) || method.length < 3) {
-        continue;
-      }
+      if (skipDbProps.has(method) || method.length < 3) continue;
+      if (seenMethods.has(method)) continue;
+      seenMethods.add(method);
+      const line = text.slice(0, m.index).split("\n").length;
+      const lineText = text.split("\n")[line - 1]?.trim() ?? `db.${method}`;
       resources.push({
         kind: "db_call",
         name: method,
-        evidence: `${fileRel}: db.${method}(…)`,
+        evidence: `${fileRel}:${line}: ${lineText.slice(0, 120)}`,
       });
+    }
+  }
+
+  // Generic db.prepare('SQL') / db.query("SQL") with literal — extract tables
+  const litPrep =
+    /\bdb\.(?:prepare|query|exec|run)\(\s*(`([^`]{8,4000})`|'((?:SELECT|INSERT|UPDATE|DELETE)\s[^']{8,2000})')/gi;
+  while ((m = litPrep.exec(text)) !== null) {
+    const sql = m[2] || m[3] || "";
+    const line = text.slice(0, m.index).split("\n").length;
+    for (const table of extractSqlTables(sql)) {
+      if (!looksLikeTableName(table) && looksLikeCallExpression(table)) continue;
+      resources.push({
+        kind: "db",
+        name: table,
+        evidence: `${fileRel}:${line}: literal SQL → ${table}`,
+      });
+    }
+  }
+  // Runtime-built SQL into prepare/query — not-traced marker via truncHints
+  if (
+    /\bdb\.(?:prepare|query)\(\s*(?!`|'|")/.test(text) ||
+    /\bdb\.(?:prepare|query)\(\s*[a-zA-Z_$][\w$]*\s*[,)]/.test(text)
+  ) {
+    // Ignore if every prepare uses a literal (already handled). Flag remaining dynamic forms.
+    const dyn =
+      /\bdb\.(?:prepare|query)\(\s*([a-zA-Z_$][\w$]*|[^`'"][^)]*)\)/g;
+    while ((m = dyn.exec(text)) !== null) {
+      const arg = m[1] || "";
+      if (/^[`']/.test(arg.trim())) continue;
+      if (/^(SELECT|INSERT|UPDATE|DELETE)\b/i.test(arg.trim())) continue;
+      truncHints.push(
+        `dynamic-sql: ${fileRel} db.prepare/query with runtime string — cannot attribute tables`
+      );
+      break;
     }
   }
 
@@ -774,6 +893,11 @@ export function traceToolHandler(
 
   const fileBindings = parseFileBindings(source);
   const caseBody = extractCaseBody(source, toolName);
+  const out: ReachResource[] = [];
+  const seenResource = new Set<string>();
+  const visitedFiles = new Set<string>([abs]);
+  let truncated = false;
+  const truncNotes: string[] = [];
   const startSnippets: Array<{
     text: string;
     fileAbs: string;
@@ -825,12 +949,6 @@ export function traceToolHandler(
     });
   }
 
-  const out: ReachResource[] = [];
-  const seenResource = new Set<string>();
-  const visitedFiles = new Set<string>([abs]);
-  let truncated = false;
-  const truncNotes: string[] = [];
-
   type QueueItem = {
     fileAbs: string;
     fileRel: string;
@@ -856,7 +974,9 @@ export function traceToolHandler(
     name: string,
     depth: number,
     pathSoFar: string[],
-    evidence: string
+    evidence: string,
+    hops?: ReachHop[],
+    proof?: string
   ) => {
     const key = resourceKey(kind, name);
     const dedupe = `${key}@${depth}`;
@@ -864,6 +984,27 @@ export function traceToolHandler(
     seenResource.add(dedupe);
     const { class: cls, guess } = classifyResource(kind, name, cfg);
     trackClassification(cfg, kind, name, cls, guess);
+    const derivedHops: ReachHop[] =
+      hops ??
+      pathSoFar.map((label) => {
+        const lm = /^(.+?):(\d+)/.exec(label);
+        return {
+          file: lm?.[1] ?? label.replace(/#.+$/, ""),
+          line: lm ? parseInt(lm[2]!, 10) : null,
+          snippet: label,
+          label,
+        };
+      });
+    // Append leaf evidence as final hop when not already covered
+    if (evidence && !derivedHops.some((h) => h.snippet === evidence.slice(0, 160))) {
+      const em = /([^:\s]+):(\d+)/.exec(evidence);
+      derivedHops.push({
+        file: em?.[1] ?? pathSoFar[pathSoFar.length - 1] ?? "",
+        line: em ? parseInt(em[2]!, 10) : null,
+        snippet: evidence.slice(0, 200),
+        label: `${kind}:${name}`,
+      });
+    }
     out.push({
       kind,
       name,
@@ -872,38 +1013,67 @@ export function traceToolHandler(
       path: [...pathSoFar, `${kind}:${name}`],
       evidence,
       guess: guess || undefined,
+      hops: derivedHops,
+      proof,
     });
   };
 
-  const attachDatabaseCache = (
+  /**
+   * Attribute ONLY tables touched by a specific exported function.
+   * Never dumps the whole module table set.
+   */
+  const attachDatabaseCallsite = (
     dbAbs: string,
     depth: number,
     pathSoFar: string[],
-    method?: string
-  ) => {
+    method: string | undefined,
+    callsiteEvidence: string
+  ): void => {
     const entry = extractDatabaseModule(dbAbs, repoRoot);
-    const label = method
-      ? `${entry.fileRel}#${method} (cached)`
-      : `${entry.fileRel} (cached tables)`;
-    const pathWithDb = [...pathSoFar, label];
-    if (method && entry.methodTables[method]) {
-      for (const t of entry.methodTables[method]!) {
-        pushResource("db", t, depth, pathWithDb, `${entry.fileRel}: ${method} → table ${t}`);
-      }
-    } else if (method) {
-      // Method exists as call but no SQL mapped — still record the call; tables unknown
-      pushResource(
-        "db_call",
-        method,
-        depth,
-        pathWithDb,
-        `${entry.fileRel}: db.${method} (no SQL mapped in function body)`
+    if (!method) {
+      truncated = true;
+      truncNotes.push(
+        `unresolved-callsite: require(${entry.fileRel}) without a specific exported function — not attributing all tables`
       );
-    } else {
-      for (const t of entry.tables) {
-        pushResource("db", t, depth, pathWithDb, `${entry.fileRel}: cached table ${t}`);
-      }
+      return;
     }
+    const tables = entry.methodTables[method];
+    const pathWithDb = [...pathSoFar, `${entry.fileRel}#${method}`];
+    const hop: ReachHop = {
+      file: entry.fileRel,
+      line: null,
+      snippet: callsiteEvidence.slice(0, 160),
+      label: `db.${method}`,
+    };
+    if (tables && tables.length) {
+      const proof = entry.methodProof[method];
+      for (const t of tables) {
+        pushResource(
+          "db",
+          t,
+          depth,
+          pathWithDb,
+          `${entry.fileRel}: ${method} → ${t}`,
+          [hop],
+          proof ?? `db.${method}`
+        );
+      }
+      return;
+    }
+    // Function resolved but no SQL found in body — record call, do not smear tables
+    truncated = true;
+    truncNotes.push(
+      `unresolved-callsite: ${entry.fileRel}#${method} has no extractable SQL tables (empty body, dynamic SQL, or re-export)`
+    );
+    pushResource(
+      "db_call",
+      method,
+      depth,
+      pathWithDb,
+      `${entry.fileRel}: db.${method} (no SQL mapped)`,
+      [hop],
+      `db.${method}(…)`
+    );
   };
 
   while (queue.length > 0) {
@@ -940,8 +1110,18 @@ export function traceToolHandler(
           }
         }
         if (resolvedDb) {
-          attachDatabaseCache(resolvedDb, item.depth, item.pathSoFar, r.name);
+          attachDatabaseCallsite(
+            resolvedDb,
+            item.depth,
+            item.pathSoFar,
+            r.name,
+            r.evidence
+          );
         } else {
+          truncated = true;
+          truncNotes.push(
+            `unresolved-callsite: db.${r.name} — database module not found`
+          );
           pushResource(r.kind, r.name, item.depth, item.pathSoFar, r.evidence);
         }
         continue;
@@ -964,6 +1144,18 @@ export function traceToolHandler(
       const serviceName =
         path.basename(spec.replace(/\\/g, "/")).replace(/\.(js|ts|mjs)$/, "") ||
         spec.replace(/^\.\//, "");
+
+      if (isDatabaseModule(resolved)) {
+        attachDatabaseCallsite(
+          resolved,
+          item.depth + 1 > maxDepth ? maxDepth : item.depth + 1,
+          [...item.pathSoFar, `${serviceName}${bc.method ? "." + bc.method : ""}`],
+          bc.method,
+          `${item.fileRel}: ${bc.binding}.${bc.method}`
+        );
+        continue;
+      }
+
       pushResource(
         "service",
         serviceName,
@@ -981,17 +1173,12 @@ export function traceToolHandler(
         );
         continue;
       }
-      if (isDatabaseModule(resolved)) {
-        attachDatabaseCache(resolved, nextDepth, [...item.pathSoFar, serviceName], bc.method);
-        visitedFiles.add(resolved);
-        continue;
-      }
       let nextText = fs.readFileSync(resolved, "utf8");
       if (bc.method) {
         const body = extractMethodBody(nextText, bc.method!);
         if (body) nextText = body;
       }
-      if (nextText.length > 200_000 && !isDatabaseModule(resolved)) {
+      if (nextText.length > 200_000) {
         truncated = true;
         truncNotes.push(
           `module-size-cap: ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (${nextText.length} bytes)`
@@ -1017,6 +1204,20 @@ export function traceToolHandler(
       const serviceName =
         path.basename(spec.replace(/\\/g, "/")).replace(/\.(js|ts|mjs)$/, "") ||
         spec.replace(/^\.\//, "");
+
+      // database.js: never attribute all tables on a bare require — and do not
+      // credit a generic service:database reach (that re-smeared every tool).
+      if (resolved && isDatabaseModule(resolved)) {
+        attachDatabaseCallsite(
+          resolved,
+          item.depth + 1,
+          [...item.pathSoFar, serviceName],
+          undefined,
+          `${item.fileRel}: require('${spec}')`
+        );
+        continue;
+      }
+
       pushResource(
         "service",
         serviceName,
@@ -1034,13 +1235,6 @@ export function traceToolHandler(
         truncNotes.push(
           `depth-limit: depth ${maxDepth} stopped before ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (require '${spec}')`
         );
-        continue;
-      }
-
-      // database.js: cache extract, do not re-walk
-      if (isDatabaseModule(resolved)) {
-        attachDatabaseCache(resolved, nextDepth, [...item.pathSoFar, serviceName]);
-        visitedFiles.add(resolved);
         continue;
       }
 
