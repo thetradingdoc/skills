@@ -2750,289 +2750,8 @@ export default function App() {
     color: "#e6edf3",
   };
 
-  // Landing / onboarding: no graph yet
-  if (!graph && !loading) {
-    return (
-      <div
-        className="landing-page"
-        style={{
-          minHeight: "100vh",
-          backgroundColor: "#000000",
-          color: "#000000",
-          position: "relative",
-          overflow: "hidden",
-          fontFamily:
-            '"Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-        }}
-      >
-        <style>{`
-          .landing-page .landing-header {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 10;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 30px 52px;
-            flex-wrap: wrap;
-            gap: 12px;
-            box-sizing: border-box;
-          }
-          @media (max-width: 768px) {
-            .landing-page .landing-header {
-              padding: 16px 20px;
-            }
-            .landing-page .landing-nav ul {
-              flex-wrap: wrap;
-              justify-content: flex-end;
-            }
-            .landing-page .landing-scan-card {
-              left: 16px !important;
-              bottom: 16px !important;
-              right: 16px !important;
-              width: auto !important;
-              max-width: none !important;
-            }
-          }
-          @media (max-width: 480px) {
-            .landing-page .landing-header {
-              padding: 12px 16px;
-            }
-          }
-        `}</style>
-        <LittleLabsCursor />
-        <LittleLabsScene />
-
-        {/* Title + nav overlay (LittleLabs, based on Daniel Muñoz layout) */}
-        {/* Nav + hero (LittleLabs) */}
-        <header
-          className="landing-header"
-          style={{
-            fontFamily: '"DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-          }}
-        >
-          <div
-            style={{
-              fontFamily: '"Bebas Neue", sans-serif',
-              fontSize: 24,
-              letterSpacing: "0.24em",
-          display: "flex",
-          alignItems: "center",
-              color: "#000000",
-            }}
-          >
-            LITTLELABS
-          </div>
-          <nav className="landing-nav">
-            <ul
-              className="landing-nav-ul"
-              style={{
-                display: "flex",
-                gap: 0,
-                alignItems: "center",
-                listStyle: "none",
-                fontFamily: '"DM Mono", monospace',
-                fontSize: 10.5,
-                letterSpacing: "0.16em",
-                textTransform: "uppercase",
-              }}
-            >
-              <li>
-                <button
-                  data-ll-interactive="true"
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "8px 20px",
-                    color: "rgba(245,243,238,0.42)",
-                    cursor: "pointer",
-                  }}
-                >
-                  Home
-                </button>
-              </li>
-              <li>
-                <button
-                  data-ll-interactive="true"
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "8px 20px",
-                    color: "rgba(245,243,238,0.42)",
-                    cursor: "pointer",
-                  }}
-                >
-                  About
-                </button>
-              </li>
-              <li>
-                <button
-                  data-ll-interactive="true"
-                  onMouseEnter={() => setLoginHover(true)}
-                  onMouseLeave={() => setLoginHover(false)}
-                  onClick={() => {
-                    setAuthMode("signin");
-                    setShowAuthModal(true);
-                  }}
-                  style={{
-                    background: loginHover ? "#c8f135" : "rgba(245,243,238,0.96)",
-                    color: "#070707",
-                    border: `1px solid #c8f135`,
-                    borderRadius: 999,
-                    padding: "8px 20px",
-                    marginLeft: 8,
-                    cursor: "pointer",
-                    transition: "background 0.2s, color 0.2s, transform 0.15s",
-                  }}
-                >
-                  Sign in
-                </button>
-              </li>
-              <li>
-                <button
-                  data-ll-interactive="true"
-                  onMouseEnter={() => setCtaHover(true)}
-                  onMouseLeave={() => setCtaHover(false)}
-                  onClick={() => {
-                    setAuthMode("signup");
-                    setShowAuthModal(true);
-                  }}
-                  style={{
-                    background: "#c8f135",
-                    color: "#070707",
-                    border: "none",
-                    borderRadius: 999,
-                    padding: "10px 24px",
-                    marginLeft: 8,
-                    cursor: "pointer",
-                    fontWeight: 500,
-                    transition: "opacity 0.2s, transform 0.15s",
-                    opacity: ctaHover ? 0.85 : 1,
-                    transform: ctaHover ? "translateY(-1px)" : "none",
-                  }}
-                >
-                  Get started
-                </button>
-              </li>
-            </ul>
-          </nav>
-        </header>
-
-        {/* Center hero text */}
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9,
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "flex-start",
-            textAlign: "center",
-            pointerEvents: "none",
-            color: "#f5f3ee",
-            paddingTop: "18vh",
-          }}
-        >
-          <DesignTicker />
-        </div>
-
-        {/* Quick GitHub scan input anchored bottom-left, responsive */}
-        <div
-          className="landing-scan-card"
-          style={{
-            position: "absolute",
-            left: 40,
-            bottom: 40,
-            zIndex: 2,
-            width: 360,
-            maxWidth: "90vw",
-            backgroundColor: "#ffffff",
-            borderRadius: 12,
-            border: "1px solid rgba(15,23,42,0.08)",
-            padding: 16,
-            color: "#111827",
-            fontFamily:
-              '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-            boxSizing: "border-box",
-            boxShadow: "0 18px 40px rgba(15,23,42,0.35)",
-          }}
-        >
-          <div
-            style={{
-              height: 3,
-              borderRadius: "8px 8px 0 0",
-              background: "#c8f135",
-              margin: "-16px -16px 12px",
-            }}
-          />
-          <div
-            style={{
-              fontSize: 12,
-              textTransform: "uppercase",
-              letterSpacing: 1,
-              color: "#6b7280",
-              marginBottom: 6,
-            }}
-          >
-            Scan a GitHub repository
-          </div>
-          <input
-            type="url"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/owner/repo"
-            style={{
-              width: "100%",
-              padding: "10px 14px",
-              fontSize: 13,
-              background: "#ffffff",
-              border: "1px solid rgba(209,213,219,1)",
-              borderRadius: 8,
-              color: "#111827",
-              marginBottom: 10,
-              outline: "none",
-              boxSizing: "border-box",
-            }}
-            onKeyDown={(e) => e.key === "Enter" && handleScan()}
-          />
-          {error && (
-            <div
-              style={{
-                padding: 8,
-                marginBottom: 8,
-                background: "#fef2f2",
-                border: "1px solid #f87171",
-                borderRadius: 8,
-                color: "#b91c1c",
-                fontSize: 12,
-              }}
-            >
-              {error}
-            </div>
-          )}
-          <button
-            onClick={handleScan}
-            disabled={authLoading}
-            style={{
-              width: "100%",
-              padding: "10px 16px",
-              background: authLoading ? "#d4d4d8" : "#c8f135",
-              color: "#111827",
-              border: "none",
-              borderRadius: 8,
-              fontSize: 14,
-              cursor: authLoading ? "wait" : "pointer",
-              fontWeight: 600,
-              opacity: authLoading ? 0.7 : 1,
-            }}
-          >
-            Scan repository →
-          </button>
-        </div>
-
+  const renderGlobalOverlays = () => (
+    <>
         {/* Workspace members / activity / annotation comments panels */}
         {showMembersPanel && activeWorkspaceId && (
           <WorkspaceMembersPanel
@@ -4066,6 +3785,293 @@ export default function App() {
             </div>
           </div>
         )}
+    </>
+  );
+
+  // Landing / onboarding: no graph yet
+  if (!graph && !loading) {
+    return (
+      <div
+        className="landing-page"
+        style={{
+          minHeight: "100vh",
+          backgroundColor: "#000000",
+          color: "#000000",
+          position: "relative",
+          overflow: "hidden",
+          fontFamily:
+            '"Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+        }}
+      >
+        <style>{`
+          .landing-page .landing-header {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 30px 52px;
+            flex-wrap: wrap;
+            gap: 12px;
+            box-sizing: border-box;
+          }
+          @media (max-width: 768px) {
+            .landing-page .landing-header {
+              padding: 16px 20px;
+            }
+            .landing-page .landing-nav ul {
+              flex-wrap: wrap;
+              justify-content: flex-end;
+            }
+            .landing-page .landing-scan-card {
+              left: 16px !important;
+              bottom: 16px !important;
+              right: 16px !important;
+              width: auto !important;
+              max-width: none !important;
+            }
+          }
+          @media (max-width: 480px) {
+            .landing-page .landing-header {
+              padding: 12px 16px;
+            }
+          }
+        `}</style>
+        <LittleLabsCursor />
+        <LittleLabsScene />
+
+        {/* Title + nav overlay (LittleLabs, based on Daniel Muñoz layout) */}
+        {/* Nav + hero (LittleLabs) */}
+        <header
+          className="landing-header"
+          style={{
+            fontFamily: '"DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+          }}
+        >
+          <div
+            style={{
+              fontFamily: '"Bebas Neue", sans-serif',
+              fontSize: 24,
+              letterSpacing: "0.24em",
+          display: "flex",
+          alignItems: "center",
+              color: "#000000",
+            }}
+          >
+            LITTLELABS
+          </div>
+          <nav className="landing-nav">
+            <ul
+              className="landing-nav-ul"
+              style={{
+                display: "flex",
+                gap: 0,
+                alignItems: "center",
+                listStyle: "none",
+                fontFamily: '"DM Mono", monospace',
+                fontSize: 10.5,
+                letterSpacing: "0.16em",
+                textTransform: "uppercase",
+              }}
+            >
+              <li>
+                <button
+                  data-ll-interactive="true"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: "8px 20px",
+                    color: "rgba(245,243,238,0.42)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Home
+                </button>
+              </li>
+              <li>
+                <button
+                  data-ll-interactive="true"
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: "8px 20px",
+                    color: "rgba(245,243,238,0.42)",
+                    cursor: "pointer",
+                  }}
+                >
+                  About
+                </button>
+              </li>
+              <li>
+                <button
+                  data-ll-interactive="true"
+                  onMouseEnter={() => setLoginHover(true)}
+                  onMouseLeave={() => setLoginHover(false)}
+                  onClick={() => {
+                    setAuthMode("signin");
+                    setShowAuthModal(true);
+                  }}
+                  style={{
+                    background: loginHover ? "#c8f135" : "rgba(245,243,238,0.96)",
+                    color: "#070707",
+                    border: `1px solid #c8f135`,
+                    borderRadius: 999,
+                    padding: "8px 20px",
+                    marginLeft: 8,
+                    cursor: "pointer",
+                    transition: "background 0.2s, color 0.2s, transform 0.15s",
+                  }}
+                >
+                  Sign in
+                </button>
+              </li>
+              <li>
+                <button
+                  data-ll-interactive="true"
+                  onMouseEnter={() => setCtaHover(true)}
+                  onMouseLeave={() => setCtaHover(false)}
+                  onClick={() => {
+                    setAuthMode("signup");
+                    setShowAuthModal(true);
+                  }}
+                  style={{
+                    background: "#c8f135",
+                    color: "#070707",
+                    border: "none",
+                    borderRadius: 999,
+                    padding: "10px 24px",
+                    marginLeft: 8,
+                    cursor: "pointer",
+                    fontWeight: 500,
+                    transition: "opacity 0.2s, transform 0.15s",
+                    opacity: ctaHover ? 0.85 : 1,
+                    transform: ctaHover ? "translateY(-1px)" : "none",
+                  }}
+                >
+                  Get started
+                </button>
+              </li>
+            </ul>
+          </nav>
+        </header>
+
+        {/* Center hero text */}
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "flex-start",
+            textAlign: "center",
+            pointerEvents: "none",
+            color: "#f5f3ee",
+            paddingTop: "18vh",
+          }}
+        >
+          <DesignTicker />
+        </div>
+
+        {/* Quick GitHub scan input anchored bottom-left, responsive */}
+        <div
+          className="landing-scan-card"
+          style={{
+            position: "absolute",
+            left: 40,
+            bottom: 40,
+            zIndex: 2,
+            width: 360,
+            maxWidth: "90vw",
+            backgroundColor: "#ffffff",
+            borderRadius: 12,
+            border: "1px solid rgba(15,23,42,0.08)",
+            padding: 16,
+            color: "#111827",
+            fontFamily:
+              '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+            boxSizing: "border-box",
+            boxShadow: "0 18px 40px rgba(15,23,42,0.35)",
+          }}
+        >
+          <div
+            style={{
+              height: 3,
+              borderRadius: "8px 8px 0 0",
+              background: "#c8f135",
+              margin: "-16px -16px 12px",
+            }}
+          />
+          <div
+            style={{
+              fontSize: 12,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+              color: "#6b7280",
+              marginBottom: 6,
+            }}
+          >
+            Scan a GitHub repository
+          </div>
+          <input
+            type="url"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            placeholder="https://github.com/owner/repo"
+            style={{
+              width: "100%",
+              padding: "10px 14px",
+              fontSize: 13,
+              background: "#ffffff",
+              border: "1px solid rgba(209,213,219,1)",
+              borderRadius: 8,
+              color: "#111827",
+              marginBottom: 10,
+              outline: "none",
+              boxSizing: "border-box",
+            }}
+            onKeyDown={(e) => e.key === "Enter" && handleScan()}
+          />
+          {error && (
+            <div
+              style={{
+                padding: 8,
+                marginBottom: 8,
+                background: "#fef2f2",
+                border: "1px solid #f87171",
+                borderRadius: 8,
+                color: "#b91c1c",
+                fontSize: 12,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <button
+            onClick={handleScan}
+            disabled={authLoading}
+            style={{
+              width: "100%",
+              padding: "10px 16px",
+              background: authLoading ? "#d4d4d8" : "#c8f135",
+              color: "#111827",
+              border: "none",
+              borderRadius: 8,
+              fontSize: 14,
+              cursor: authLoading ? "wait" : "pointer",
+              fontWeight: 600,
+              opacity: authLoading ? 0.7 : 1,
+            }}
+          >
+            Scan repository →
+          </button>
+        </div>
+
+        {renderGlobalOverlays()}
       </div>
     );
   }
@@ -8116,6 +8122,7 @@ export default function App() {
         </div>
       </div>
 
+      {renderGlobalOverlays()}
     </>
   );
 }
