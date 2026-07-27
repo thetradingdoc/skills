@@ -296,6 +296,22 @@ export interface ArchGraph {
   findings?: ContractFinding[];
 }
 
+/** Tool declared on an agent surface (from agent-inventory). */
+export type AgentTool = {
+  name: string;
+  handler: string | null;
+  description: string | null;
+  params: string[];
+  note?: string;
+};
+
+export type AgentSurfaceKind = "agent" | "helper" | "unknown";
+export type AgentLoopKind =
+  | "hosted"
+  | "tool-loop"
+  | "single-shot-with-tools"
+  | "unknown";
+
 /** Per-file agent surface detected by agent-inventory. */
 export type AgentSurface = {
   file: string;
@@ -303,8 +319,13 @@ export type AgentSurface = {
   evidence: string;
   model: string | null;
   systemPrompt: string | null;
+  /** @deprecated Prefer `tools` for agents. */
   toolCandidates: string[];
   confidence: "high" | "low";
+  kind: AgentSurfaceKind;
+  kindSignal: string;
+  loopKind: AgentLoopKind | null;
+  tools: AgentTool[];
 };
 
 export type AgentInventoryResult = {

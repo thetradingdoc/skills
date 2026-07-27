@@ -10,14 +10,35 @@
 import * as fs from "fs";
 import * as path from "path";
 
+export type AgentTool = {
+  name: string;
+  handler: string | null;
+  description: string | null;
+  params: string[];
+  /** When the tool lives only in a hosted console / external config. */
+  note?: string;
+};
+
+export type AgentSurfaceKind = "agent" | "helper" | "unknown";
+export type AgentLoopKind =
+  | "hosted"
+  | "tool-loop"
+  | "single-shot-with-tools"
+  | "unknown";
+
 export type AgentSurface = {
   file: string;
   provider: string;
   evidence: string;
   model: string | null;
   systemPrompt: string | null;
+  /** @deprecated Prefer `tools` for agents; kept for dashboard compatibility. */
   toolCandidates: string[];
   confidence: "high" | "low";
+  kind: AgentSurfaceKind;
+  kindSignal: string;
+  loopKind: AgentLoopKind | null;
+  tools: AgentTool[];
 };
 
 export type AgentInventory = {
@@ -311,27 +332,450 @@ function findSystemPrompt(text: string, file: string): string | null {
 }
 
 function findToolCandidates(text: string): string[] {
-  const names = new Set<string>();
-  // OpenAI-style tool definitions: { type: 'function', function: { name: '...' } }
-  const fnName = /function\s*:\s*\{\s*name\s*:\s*['"`]([a-zA-Z0-9_.-]+)['"`]/g;
+  return extractTools(text, "", null).map((t) => t.name);
+}
+
+/** Parse OpenAI-compatible / LangChain tool definitions from source text. */
+function extractTools(
+  text: string,
+  relFile: string,
+  repoRoot: string | null
+): AgentTool[] {
+  const tools: AgentTool[] = [];
+  const seen = new Set<string>();
+
+  // OpenAI-style: function: { name: '...', description: '...', parameters: {...} }
+  const nameOnly =
+    /function\s*:\s*\{\s*name\s*:\s*['"`]([a-zA-Z0-9_.-]+)['"`]/g;
   let m: RegExpExecArray | null;
-  while ((m = fnName.exec(text)) !== null) names.add(m[1]!);
-  // tools: [ { name: '...' } ]
-  const toolName = /(?:tools|toolDefinitions|TOOL_DEFINITIONS)\s*[:=]\s*\[[\s\S]{0,8000}?\]/g;
-  const blocks = text.match(toolName) ?? [];
-  for (const block of blocks) {
-    const nameRe = /name\s*:\s*['"`]([a-zA-Z0-9_.-]+)['"`]/g;
-    while ((m = nameRe.exec(block)) !== null) names.add(m[1]!);
+  while ((m = nameOnly.exec(text)) !== null) {
+    const name = m[1]!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const window = text.slice(m.index, m.index + 2500);
+    const descM = window.match(
+      /description\s*:\s*['"`]((?:\\.|[^'\\"`])*)['"`]/
+    );
+    const description = descM
+      ? descM[1]!.replace(/\\n/g, " ").replace(/\\'/g, "'").trim()
+      : null;
+    const params = extractParamNames(window);
+    tools.push({
+      name,
+      handler: resolveToolHandler(name, text, relFile, repoRoot),
+      description,
+      params,
+    });
   }
-  // bindTools([...]) with string names is rare; skip guessing.
-  return [...names].slice(0, 40);
+
+  // LangChain DynamicStructuredTool({ name: '...', description: '...' })
+  const dynRe =
+    /DynamicStructuredTool\(\s*\{\s*name\s*:\s*['"`]([a-zA-Z0-9_.-]+)['"`]\s*,\s*description\s*:\s*['"`]((?:\\.|[^'\\"`])*)['"`]/g;
+  while ((m = dynRe.exec(text)) !== null) {
+    const name = m[1]!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const window = text.slice(m.index, m.index + 800);
+    const zodParams = Array.from(window.matchAll(/(\w+)\s*:\s*z\./g), (x) => x[1]!).filter(
+      (p) =>
+        !["object", "string", "array", "enum", "boolean", "number", "optional"].includes(
+          p
+        )
+    );
+    tools.push({
+      name,
+      handler: resolveToolHandler(name, text, relFile, repoRoot),
+      description: m[2]!.replace(/\\n/g, " ").trim() || null,
+      params: [...new Set(zodParams)],
+    });
+  }
+
+  return tools;
+}
+
+function extractParamNames(block: string): string[] {
+  const idx = block.search(/properties\s*:\s*\{/);
+  if (idx < 0) return [];
+  const braceStart = block.indexOf("{", idx);
+  if (braceStart < 0) return [];
+  let depth = 0;
+  let end = braceStart;
+  for (let i = braceStart; i < block.length; i++) {
+    const ch = block[i]!;
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const src = block.slice(braceStart + 1, end);
+  const names: string[] = [];
+  let propDepth = 0;
+  const re = /([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*\{|[{}]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    if (m[0] === "{") {
+      propDepth++;
+      continue;
+    }
+    if (m[0] === "}") {
+      propDepth--;
+      continue;
+    }
+    if (propDepth !== 0) continue;
+    const n = m[1]!;
+    if (
+      ![
+        "type",
+        "properties",
+        "items",
+        "required",
+        "additionalProperties",
+        "parameters",
+      ].includes(n)
+    ) {
+      names.push(n);
+    }
+    // Match includes the opening `{` of this property value — nest until its close.
+    propDepth++;
+  }
+  return [...new Set(names)].slice(0, 30);
+}
+
+function resolveToolHandler(
+  toolName: string,
+  text: string,
+  relFile: string,
+  repoRoot: string | null
+): string | null {
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (new RegExp(`case\\s+['"\`]${toolName}['"\`]`).test(lines[i]!)) {
+      return `${relFile}:${i + 1}`;
+    }
+  }
+
+  // Follow require('./foo-tool-executor') siblings
+  if (!repoRoot) return null;
+  const reqRe = /require\(\s*['"](\.[^'"]*tool[^'"]*)['"]\s*\)/gi;
+  let m: RegExpExecArray | null;
+  const dir = path.dirname(path.join(repoRoot, relFile));
+  while ((m = reqRe.exec(text)) !== null) {
+    const spec = m[1]!;
+    const candidates = [
+      path.join(dir, spec + ".js"),
+      path.join(dir, spec + ".ts"),
+      path.join(dir, spec, "index.js"),
+    ];
+    for (const abs of candidates) {
+      if (!fs.existsSync(abs)) continue;
+      let body: string;
+      try {
+        body = fs.readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
+      const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+      const blines = body.split("\n");
+      for (let i = 0; i < blines.length; i++) {
+        if (new RegExp(`case\\s+['"\`]${toolName}['"\`]`).test(blines[i]!)) {
+          return `${rel}:${i + 1}`;
+        }
+      }
+      // executeTool('name' ...) in registry
+      const execM = body.match(
+        new RegExp(
+          `executeTool\\(\\s*['"\`]${toolName}['"\`]|[\\"'\\\`]${toolName}[\\"'\\\`]\\s*,\\s*async`
+        )
+      );
+      if (execM && execM.index != null) {
+        const line =
+          body.slice(0, execM.index).split("\n").length;
+        return `${rel}:${line}`;
+      }
+    }
+  }
+  return null;
+}
+
+function loadRetellFunctionsJson(
+  relFile: string,
+  repoRoot: string
+): AgentTool[] | null {
+  const dir = path.dirname(path.join(repoRoot, relFile));
+  const candidates = [
+    path.join(dir, "../retell-functions/retell-functions.json"),
+    path.join(repoRoot, "middleware-platform/retell-functions/retell-functions.json"),
+  ];
+  for (const abs of candidates) {
+    if (!fs.existsSync(abs)) continue;
+    try {
+      const raw = JSON.parse(fs.readFileSync(abs, "utf8"));
+      const fns = Array.isArray(raw?.functions) ? raw.functions : [];
+      const tools: AgentTool[] = [];
+      for (const f of fns) {
+        const name = f?.name ?? f?.function?.name;
+        if (!name || typeof name !== "string") continue;
+        const description =
+          typeof f.description === "string"
+            ? f.description
+            : typeof f?.function?.description === "string"
+              ? f.function.description
+              : null;
+        const paramsObj =
+          f?.parameters?.properties ??
+          f?.function?.parameters?.properties ??
+          {};
+        const params = Object.keys(paramsObj);
+        tools.push({
+          name,
+          handler: null,
+          description,
+          params,
+          note: `Declared in ${path.relative(repoRoot, abs).split(path.sep).join("/")} (pushed to Retell; may also be edited in Retell console)`,
+        });
+      }
+      return tools.length ? tools : null;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function classifySurface(
+  text: string,
+  rel: string,
+  tools: AgentTool[],
+  provider: string
+): { kind: AgentSurfaceKind; kindSignal: string; loopKind: AgentLoopKind | null } {
+  const hasToolDefs = tools.length > 0;
+  const hasToolLoop =
+    /MAX_TOOL_ROUNDS|tool_calls|toolCalls|for\s*\(.*round|while\s*\(.*tool|bindTools\s*\(|toolsUsed|tool_choice\s*:\s*['"]auto['"]/i.test(
+      text
+    ) &&
+    (hasToolDefs ||
+      /\.chat\.completions\.create|messages\.create|invokeLlm|_invokeLlm/i.test(
+        text
+      ));
+
+  const isRetellHandler =
+    /retell-service\.js|retell-websocket\.js|voice-incoming-handler\.js|somo-demo-handler\.js|consumer-navigation-handler\.js/i.test(
+      rel
+    ) ||
+    (/RetellWebSocketHandler|function_call_response/i.test(text) &&
+      /webhook|retell/i.test(rel));
+
+  const isHostedPlatform =
+    isRetellHandler ||
+    /loadRetellFunctions\s*\(|type\s*:\s*['"]custom-llm['"]/.test(text) ||
+    /['"`]https?:\/\/api\.retellai\.com[^'"`]*register-phone-call/.test(text);
+
+  // Shared routers / client factories are not agents.
+  if (
+    /(^|\/)(llm-router|model-router)(\.|$)/i.test(rel) ||
+    (/Router|getGroq|getAnthropic|module\.exports\.chatCompletion/i.test(text) &&
+      !hasToolDefs &&
+      !/KELLY_TOOLS|DEMO_TOOLS|bindTools/i.test(text) &&
+      /chatCompletion|completions\.create/.test(text))
+  ) {
+    if (!hasToolDefs && !isRetellHandler) {
+      return {
+        kind: "unknown",
+        kindSignal:
+          "shared model router / client factory — forwards calls but is not itself an agent",
+        loopKind: null,
+      };
+    }
+  }
+
+  if (hasToolLoop && hasToolDefs) {
+    return {
+      kind: "agent",
+      kindSignal: `tool definitions (${tools.length}) + model tool-call loop`,
+      loopKind: "tool-loop",
+    };
+  }
+  if (hasToolDefs && /tools\s*:/.test(text) && !hasToolLoop) {
+    // tools passed once without an obvious feedback loop
+    if (/\.chat\.completions\.create|messages\.create/.test(text)) {
+      return {
+        kind: "agent",
+        kindSignal: `tools array passed to model once (${tools.length} tools)`,
+        loopKind: "single-shot-with-tools",
+      };
+    }
+  }
+  if (isHostedPlatform || isRetellHandler) {
+    return {
+      kind: "agent",
+      kindSignal: isRetellHandler
+        ? "hosted platform handler (Retell webhook / agent registration)"
+        : "registers or serves a hosted agent platform (Retell/Vapi/Bland)",
+      loopKind: "hosted",
+    };
+  }
+  if (hasToolLoop && !hasToolDefs) {
+    return {
+      kind: "agent",
+      kindSignal: "tool-call loop present; tool list resolved from sibling module or registry",
+      loopKind: "tool-loop",
+    };
+  }
+
+  // Helper: one-shot completion (SDK or raw HTTP), no tools
+  const oneShot =
+    (/\.chat\.completions\.create|messages\.create|generateText\s*\(|getGenerativeModel|chatCompletion\s*\(/i.test(
+      text
+    ) ||
+      /\/v1\/chat\/completions|\/v1\/messages\b/i.test(text)) &&
+    !hasToolDefs &&
+    !hasToolLoop &&
+    !isHostedPlatform &&
+    !isRetellHandler;
+
+  if (oneShot) {
+    return {
+      kind: "helper",
+      kindSignal:
+        "single model call in → text/JSON out; no tools and no tool-call loop",
+      loopKind: null,
+    };
+  }
+
+  // Construction only / HTTP client wrapper without clear call pattern
+  if (!hasToolDefs && !hasToolLoop && !isHostedPlatform && !isRetellHandler) {
+    if (/new\s+(Groq|OpenAI|Anthropic|ChatGroq|ChatOpenAI|AzureChatOpenAI)\s*\(/.test(text)) {
+      if (
+        /Router|getGroq|getClient|_groq\s*=|_anthropic\s*=/i.test(text) &&
+        !/\.chat\.completions\.create|\/chat\/completions/.test(text)
+      ) {
+        return {
+          kind: "unknown",
+          kindSignal:
+            "constructs a model client but no call site or tool loop in this file",
+          loopKind: null,
+        };
+      }
+      return {
+        kind: "helper",
+        kindSignal:
+          "model client construction with completion usage, no tools",
+        loopKind: null,
+      };
+    }
+    if (/api\.retellai\.com|apiBaseUrl.*retell/i.test(text)) {
+      return {
+        kind: "unknown",
+        kindSignal:
+          "Retell API URL present; unclear if agent registration vs admin/read",
+        loopKind: null,
+      };
+    }
+  }
+
+  return {
+    kind: "unknown",
+    kindSignal:
+      "ambiguous — could not confirm tool loop, hosted handler, or single-shot helper",
+    loopKind: null,
+  };
+}
+
+function enrichSurface(
+  base: Omit<AgentSurface, "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates"> & {
+    toolCandidates?: string[];
+  },
+  text: string,
+  repoRoot: string
+): AgentSurface {
+  let tools = extractTools(text, base.file, repoRoot);
+
+  // Pull tools from required sibling tool modules (e.g. ./groq-tools)
+  const dir = path.dirname(path.join(repoRoot, base.file));
+  if (/groq-tools|buildHealthLangChainTools|toolRegistry/i.test(text)) {
+    const candidates = [
+      path.join(dir, "groq-tools.js"),
+      path.join(dir, "groq-tools.ts"),
+      path.join(dir, "../tools/registry.js"),
+    ];
+    for (const abs of candidates) {
+      if (!fs.existsSync(abs)) continue;
+      const body = fs.readFileSync(abs, "utf8");
+      const more = extractTools(
+        body,
+        path.relative(repoRoot, abs).split(path.sep).join("/"),
+        repoRoot
+      );
+      for (const t of more) {
+        if (!tools.some((x) => x.name === t.name)) tools.push(t);
+      }
+    }
+  }
+
+  // Retell: tools often live in retell-functions.json
+  if (/retell/i.test(base.provider + base.file + text.slice(0, 2000))) {
+    const fromJson = loadRetellFunctionsJson(base.file, repoRoot);
+    if (fromJson && fromJson.length) {
+      // Prefer JSON list for hosted retell agent config surfaces
+      if (/retell-service|voice-incoming|retell-websocket/i.test(base.file)) {
+        tools = fromJson;
+      } else {
+        for (const t of fromJson) {
+          if (!tools.some((x) => x.name === t.name)) tools.push(t);
+        }
+      }
+    }
+  }
+
+  const { kind, kindSignal, loopKind } = classifySurface(
+    text,
+    base.file,
+    tools,
+    base.provider
+  );
+
+  // Hosted agents with no in-file tool list
+  if (
+    kind === "agent" &&
+    loopKind === "hosted" &&
+    tools.length === 0
+  ) {
+    tools = [
+      {
+        name: "(hosted)",
+        handler: null,
+        description: null,
+        params: [],
+        note: "Tool list is declared on the hosted agent platform (Retell console) and/or retell-functions.json — not extractable as OpenAI tool defs in this file.",
+      },
+    ];
+  }
+
+  return {
+    ...base,
+    toolCandidates: tools.filter((t) => t.name !== "(hosted)").map((t) => t.name),
+    kind,
+    kindSignal,
+    loopKind: kind === "agent" ? loopKind ?? "unknown" : null,
+    tools: kind === "agent" ? tools : [],
+  };
 }
 
 function analyzeJsTsFile(
   absPath: string,
   rel: string,
-  active: string[]
+  active: string[],
+  repoRoot: string
 ): AgentSurface | null {
+  // Prefer missing: tests and ops scripts are not product agent surfaces.
+  if (/(^|\/)(__tests__|tests?|e2e|scripts?)(\/|$)/i.test(rel)) {
+    return null;
+  }
+
   let text: string;
   try {
     text = fs.readFileSync(absPath, "utf8");
@@ -347,18 +791,52 @@ function analyzeJsTsFile(
     if (hit && !importedActive.includes(hit)) importedActive.push(hit);
   }
 
+  const finish = (
+    partial: Omit<
+      AgentSurface,
+      "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates"
+    >
+  ) => enrichSurface(partial, text, repoRoot);
+
+  // Hosted platform handlers (even without SDK construction in-file)
+  if (
+    (/RetellWebSocketHandler|function_call_response|custom-llm/i.test(text) &&
+      /retell/i.test(rel + text.slice(0, 3000))) ||
+    (/register-phone-call/i.test(text) && /retell/i.test(text))
+  ) {
+    return finish({
+      file: rel,
+      provider: "retell",
+      evidence:
+        text
+          .split("\n")
+          .find((l) =>
+            /RetellWebSocket|function_call_response|register-phone-call|custom-llm/i.test(
+              l
+            )
+          )
+          ?.trim()
+          .slice(0, 200) ?? "Retell hosted handler",
+      model: findModel(text),
+      systemPrompt: findSystemPrompt(text, rel),
+      confidence: "high",
+    });
+  }
+
   // Construction / bindTools when this file imports a matching declared package
   for (const pat of CONSTRUCTION_PATTERNS) {
     const hasPkgImport = importedActive.some((i) =>
       pat.packages.some(
-        (p) => i === p || i.startsWith(p + "/") || (p.endsWith("/*") && i.startsWith(p.slice(0, -1)))
+        (p) =>
+          i === p ||
+          i.startsWith(p + "/") ||
+          (p.endsWith("/*") && i.startsWith(p.slice(0, -1)))
       )
     );
     if (!hasPkgImport) continue;
     const m = pat.re.exec(text);
     if (m) {
       const model = findModel(text);
-      // Embedding-only clients are not agent surfaces.
       if (
         model &&
         /embedding/i.test(model) &&
@@ -372,19 +850,18 @@ function analyzeJsTsFile(
       ) {
         continue;
       }
-      return {
+      return finish({
         file: rel,
         provider: pat.provider,
         evidence: lineOfMatch(text, m.index),
         model,
         systemPrompt: findSystemPrompt(text, rel),
-        toolCandidates: findToolCandidates(text),
         confidence: "high",
-      };
+      });
     }
   }
 
-  // Direct HTTP to model APIs (teams skipping the SDK)
+  // Direct HTTP to model APIs
   for (const { host, provider } of PROVIDER_HTTP_HOSTS) {
     const re = new RegExp(
       `https?:\\/\\/${host.replace(/\./g, "\\.")}[^\\s'\`"]*`,
@@ -402,11 +879,9 @@ function analyzeJsTsFile(
         surrounding
       );
     if (!looksLikeCall) continue;
-    // Embeddings / TTS / speech are model APIs but not agent surfaces.
     if (/\/embeddings\b|\/audio\/speech\b|\/audio\/transcriptions\b/i.test(m[0])) {
       continue;
     }
-    // Read-only Retell admin probes are not agent surfaces.
     if (
       provider === "retell" &&
       /\/(get-call|list-calls|list-phone-numbers)\b/i.test(m[0]) &&
@@ -414,30 +889,25 @@ function analyzeJsTsFile(
     ) {
       continue;
     }
-    // Health / dependency probes are not agent surfaces.
     if (/health-check|dependency.?probe|DEPENDENCY_CACHE/i.test(rel + "\n" + text.slice(0, 500))) {
       continue;
     }
-    // Diagnostic scripts: keep SDK construction, skip HTTP-only probes.
     if (
       /(^|\/)scripts?\//i.test(rel) &&
       !CONSTRUCTION_PATTERNS.some((p) => p.re.test(text) && importedActive.length > 0)
     ) {
       continue;
     }
-    return {
+    return finish({
       file: rel,
       provider,
       evidence: line,
       model: findModel(text),
       systemPrompt: findSystemPrompt(text, rel),
-      toolCandidates: findToolCandidates(text),
       confidence: "high",
-    };
+    });
   }
 
-  // Low confidence: declared chat SDK imported and used without `new X` in-file.
-  // Skip langgraph-only scaffolding and tests/scripts (prefer missing over inventing).
   const nonGraphImports = importedActive.filter(
     (p) => p !== "@langchain/langgraph" && !p.startsWith("@langchain/langgraph")
   );
@@ -459,15 +929,14 @@ function analyzeJsTsFile(
         )
         ?.trim()
         .slice(0, 200) ?? `imports ${pkg}`;
-    return {
+    return finish({
       file: rel,
       provider: providerForPackage(pkg),
       evidence: importLine,
       model: findModel(text),
       systemPrompt: findSystemPrompt(text, rel),
-      toolCandidates: findToolCandidates(text),
       confidence: "low",
-    };
+    });
   }
 
   return null;
@@ -509,7 +978,7 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
     if (!CODE_EXT.has(ext)) continue;
     if (rel.includes("node_modules/") || rel.includes("/dist/")) continue;
     scannedFiles += 1;
-    const surface = analyzeJsTsFile(abs, rel, active);
+    const surface = analyzeJsTsFile(abs, rel, active, root);
     if (surface) agents.push(surface);
   }
 
