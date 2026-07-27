@@ -13,9 +13,11 @@ export type ResourceClass =
   | "money"
   | "external"
   | "internal"
+  | "plumbing"
   | "unclassified";
 
 export type CellState = "reaches" | "none" | "not-traced";
+export type ClaimConfidence = "high" | "medium" | "low";
 
 export type ReachHop = {
   /** Relative file path */
@@ -39,6 +41,8 @@ export type ReachResource = {
   hops?: ReachHop[];
   /** Query or call that proves the resource touch */
   proof?: string;
+  /** How strongly the tracer stands behind this reaches claim */
+  confidence?: ClaimConfidence;
 };
 
 export type ClassCell = {
@@ -47,6 +51,8 @@ export type ClassCell = {
   path: string[] | null;
   reason: string | null;
   resources: ReachResource[];
+  /** Strongest confidence among resources when state=reaches */
+  confidence?: ClaimConfidence | null;
 };
 
 export type ToolReach = {
@@ -70,6 +76,7 @@ export type ClassifyConfig = {
     money: string[];
     external: string[];
     internal: string[];
+    plumbing: string[];
   };
   /** Confirmed human (or committed) decisions. */
   resources: Record<string, ResourceClass>;
@@ -81,6 +88,7 @@ export type ClassifyConfig = {
   noise?: string[];
 };
 
+/** Sensitivity columns for Reach / rules — plumbing is classified but not a matrix column. */
 export const RESOURCE_CLASSES: ResourceClass[] = [
   "patient",
   "money",
@@ -88,6 +96,46 @@ export const RESOURCE_CLASSES: ResourceClass[] = [
   "internal",
   "unclassified",
 ];
+
+export const ALL_RESOURCE_CLASSES: ResourceClass[] = [
+  ...RESOURCE_CLASSES,
+  "plumbing",
+];
+
+/** Cross-cutting utilities — not blast-radius / classify-queue resources. */
+export const PLUMBING_SERVICE_NAMES = new Set([
+  "http-client-call",
+  "circuit-breaker",
+  "circuit_breaker",
+  "logger",
+  "logging",
+  "secure-logger",
+  "debug",
+  "pino",
+  "winston",
+  "bunyan",
+  "prom-client",
+  "uuid",
+  "lodash",
+  "underscore",
+]);
+
+export function isPlumbingResource(kind: ResourceKind, name: string): boolean {
+  if (kind === "db_call") return false;
+  const n = name.toLowerCase().replace(/\.(js|ts|mjs)$/, "");
+  if (PLUMBING_SERVICE_NAMES.has(n)) return true;
+  if (kind === "external" && n === "http-client-call") return true;
+  if (kind === "service" && /^(secure-)?logger$|^circuit[-_]?breaker$/i.test(n)) {
+    return true;
+  }
+  return false;
+}
+
+export function isBlastRadiusEligible(kind: ResourceKind, name: string, cls?: ResourceClass): boolean {
+  if (kind === "db_call") return false;
+  if (cls === "plumbing" || isPlumbingResource(kind, name)) return false;
+  return true;
+}
 
 /** Default hop depth after measuring 3 / 5 / 7 — see depth experiment in report. */
 export const DEFAULT_MAX_DEPTH = 5;
@@ -155,6 +203,16 @@ const DEFAULT_CONFIG: ClassifyConfig = {
       "s3.",
     ],
     internal: [],
+    plumbing: [
+      "http-client-call",
+      "circuit-breaker",
+      "circuit_breaker",
+      "logger",
+      "logging",
+      "metrics",
+      "telemetry",
+      "prom-client",
+    ],
   },
   resources: {},
   guesses: {},
@@ -195,6 +253,9 @@ export function loadClassifyConfig(repoRoot: string): ClassifyConfig {
           money: raw.heuristics?.money ?? cfg.heuristics.money,
           external: raw.heuristics?.external ?? cfg.heuristics.external,
           internal: raw.heuristics?.internal ?? cfg.heuristics.internal,
+          plumbing:
+            (raw.heuristics as { plumbing?: string[] } | undefined)?.plumbing ??
+            cfg.heuristics.plumbing,
         },
         resources: { ...cfg.resources, ...(raw.resources ?? {}) },
         guesses: { ...cfg.guesses, ...(raw.guesses ?? {}) },
@@ -292,9 +353,14 @@ export function classifyResource(
     decided === "money" ||
     decided === "external" ||
     decided === "internal" ||
+    decided === "plumbing" ||
     decided === "unclassified"
   ) {
     return { class: decided, guess: false };
+  }
+
+  if (isPlumbingResource(kind, name)) {
+    return { class: "plumbing", guess: false };
   }
 
   const priorGuess = cfg.guesses?.[key];
@@ -302,12 +368,20 @@ export function classifyResource(
     priorGuess === "patient" ||
     priorGuess === "money" ||
     priorGuess === "external" ||
-    priorGuess === "internal"
+    priorGuess === "internal" ||
+    priorGuess === "plumbing"
   ) {
     return { class: priorGuess, guess: true };
   }
 
-  if (kind === "external") return { class: "external", guess: true };
+  if (kind === "external") {
+    const label = `${kind} ${name}`;
+    const patientHit = matchesAny(label, cfg.heuristics.patient);
+    const moneyHit = matchesAny(label, cfg.heuristics.money);
+    if (patientHit && !moneyHit) return { class: "patient", guess: true };
+    if (moneyHit && !patientHit) return { class: "money", guess: true };
+    return { class: "external", guess: true };
+  }
   if (kind === "fs") return { class: "internal", guess: true };
 
   const label = `${kind} ${name}`;
@@ -327,6 +401,12 @@ function trackClassification(
   guess: boolean
 ): void {
   const key = resourceKey(kind, name);
+  if (kind === "db_call" || cls === "plumbing" || isPlumbingResource(kind, name)) {
+    if (!cfg.resources[key] && cls === "plumbing") cfg.resources[key] = "plumbing";
+    delete cfg.guesses[key];
+    cfg.unclassified = cfg.unclassified.filter((k) => k !== key);
+    return;
+  }
   if (cfg.resources[key]) return;
   if (guess && cls !== "unclassified") {
     cfg.guesses[key] = cls;
@@ -334,7 +414,6 @@ function trackClassification(
   if (!cfg.resources[key] && cls === "unclassified") {
     if (!cfg.unclassified.includes(key)) cfg.unclassified.push(key);
   } else if (guess && !cfg.unclassified.includes(key) && !cfg.resources[key]) {
-    // Still needs confirmation
     cfg.unclassified.push(key);
   }
 }
@@ -669,11 +748,38 @@ function scanSnippet(
     if (/localhost|127\.0\.0\.1|0\.0\.0\.0|example\.com/.test(host)) continue;
     resources.push({ kind: "external", name: host, evidence: `${fileRel}: HTTP ${host}` });
   }
-  if (/\baxios\.(get|post|put|patch|delete)\b/.test(text) || /\bfetch\s*\(/.test(text)) {
+
+  // Literal HTTP paths — prefer these over generic http-client-call
+  const litPaths: string[] = [];
+  const postLit =
+    /\b(?:this\.)?_post(?:Direct)?\(\s*['"`](\/[^'"`]+)['"`]/g;
+  while ((m = postLit.exec(text)) !== null) litPaths.push(m[1]!);
+  const axiosLit =
+    /\baxios\.(get|post|put|patch|delete)\(\s*['"`](https?:\/\/[^'"`]+|\/[^'"`]+)['"`]/gi;
+  while ((m = axiosLit.exec(text)) !== null) litPaths.push(m[2]!);
+  const axiosTpl =
+    /\baxios\.(get|post|put|patch|delete)\(\s*`\$\{[^}]+\}(\/[^`]+)`/gi;
+  while ((m = axiosTpl.exec(text)) !== null) litPaths.push(m[2]!);
+  const fetchLit = /\bfetch\(\s*[`'"](https?:\/\/[^'"`]+|\/[^'"`]+)[`'"]/g;
+  while ((m = fetchLit.exec(text)) !== null) litPaths.push(m[1]!);
+
+  for (const p of [...new Set(litPaths)]) {
+    const pathOnly = p.replace(/^https?:\/\/[^/]+/, "") || p;
+    const line = 0;
+    resources.push({
+      kind: "external",
+      name: pathOnly.replace(/^\//, "").slice(0, 120) || p,
+      evidence: `${fileRel}: HTTP ${p}`,
+    });
+  }
+
+  const hasGenericHttp =
+    /\baxios\.(get|post|put|patch|delete)\b/.test(text) || /\bfetch\s*\(/.test(text);
+  if (hasGenericHttp && litPaths.length === 0) {
     resources.push({
       kind: "external",
       name: "http-client-call",
-      evidence: `${fileRel}: axios/fetch outbound call`,
+      evidence: `${fileRel}: axios/fetch outbound call (no literal path)`,
     });
   }
   const sdkRe =
@@ -802,9 +908,63 @@ function emptyCells(
       path: null,
       reason,
       resources: [],
+      confidence: null,
     };
   }
   return cells;
+}
+
+const CONF_RANK: Record<ClaimConfidence, number> = { low: 0, medium: 1, high: 2 };
+
+export function rankConfidence(a: ClaimConfidence, b: ClaimConfidence): ClaimConfidence {
+  return CONF_RANK[a] >= CONF_RANK[b] ? a : b;
+}
+
+/**
+ * Confidence for a reaches claim.
+ * high  — handler hops resolved, literal SQL or explicit SDK/HTTP path, depth <= 2
+ * medium — resolved but deeper, or inferred from a function/service name
+ * low — unresolved hop, dynamic dispatch, or runtime-built SQL on the path
+ */
+export function assignClaimConfidence(
+  r: Omit<ReachResource, "confidence">,
+  truncationReasons: string[]
+): ClaimConfidence {
+  const blob = `${r.evidence}\n${r.proof ?? ""}\n${(r.path ?? []).join(" ")}`;
+  if (
+    /dynamic-sql|unresolved-callsite|dynamic-dispatch|unresolved-handler|runtime string/i.test(
+      blob
+    ) ||
+    truncationReasons.some((t) =>
+      /dynamic-sql|unresolved-callsite|dynamic-dispatch/.test(t)
+    )
+  ) {
+    // Only low if this claim itself looks unresolved — proven SQL still high
+    if (!/\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(r.proof ?? "")) {
+      if (/dynamic-sql|unresolved-callsite|dynamic-dispatch/i.test(blob)) return "low";
+    }
+  }
+
+  const literalSql = /\b(SELECT|INSERT|UPDATE|DELETE)\b/i.test(r.proof ?? r.evidence);
+  const explicitHttp =
+    r.kind === "external" &&
+    r.name !== "http-client-call" &&
+    (/HTTP \//.test(r.evidence) || /SDK /.test(r.evidence));
+  const explicitSdk =
+    r.kind === "external" &&
+    /^(stripe|twilio|retell|openai|anthropic|groq|sendgrid)/i.test(r.name);
+
+  if (r.kind === "db_call") return "medium"; // inferred from function name
+  if (r.kind === "service" && !literalSql) {
+    // service hop without a query at this node — inferred
+    if (r.depth <= 2) return "medium";
+    return "medium";
+  }
+
+  if ((literalSql || explicitHttp || explicitSdk) && r.depth <= 2) return "high";
+  if (literalSql || explicitHttp || explicitSdk) return "medium"; // deeper
+  if (r.kind === "db" && r.depth <= 2) return "medium"; // table attributed via method map without proof string
+  return "medium";
 }
 
 function buildCells(
@@ -822,15 +982,20 @@ function buildCells(
 
   const cells = {} as Record<ResourceClass, ClassCell>;
   for (const c of RESOURCE_CLASSES) {
-    const ofClass = resources.filter((r) => r.class === c);
-    if (ofClass.length > 0) {
-      const best = ofClass.reduce((a, b) => (a.depth <= b.depth ? a : b));
+    const use = resources.filter((r) => r.class === c && r.class !== "plumbing");
+    if (use.length > 0) {
+      const best = use.reduce((a, b) => (a.depth <= b.depth ? a : b));
+      const conf = use.reduce<ClaimConfidence>(
+        (acc, r) => rankConfidence(acc, r.confidence ?? "medium"),
+        "low"
+      );
       cells[c] = {
         state: "reaches",
         depth: best.depth,
         path: best.path,
         reason: null,
-        resources: ofClass,
+        resources: use,
+        confidence: conf,
       };
     } else if (truncated) {
       cells[c] = {
@@ -841,6 +1006,7 @@ function buildCells(
           truncationReasons[0] ??
           "walk truncated before this class could be ruled out",
         resources: [],
+        confidence: null,
       };
     } else {
       cells[c] = {
@@ -849,6 +1015,7 @@ function buildCells(
         path: null,
         reason: null,
         resources: [],
+        confidence: null,
       };
     }
   }
@@ -1015,6 +1182,18 @@ export function traceToolHandler(
       guess: guess || undefined,
       hops: derivedHops,
       proof,
+      confidence: assignClaimConfidence(
+        {
+          kind,
+          name,
+          class: cls,
+          depth,
+          path: [...pathSoFar, `${kind}:${name}`],
+          evidence,
+          proof,
+        },
+        truncNotes
+      ),
     });
   };
 
@@ -1357,40 +1536,83 @@ export function resolveHandlerViaKellyExecutor(
 }
 
 /**
- * After a scan, move camelCase db:* keys that are really call expressions into noise.
+ * After a scan, move camelCase db:* keys that are really call expressions into noise,
+ * drop db_call from the queue, and mark plumbing resources.
  */
 export function scrubExtractionNoise(cfg: ClassifyConfig): {
   noiseCount: number;
   realUnclassified: number;
+  plumbingRemoved: number;
+  dbCallRemoved: number;
 } {
   const noise: string[] = [...(cfg.noise ?? [])];
+  let plumbingRemoved = 0;
+  let dbCallRemoved = 0;
   const keepUncl: string[] = [];
+
+  const dropKey = (key: string, why: "noise" | "plumbing" | "db_call") => {
+    if (why === "noise") noise.push(key);
+    if (why === "plumbing") {
+      cfg.resources[key] = "plumbing";
+      plumbingRemoved++;
+    }
+    if (why === "db_call") dbCallRemoved++;
+    delete cfg.guesses[key];
+  };
+
   for (const key of cfg.unclassified) {
     const [kind, ...rest] = key.split(":");
     const name = rest.join(":");
+    if (kind === "db_call") {
+      dropKey(key, "db_call");
+      continue;
+    }
     if (kind === "db" && looksLikeCallExpression(name) && !looksLikeTableName(name)) {
-      noise.push(key);
-      delete cfg.resources[key];
-      delete cfg.guesses[key];
+      dropKey(key, "noise");
+      continue;
+    }
+    if (
+      kind &&
+      name &&
+      (isPlumbingResource(kind as ResourceKind, name) ||
+        cfg.resources[key] === "plumbing" ||
+        matchesAny(name, cfg.heuristics.plumbing ?? []))
+    ) {
+      dropKey(key, "plumbing");
       continue;
     }
     keepUncl.push(key);
   }
-  // Also scrub resources/guesses maps
+
   for (const map of [cfg.resources, cfg.guesses]) {
     for (const key of Object.keys(map)) {
       const [kind, ...rest] = key.split(":");
       const name = rest.join(":");
+      if (kind === "db_call") {
+        delete map[key];
+        dbCallRemoved++;
+        continue;
+      }
       if (kind === "db" && looksLikeCallExpression(name) && !looksLikeTableName(name)) {
         noise.push(key);
         delete map[key];
+        continue;
+      }
+      if (kind && name && isPlumbingResource(kind as ResourceKind, name)) {
+        if (map === cfg.resources) cfg.resources[key] = "plumbing";
+        else delete map[key];
+        plumbingRemoved++;
       }
     }
   }
+
+  // Force session meta classification from committed decision (set by caller)
   cfg.noise = [...new Set(noise)].sort();
   cfg.unclassified = [...new Set(keepUncl)].sort();
   return {
     noiseCount: cfg.noise.length,
     realUnclassified: cfg.unclassified.length,
+    plumbingRemoved,
+    dbCallRemoved,
   };
 }

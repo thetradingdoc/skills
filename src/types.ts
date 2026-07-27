@@ -312,9 +312,11 @@ export type ResourceClass =
   | "money"
   | "external"
   | "internal"
+  | "plumbing"
   | "unclassified";
 
 export type CellState = "reaches" | "none" | "not-traced";
+export type ClaimConfidence = "high" | "medium" | "low";
 
 export type ReachHop = {
   file: string;
@@ -333,6 +335,7 @@ export type ReachResource = {
   guess?: boolean;
   hops?: ReachHop[];
   proof?: string;
+  confidence?: ClaimConfidence;
 };
 
 export type ClassCell = {
@@ -341,6 +344,7 @@ export type ClassCell = {
   path: string[] | null;
   reason: string | null;
   resources: ReachResource[];
+  confidence?: ClaimConfidence | null;
 };
 
 export type ToolReach = {

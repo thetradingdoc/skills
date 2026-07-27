@@ -14,7 +14,14 @@ const PUBLIC_COPY = path.join(
   "webapp/client/public/resources.classify.json"
 );
 
-const CLASSES = new Set(["patient", "money", "external", "internal", "unclassified"]);
+const CLASSES = new Set([
+  "patient",
+  "money",
+  "external",
+  "internal",
+  "plumbing",
+  "unclassified",
+]);
 
 type ClassifyFile = {
   version: number;

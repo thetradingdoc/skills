@@ -141,6 +141,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
       if (a.kind !== "agent") continue;
       for (const t of a.tools ?? []) {
         for (const r of t.reach?.resources ?? []) {
+          if (r.kind === "db_call" || r.class === "plumbing") continue;
           const key = `${r.kind}:${r.name}`.toLowerCase();
           let entry = byKey.get(key);
           if (!entry) {
@@ -153,10 +154,6 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
             byKey.set(key, entry);
           }
           entry.tools.add(`${a.file}::${t.name}`);
-          const loc = (r.evidence || "").split(":")[0]
-            ? r.evidence.replace(/^([^:]+:\d+).*/, "$1")
-            : r.evidence;
-          // Prefer file:line from evidence like "path: SQL" or "path:123: ..."
           const m = r.evidence.match(/^([^:]+\.[a-z]+:\d+)/i);
           const locKey = m ? m[1]! : r.evidence.slice(0, 80);
           if (locKey && !entry.locations.includes(locKey)) {
@@ -169,9 +166,11 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
     const out: ResourceRow[] = [];
     for (const [key, entry] of byKey) {
       if (classify?.noise?.includes(key)) continue;
+      if (key.startsWith("db_call:")) continue;
       const decision = classify?.resources?.[key] as ResourceClass | undefined;
       const guess = classify?.guesses?.[key] as ResourceClass | undefined;
       const cls: ResourceClass = decision ?? guess ?? "unclassified";
+      if (cls === "plumbing") continue;
       const isDecision = !!decision;
       const isGuess = !decision && !!guess;
       out.push({

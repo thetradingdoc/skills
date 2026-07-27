@@ -1,0 +1,8 @@
+# reach.rules — generated from scan findings. Edit freely.
+# Rules assert only against high-confidence claims; otherwise UNEVALUABLE.
+
+# Auth gap: kelly-agent-service has no authentication before tool execution
+agent kelly-agent-service must authenticate before patient
+
+# Observed high-confidence patient+money co-reach: retell-service / get_order_tracking
+any agent must not reach patient and money in one tool
