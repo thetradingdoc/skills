@@ -228,13 +228,15 @@ export type AgentTool = {
   reach?: ToolReach;
 };
 
-export type ResourceKind = "db" | "service" | "external" | "fs";
+export type ResourceKind = "db" | "db_call" | "service" | "external" | "fs";
 export type ResourceClass =
   | "patient"
   | "money"
   | "external"
   | "internal"
   | "unclassified";
+
+export type CellState = "reaches" | "none" | "not-traced";
 
 export type ReachResource = {
   kind: ResourceKind;
@@ -243,12 +245,24 @@ export type ReachResource = {
   depth: number;
   path: string[];
   evidence: string;
+  guess?: boolean;
+};
+
+export type ClassCell = {
+  state: CellState;
+  depth: number | null;
+  path: string[] | null;
+  reason: string | null;
+  resources: ReachResource[];
 };
 
 export type ToolReach = {
   resources: ReachResource[];
+  cells: Record<ResourceClass, ClassCell>;
   truncated: boolean;
-  truncationNote: string | null;
+  truncationReasons: string[];
+  /** @deprecated use cells + truncationReasons */
+  truncationNote?: string | null;
 };
 
 export type AgentAuthFinding = {

@@ -13,8 +13,11 @@ import {
   detectAgentAuth,
   loadClassifyConfig,
   resolveHandlerViaKellyExecutor,
+  scrubExtractionNoise,
   traceToolHandler,
+  unresolvedHandlerReach,
   writeClassifyConfig,
+  DEFAULT_MAX_DEPTH,
   type AgentAuthFinding,
   type ToolReach,
 } from "./resource-trace";
@@ -789,8 +792,23 @@ function enrichSurface(
   if (kind === "agent") {
     const cfg = classifyCfg ?? loadClassifyConfig(repoRoot);
     for (const t of tools) {
-      if (!t.handler || t.name === "(hosted)") continue;
-      t.reach = traceToolHandler(repoRoot, t.handler, t.name, cfg);
+      if (t.name === "(hosted)") {
+        t.reach = unresolvedHandlerReach(
+          "hosted-console: tool declared on hosted platform without in-repo handler"
+        );
+        continue;
+      }
+      if (!t.handler) {
+        t.reach = unresolvedHandlerReach();
+        continue;
+      }
+      t.reach = traceToolHandler(
+        repoRoot,
+        t.handler,
+        t.name,
+        cfg,
+        DEFAULT_MAX_DEPTH
+      );
     }
     auth = detectAgentAuth(repoRoot, base.file, text);
   }
@@ -1042,6 +1060,7 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
   classifyCfg.unclassified = classifyCfg.unclassified.filter(
     (k) => !classifyCfg.resources[k] || classifyCfg.resources[k] === "unclassified"
   );
+  scrubExtractionNoise(classifyCfg);
   writeClassifyConfig(root, classifyCfg);
 
   return {

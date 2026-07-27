@@ -1,12 +1,13 @@
 /**
  * Resource reach tracing from agent tool handlers.
- * Walks outward (depth-limited) and classifies resources via resources.classify.json.
+ * Three cell states: reaches | none | not-traced.
+ * Large hubs like database.js are extracted once and cached.
  */
 
 import * as fs from "fs";
 import * as path from "path";
 
-export type ResourceKind = "db" | "service" | "external" | "fs";
+export type ResourceKind = "db" | "db_call" | "service" | "external" | "fs";
 export type ResourceClass =
   | "patient"
   | "money"
@@ -14,26 +15,36 @@ export type ResourceClass =
   | "internal"
   | "unclassified";
 
+export type CellState = "reaches" | "none" | "not-traced";
+
 export type ReachResource = {
   kind: ResourceKind;
-  /** Table, host, module path, or file path. */
   name: string;
   class: ResourceClass;
   depth: number;
-  /** Path hops: tool handler → … → this resource evidence. */
   path: string[];
   evidence: string;
+  /** true when this is a heuristic suggestion, not a human decision */
+  guess?: boolean;
+};
+
+export type ClassCell = {
+  state: CellState;
+  depth: number | null;
+  path: string[] | null;
+  reason: string | null;
+  resources: ReachResource[];
 };
 
 export type ToolReach = {
   resources: ReachResource[];
+  cells: Record<ResourceClass, ClassCell>;
   truncated: boolean;
-  truncationNote: string | null;
+  truncationReasons: string[];
 };
 
 export type AgentAuthFinding = {
   found: boolean;
-  /** file:line when found */
   location: string | null;
   evidence: string;
 };
@@ -47,18 +58,31 @@ export type ClassifyConfig = {
     external: string[];
     internal: string[];
   };
-  /** Explicit resource key → class. Key form: "kind:name" (lowercase). */
+  /** Confirmed human (or committed) decisions. */
   resources: Record<string, ResourceClass>;
-  /** Keys seen but not yet classified — humans fill these in. */
+  /** Heuristic suggestions awaiting confirmation. */
+  guesses: Record<string, ResourceClass>;
+  /** Keys still needing a decision. */
   unclassified: string[];
+  /** Keys dropped as extraction noise (db method calls mistaken for tables, etc.). */
+  noise?: string[];
 };
 
-const DEFAULT_MAX_DEPTH = 3;
+export const RESOURCE_CLASSES: ResourceClass[] = [
+  "patient",
+  "money",
+  "external",
+  "internal",
+  "unclassified",
+];
+
+/** Default hop depth after measuring 3 / 5 / 7 — see depth experiment in report. */
+export const DEFAULT_MAX_DEPTH = 5;
 
 const DEFAULT_CONFIG: ClassifyConfig = {
-  version: 1,
+  version: 2,
   description:
-    "Resource sensitivity classification for agent tool reach. Edit resources and clear entries from unclassified after deciding.",
+    "Resource sensitivity classification for agent tool reach. guesses = heuristics awaiting confirmation; resources = decisions.",
   heuristics: {
     patient: [
       "patient",
@@ -70,7 +94,6 @@ const DEFAULT_CONFIG: ClassifyConfig = {
       "hipaa",
       "insurance",
       "member_id",
-      "claim",
       "appointment",
       "chart",
       "lab",
@@ -84,6 +107,9 @@ const DEFAULT_CONFIG: ClassifyConfig = {
       "caller",
       "voice_call",
       "session_meta",
+      "opqrst",
+      "records",
+      "encounter",
     ],
     money: [
       "payment",
@@ -99,7 +125,6 @@ const DEFAULT_CONFIG: ClassifyConfig = {
       "price",
       "charge",
       "refund",
-      "claim",
     ],
     external: [
       "api.",
@@ -120,7 +145,9 @@ const DEFAULT_CONFIG: ClassifyConfig = {
     internal: [],
   },
   resources: {},
+  guesses: {},
   unclassified: [],
+  noise: [],
 };
 
 function resourceKey(kind: ResourceKind, name: string): string {
@@ -128,12 +155,10 @@ function resourceKey(kind: ResourceKind, name: string): string {
 }
 
 export function productClassifyRoot(): string {
-  // scripts/resource-trace.ts → repo root of arch-visualizer
   return path.resolve(__dirname, "..");
 }
 
 export function classifyConfigPath(repoRoot?: string): string {
-  // Prefer a classify file in the scanned repo when present; otherwise product root.
   if (repoRoot) {
     const inScan = path.join(repoRoot, "resources.classify.json");
     if (fs.existsSync(inScan)) return inScan;
@@ -160,44 +185,55 @@ export function loadClassifyConfig(repoRoot: string): ClassifyConfig {
           internal: raw.heuristics?.internal ?? cfg.heuristics.internal,
         },
         resources: { ...cfg.resources, ...(raw.resources ?? {}) },
+        guesses: { ...cfg.guesses, ...(raw.guesses ?? {}) },
         unclassified: [
           ...new Set([
             ...(cfg.unclassified ?? []),
             ...(Array.isArray(raw.unclassified) ? raw.unclassified : []),
           ]),
         ],
+        noise: [
+          ...new Set([
+            ...(cfg.noise ?? []),
+            ...(Array.isArray(raw.noise) ? raw.noise : []),
+          ]),
+        ],
       };
     } catch {
-      /* keep cfg */
+      /* keep */
     }
   };
 
-  // Product defaults first, then scan-repo overlay
   loadFile(productPath);
-  if (path.resolve(scanPath) !== path.resolve(productPath)) {
-    loadFile(scanPath);
-  }
-
-  // Ensure product artifact exists
-  if (!fs.existsSync(productPath)) {
-    writeClassifyConfig(productClassifyRoot(), cfg);
-  }
+  if (path.resolve(scanPath) !== path.resolve(productPath)) loadFile(scanPath);
+  if (!fs.existsSync(productPath)) writeClassifyConfig(productClassifyRoot(), cfg);
   return cfg;
 }
 
-/** Persist to the product rules file (arch-visualizer root), not a temp clone. */
 export function writeClassifyConfig(repoRoot: string, cfg: ClassifyConfig): void {
-  // Always write the product artifact; also write into scan root when it already has one.
   const productPath = path.join(productClassifyRoot(), "resources.classify.json");
   const sorted: ClassifyConfig = {
     ...cfg,
     unclassified: [...new Set(cfg.unclassified)].sort(),
+    noise: [...new Set(cfg.noise ?? [])].sort(),
     resources: Object.fromEntries(
       Object.entries(cfg.resources).sort(([a], [b]) => a.localeCompare(b))
     ),
+    guesses: Object.fromEntries(
+      Object.entries(cfg.guesses ?? {}).sort(([a], [b]) => a.localeCompare(b))
+    ),
   };
   fs.writeFileSync(productPath, JSON.stringify(sorted, null, 2) + "\n", "utf8");
-
+  const publicCopy = path.join(
+    productClassifyRoot(),
+    "webapp/client/public/resources.classify.json"
+  );
+  try {
+    fs.mkdirSync(path.dirname(publicCopy), { recursive: true });
+    fs.writeFileSync(publicCopy, JSON.stringify(sorted, null, 2) + "\n", "utf8");
+  } catch {
+    /* optional */
+  }
   const scanPath = path.join(repoRoot, "resources.classify.json");
   if (
     path.resolve(repoRoot) !== path.resolve(productClassifyRoot()) &&
@@ -212,56 +248,81 @@ function matchesAny(hay: string, needles: string[]): boolean {
   return needles.some((n) => n && h.includes(n.toLowerCase()));
 }
 
+/** Snake_case / plural table-like names vs camelCase call expressions. */
+export function looksLikeTableName(name: string): boolean {
+  if (!name || name.length < 2) return false;
+  if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(name)) return true; // snake_case
+  if (/^[a-z]+s$/.test(name) && name.length >= 4 && !/[A-Z]/.test(name)) return true;
+  return false;
+}
+
+export function looksLikeCallExpression(name: string): boolean {
+  // camelCase or PascalCase method-ish
+  if (/^[a-z]+[A-Z]/.test(name)) return true;
+  if (/^(get|set|create|update|delete|upsert|insert|find|list|clear|is|has|check|run|build|resolve|compute|fetch|load|save|send|verify)/i.test(name) && !name.includes("_")) {
+    return true;
+  }
+  return false;
+}
+
 /**
- * Classify a resource. Does not guess: unknown → unclassified.
- * Heuristics only apply when they clearly match; ambiguous stays unclassified.
+ * Classify a resource. Confirmed resources win; else guesses; else heuristics → guess.
  */
 export function classifyResource(
   kind: ResourceKind,
   name: string,
   cfg: ClassifyConfig
-): ResourceClass {
+): { class: ResourceClass; guess: boolean } {
   const key = resourceKey(kind, name);
-  const explicit = cfg.resources[key];
+  const decided = cfg.resources[key];
   if (
-    explicit === "patient" ||
-    explicit === "money" ||
-    explicit === "external" ||
-    explicit === "internal" ||
-    explicit === "unclassified"
+    decided === "patient" ||
+    decided === "money" ||
+    decided === "external" ||
+    decided === "internal" ||
+    decided === "unclassified"
   ) {
-    return explicit;
+    return { class: decided, guess: false };
   }
 
-  // External kind is always external sensitivity unless explicitly overridden.
-  if (kind === "external") {
-    return "external";
+  const priorGuess = cfg.guesses?.[key];
+  if (
+    priorGuess === "patient" ||
+    priorGuess === "money" ||
+    priorGuess === "external" ||
+    priorGuess === "internal"
+  ) {
+    return { class: priorGuess, guess: true };
   }
+
+  if (kind === "external") return { class: "external", guess: true };
+  if (kind === "fs") return { class: "internal", guess: true };
 
   const label = `${kind} ${name}`;
   const patientHit = matchesAny(label, cfg.heuristics.patient);
   const moneyHit = matchesAny(label, cfg.heuristics.money);
-
-  // Conflicting patient+money heuristic → leave for human (e.g. "claim")
-  if (patientHit && moneyHit) {
-    return "unclassified";
-  }
-  if (patientHit) return "patient";
-  if (moneyHit) return "money";
-  if (kind === "fs") return "internal";
-  if (kind === "service") {
-    // Local service module — only classify if heuristic is clear; else unclassified
-    if (matchesAny(name, cfg.heuristics.internal)) return "internal";
-    // Many services are ambiguous (payer-quote-service could be money or clinical)
-    return "unclassified";
-  }
-  // db table with no heuristic match
-  return "unclassified";
+  if (patientHit && moneyHit) return { class: "unclassified", guess: false };
+  if (patientHit) return { class: "patient", guess: true };
+  if (moneyHit) return { class: "money", guess: true };
+  return { class: "unclassified", guess: false };
 }
 
-function ensureUnclassifiedTracked(cfg: ClassifyConfig, key: string): void {
+function trackClassification(
+  cfg: ClassifyConfig,
+  kind: ResourceKind,
+  name: string,
+  cls: ResourceClass,
+  guess: boolean
+): void {
+  const key = resourceKey(kind, name);
   if (cfg.resources[key]) return;
-  if (!cfg.unclassified.includes(key)) {
+  if (guess && cls !== "unclassified") {
+    cfg.guesses[key] = cls;
+  }
+  if (!cfg.resources[key] && cls === "unclassified") {
+    if (!cfg.unclassified.includes(key)) cfg.unclassified.push(key);
+  } else if (guess && !cfg.unclassified.includes(key) && !cfg.resources[key]) {
+    // Still needs confirmation
     cfg.unclassified.push(key);
   }
 }
@@ -293,86 +354,170 @@ function resolveRequire(
 
 function extractSqlTables(sql: string): string[] {
   const tables: string[] = [];
+  const stop = new Set([
+    "select", "set", "values", "where", "and", "or", "not", "exists",
+    "from", "into", "update", "delete", "insert", "join", "left", "right",
+    "inner", "outer", "on", "as", "in", "is", "null", "true", "false",
+    "their", "there", "then", "than", "this", "that", "with", "when",
+    "case", "when", "else", "end", "limit", "offset", "group", "order",
+    "by", "having", "union", "all", "distinct", "table", "if",
+  ]);
   const re =
-    /\b(?:FROM|INTO|UPDATE|JOIN|TABLE)\s+[`"']?([a-zA-Z_][a-zA-Z0-9_]*)[`"']?/gi;
+    /\b(?:FROM|INTO|UPDATE|JOIN|TABLE(?:\s+IF\s+NOT\s+EXISTS)?)\s+[`"']?([a-zA-Z_][a-zA-Z0-9_]*)[`"']?/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(sql)) !== null) {
     const t = m[1]!;
-    if (!["select", "set", "values", "where", "and", "or"].includes(t.toLowerCase())) {
-      tables.push(t);
-    }
+    if (stop.has(t.toLowerCase())) continue;
+    if (!looksLikeTableName(t) && looksLikeCallExpression(t)) continue;
+    tables.push(t);
   }
   return [...new Set(tables)];
 }
 
-type FoundInSnippet = {
-  resources: Array<{
-    kind: ResourceKind;
-    name: string;
-    evidence: string;
-  }>;
-  localRequires: string[];
-  truncatedHints: string[];
+function isDatabaseModule(absPath: string): boolean {
+  const base = path.basename(absPath).toLowerCase();
+  return base === "database.js" || base === "database.ts" || /\/database\.js$/.test(absPath.replace(/\\/g, "/"));
+}
+
+type DatabaseCacheEntry = {
+  fileRel: string;
+  /** Genuine table / collection names from SQL. */
+  tables: string[];
+  /** Exported or function-scoped method → tables touched in that function. */
+  methodTables: Record<string, string[]>;
 };
 
-function scanSnippet(text: string, fileRel: string): FoundInSnippet {
-  const resources: FoundInSnippet["resources"] = [];
-  const localRequires: string[] = [];
-  const truncatedHints: string[] = [];
+const databaseModuleCache = new Map<string, DatabaseCacheEntry>();
 
-  // require('./local')
-  const reqRe = /require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+export function clearDatabaseCache(): void {
+  databaseModuleCache.clear();
+}
+
+export function extractDatabaseModule(
+  absPath: string,
+  repoRoot: string
+): DatabaseCacheEntry {
+  const cached = databaseModuleCache.get(absPath);
+  if (cached) return cached;
+
+  const text = fs.readFileSync(absPath, "utf8");
+  const fileRel = path.relative(repoRoot, absPath).split(path.sep).join("/");
+  const tables = new Set<string>();
+
+  // CREATE TABLE and SQL in backticks across the whole file
+  const sqlRe = /`([^`]{8,4000})`/g;
   let m: RegExpExecArray | null;
-  while ((m = reqRe.exec(text)) !== null) {
-    localRequires.push(m[1]!);
-  }
-  // import x from './local'
-  const importRe = /from\s+['"](\.[^'"]+)['"]/g;
-  while ((m = importRe.exec(text)) !== null) {
-    localRequires.push(m[1]!);
-  }
-
-  // SQL in template literals only (backticks) — avoid English prose false positives
-  const sqlRe = /`([^`]{10,2000})`/g;
   while ((m = sqlRe.exec(text)) !== null) {
     const chunk = m[1]!;
-    if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN)\b/i.test(chunk)) continue;
+    if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN|CREATE\s+TABLE)\b/i.test(chunk)) {
+      continue;
+    }
+    for (const t of extractSqlTables(chunk)) {
+      if (looksLikeTableName(t) || /^[a-z][a-z0-9_]*$/.test(t)) tables.add(t);
+    }
+  }
+  // CREATE TABLE IF NOT EXISTS outside templates
+  const createRe = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?([a-zA-Z_][a-zA-Z0-9_]*)[`"']?/gi;
+  while ((m = createRe.exec(text)) !== null) {
+    tables.add(m[1]!);
+  }
+
+  const methodTables: Record<string, string[]> = {};
+  // function getFoo( / exports.getFoo = / getFoo: function
+  const fnRe =
+    /(?:(?:async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|(?:exports\.|module\.exports\.)([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?(?:function\s*\(|\([^)]*\)\s*=>)|([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(?:async\s*)?function\s*\()/g;
+  const starts: Array<{ name: string; index: number }> = [];
+  while ((m = fnRe.exec(text)) !== null) {
+    const name = m[1] || m[2] || m[3];
+    if (name) starts.push({ name, index: m.index });
+  }
+  for (let i = 0; i < starts.length; i++) {
+    const { name, index } = starts[i]!;
+    const brace = text.indexOf("{", index);
+    if (brace < 0) continue;
+    let depth = 0;
+    let end = brace;
+    const limit = Math.min(text.length, brace + 100000);
+    for (let j = brace; j < limit; j++) {
+      if (text[j] === "{") depth++;
+      else if (text[j] === "}") {
+        depth--;
+        if (depth === 0) {
+          end = j;
+          break;
+        }
+      }
+    }
+    const body = text.slice(brace, end + 1);
+    const local = new Set<string>();
+    const bodySql = /`([^`]{8,4000})`/g;
+    let bm: RegExpExecArray | null;
+    while ((bm = bodySql.exec(body)) !== null) {
+      if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN)\b/i.test(bm[1]!)) continue;
+      for (const t of extractSqlTables(bm[1]!)) local.add(t);
+    }
+    // Also string table refs in .prepare("...FROM foo")
+    if (local.size) methodTables[name] = [...local];
+  }
+
+  const entry: DatabaseCacheEntry = {
+    fileRel,
+    tables: [...tables].sort(),
+    methodTables,
+  };
+  databaseModuleCache.set(absPath, entry);
+  return entry;
+}
+
+type FoundInSnippet = {
+  resources: Array<{ kind: ResourceKind; name: string; evidence: string }>;
+  localRequires: string[];
+  /** Top-level binding → require path, when fileBindings provided */
+  bindingCalls: Array<{ binding: string; method?: string }>;
+  truncHints: string[];
+};
+
+function scanSnippet(
+  text: string,
+  fileRel: string,
+  opts?: { emitDbCalls?: boolean }
+): FoundInSnippet {
+  const resources: FoundInSnippet["resources"] = [];
+  const localRequires: string[] = [];
+  const truncHints: string[] = [];
+  const emitDbCalls = opts?.emitDbCalls !== false;
+
+  const reqRe = /require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = reqRe.exec(text)) !== null) localRequires.push(m[1]!);
+  const importRe = /from\s+['"](\.[^'"]+)['"]/g;
+  while ((m = importRe.exec(text)) !== null) localRequires.push(m[1]!);
+
+  // Genuine SQL tables only
+  const sqlRe = /`([^`]{10,4000})`/g;
+  while ((m = sqlRe.exec(text)) !== null) {
+    const chunk = m[1]!;
+    if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN|CREATE\s+TABLE)\b/i.test(chunk)) {
+      continue;
+    }
     for (const table of extractSqlTables(chunk)) {
+      if (!looksLikeTableName(table) && looksLikeCallExpression(table)) continue;
       if (table.length < 3) continue;
       resources.push({
         kind: "db",
         name: table,
-        evidence: `${fileRel}: SQL mentions ${table}`,
+        evidence: `${fileRel}: SQL table ${table}`,
       });
     }
   }
 
-  // db.getX / db.upsertX — method names that look like data accessors
-  const dbMethodRe = /\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
-  while ((m = dbMethodRe.exec(text)) !== null) {
-    const method = m[1]!;
-    if (
-      method === "db" ||
-      method === "prepare" ||
-      method === "exec" ||
-      method === "transaction" ||
-      method.length < 4
-    ) {
-      continue;
-    }
-    resources.push({
-      kind: "db",
-      name: method,
-      evidence: `${fileRel}: db.${method}(…)`,
-    });
-  }
+  // knex('table') / prisma.model — tables
   const knexRe = /\b(?:knex|db)\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g;
   while ((m = knexRe.exec(text)) !== null) {
-    resources.push({
-      kind: "db",
-      name: m[1]!,
-      evidence: `${fileRel}: knex/db('${m[1]}')`,
-    });
+    const t = m[1]!;
+    if (looksLikeTableName(t) || !looksLikeCallExpression(t)) {
+      resources.push({ kind: "db", name: t, evidence: `${fileRel}: knex/db('${t}')` });
+    }
   }
   const prismaRe = /\bprisma\.([a-zA-Z_][a-zA-Z0-9_]*)\./g;
   while ((m = prismaRe.exec(text)) !== null) {
@@ -383,18 +528,28 @@ function scanSnippet(text: string, fileRel: string): FoundInSnippet {
     });
   }
 
-  // HTTP hosts
+  // db.method — call expressions, NOT tables
+  if (emitDbCalls) {
+    const dbMethodRe = /\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)/g;
+    while ((m = dbMethodRe.exec(text)) !== null) {
+      const method = m[1]!;
+      if (["db", "prepare", "exec", "transaction"].includes(method) || method.length < 3) {
+        continue;
+      }
+      resources.push({
+        kind: "db_call",
+        name: method,
+        evidence: `${fileRel}: db.${method}(…)`,
+      });
+    }
+  }
+
   const hostRe = /https?:\/\/([a-zA-Z0-9.-]+)/g;
   while ((m = hostRe.exec(text)) !== null) {
     const host = m[1]!;
     if (/localhost|127\.0\.0\.1|0\.0\.0\.0|example\.com/.test(host)) continue;
-    resources.push({
-      kind: "external",
-      name: host,
-      evidence: `${fileRel}: HTTP ${host}`,
-    });
+    resources.push({ kind: "external", name: host, evidence: `${fileRel}: HTTP ${host}` });
   }
-  // axios/fetch to template BASE_URL etc. — mark as external service call
   if (/\baxios\.(get|post|put|patch|delete)\b/.test(text) || /\bfetch\s*\(/.test(text)) {
     resources.push({
       kind: "external",
@@ -402,8 +557,6 @@ function scanSnippet(text: string, fileRel: string): FoundInSnippet {
       evidence: `${fileRel}: axios/fetch outbound call`,
     });
   }
-
-  // Third-party SDKs
   const sdkRe =
     /\b(stripe|twilio|retell|openai|Anthropic|groq|SendGrid|aws-sdk|@aws-sdk)\b/g;
   while ((m = sdkRe.exec(text)) !== null) {
@@ -413,31 +566,45 @@ function scanSnippet(text: string, fileRel: string): FoundInSnippet {
       evidence: `${fileRel}: SDK ${m[1]}`,
     });
   }
-
-  // fs
-  const fsRe = /\bfs\.(readFile|writeFile|appendFile|createReadStream|createWriteStream|promises\.(readFile|writeFile))\b/g;
+  const fsRe =
+    /\bfs\.(readFile|writeFile|appendFile|createReadStream|createWriteStream|promises\.(readFile|writeFile))\b/g;
   while ((m = fsRe.exec(text)) !== null) {
-    resources.push({
-      kind: "fs",
-      name: m[1]!,
-      evidence: `${fileRel}: fs.${m[1]}`,
-    });
+    resources.push({ kind: "fs", name: m[1]!, evidence: `${fileRel}: fs.${m[1]}` });
   }
 
-  if (localRequires.length > 40) {
-    truncatedHints.push(
-      `${fileRel}: ${localRequires.length} local requires (capped for walk)`
-    );
+  // Binding.method( calls — resolved via file-level requires by caller
+  const bindingCalls: Array<{ binding: string; method?: string }> = [];
+  const callRe = /\b([A-Z][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g;
+  while ((m = callRe.exec(text)) !== null) {
+    if (["Math", "JSON", "Object", "Array", "Promise", "Error", "Date", "Buffer"].includes(m[1]!)) {
+      continue;
+    }
+    bindingCalls.push({ binding: m[1]!, method: m[2] });
+  }
+
+  if (localRequires.length > 50) {
+    truncHints.push(`${fileRel}: ${localRequires.length} local requires (capped)`);
   }
 
   return {
     resources,
-    localRequires: [...new Set(localRequires)].slice(0, 40),
-    truncatedHints,
+    localRequires: [...new Set(localRequires)].slice(0, 50),
+    bindingCalls,
+    truncHints,
   };
 }
 
-/** Extract case body for `case 'toolName':` … next case / default / end. */
+function parseFileBindings(source: string): Map<string, string> {
+  const map = new Map<string, string>();
+  const re =
+    /(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    map.set(m[1]!, m[2]!);
+  }
+  return map;
+}
+
 export function extractCaseBody(source: string, toolName: string): string | null {
   const re = new RegExp(
     `case\\s+['"\`]${toolName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"\`]\\s*:`,
@@ -447,63 +614,173 @@ export function extractCaseBody(source: string, toolName: string): string | null
   if (!m || m.index == null) return null;
   const start = m.index + m[0].length;
   const rest = source.slice(start);
-  // End at next case/default at similar indent, or closing of switch (heuristic: \n        case )
   const endM = rest.search(/\n\s*case\s+['"`]|\n\s*default\s*:/);
-  const body = endM >= 0 ? rest.slice(0, endM) : rest.slice(0, 4000);
-  return body;
+  return endM >= 0 ? rest.slice(0, endM) : rest.slice(0, 4000);
 }
 
 function extractMethodBody(source: string, methodName: string): string | null {
+  const escaped = methodName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Prefer definitions (static/async/function) over call sites.
   const re = new RegExp(
-    `(?:static\\s+)?(?:async\\s+)?${methodName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\([^)]*\\)\\s*\\{`,
-    "m"
+    `(?:static\\s+|async\\s+|function\\s+)+${escaped}\\s*\\(`,
+    "gm"
   );
-  const m = re.exec(source);
-  if (!m || m.index == null) return null;
-  const braceStart = source.indexOf("{", m.index);
-  if (braceStart < 0) return null;
-  let depth = 0;
-  for (let i = braceStart; i < source.length && i < braceStart + 80000; i++) {
-    const ch = source[i]!;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) return source.slice(braceStart + 1, i);
+  let m: RegExpExecArray | null;
+  const candidates: number[] = [];
+  while ((m = re.exec(source)) !== null) {
+    candidates.push(m.index + m[0].length - 1); // index of '('
+  }
+  // Fallback: bare `name(` only if unique definition-like `) {` follows
+  if (candidates.length === 0) {
+    const bare = new RegExp(`(?:^|[\\s;.{}])${escaped}\\s*\\(`, "gm");
+    while ((m = bare.exec(source)) !== null) {
+      const open = source.indexOf("(", m.index);
+      candidates.push(open);
     }
   }
-  return source.slice(braceStart + 1, braceStart + 8000);
+
+  for (const openParen of candidates) {
+    let i = openParen;
+    let paren = 0;
+    let braceStart = -1;
+    for (; i < source.length && i < openParen + 5000; i++) {
+      const ch = source[i]!;
+      if (ch === "(") paren++;
+      else if (ch === ")") {
+        paren--;
+        if (paren === 0) {
+          const rest = source.slice(i + 1);
+          const bm = rest.match(/^\s*\{/);
+          if (!bm) break;
+          braceStart = i + 1 + rest.indexOf("{");
+          break;
+        }
+      }
+    }
+    if (braceStart < 0) continue;
+    let depth = 0;
+    for (let j = braceStart; j < source.length && j < braceStart + 80000; j++) {
+      const ch = source[j]!;
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) return source.slice(braceStart + 1, j);
+      }
+    }
+  }
+  return null;
+}
+
+function emptyCells(
+  state: CellState,
+  reason: string | null
+): Record<ResourceClass, ClassCell> {
+  const cells = {} as Record<ResourceClass, ClassCell>;
+  for (const c of RESOURCE_CLASSES) {
+    cells[c] = {
+      state,
+      depth: null,
+      path: null,
+      reason,
+      resources: [],
+    };
+  }
+  return cells;
+}
+
+function buildCells(
+  resources: ReachResource[],
+  truncated: boolean,
+  truncationReasons: string[],
+  unresolvedHandler: boolean
+): Record<ResourceClass, ClassCell> {
+  if (unresolvedHandler) {
+    return emptyCells(
+      "not-traced",
+      "unresolved-handler: no file:line handler for this tool"
+    );
+  }
+
+  const cells = {} as Record<ResourceClass, ClassCell>;
+  for (const c of RESOURCE_CLASSES) {
+    const ofClass = resources.filter((r) => r.class === c);
+    if (ofClass.length > 0) {
+      const best = ofClass.reduce((a, b) => (a.depth <= b.depth ? a : b));
+      cells[c] = {
+        state: "reaches",
+        depth: best.depth,
+        path: best.path,
+        reason: null,
+        resources: ofClass,
+      };
+    } else if (truncated) {
+      cells[c] = {
+        state: "not-traced",
+        depth: null,
+        path: null,
+        reason:
+          truncationReasons[0] ??
+          "walk truncated before this class could be ruled out",
+        resources: [],
+      };
+    } else {
+      cells[c] = {
+        state: "none",
+        depth: null,
+        path: null,
+        reason: null,
+        resources: [],
+      };
+    }
+  }
+  return cells;
+}
+
+export function unresolvedHandlerReach(reason?: string): ToolReach {
+  const r = reason ?? "unresolved-handler: no file:line handler for this tool";
+  return {
+    resources: [],
+    cells: emptyCells("not-traced", r),
+    truncated: true,
+    truncationReasons: [r],
+  };
 }
 
 export function traceToolHandler(
   repoRoot: string,
-  handler: string,
+  handler: string | null,
   toolName: string,
   cfg: ClassifyConfig,
   maxDepth = DEFAULT_MAX_DEPTH
 ): ToolReach {
-  const [rel, lineStr] = handler.split(":");
-  if (!rel) {
-    return { resources: [], truncated: false, truncationNote: null };
+  if (!handler) {
+    return unresolvedHandlerReach();
   }
+
+  const [rel, lineStr] = handler.split(":");
+  if (!rel) return unresolvedHandlerReach("unresolved-handler: malformed handler ref");
+
   const abs = path.join(repoRoot, rel);
   if (!fs.existsSync(abs)) {
-    return {
-      resources: [],
-      truncated: false,
-      truncationNote: `handler file missing: ${rel}`,
-    };
+    return unresolvedHandlerReach(`unresolved-handler: missing file ${rel}`);
   }
 
   let source: string;
   try {
     source = fs.readFileSync(abs, "utf8");
   } catch {
-    return { resources: [], truncated: false, truncationNote: `unreadable ${rel}` };
+    return unresolvedHandlerReach(`unresolved-handler: unreadable ${rel}`);
   }
 
+  const fileBindings = parseFileBindings(source);
   const caseBody = extractCaseBody(source, toolName);
-  const startSnippets: Array<{ text: string; fileAbs: string; fileRel: string; label: string }> =
-    [];
+  const startSnippets: Array<{
+    text: string;
+    fileAbs: string;
+    fileRel: string;
+    label: string;
+    bindings: Map<string, string>;
+  }> = [];
 
   if (caseBody) {
     startSnippets.push({
@@ -511,8 +788,8 @@ export function traceToolHandler(
       fileAbs: abs,
       fileRel: rel,
       label: `${rel}:${lineStr || "?"} case '${toolName}'`,
+      bindings: fileBindings,
     });
-    // Follow this._method / Class._method calls inside case
     const methodCalls = [
       ...caseBody.matchAll(/this\.(_?[a-zA-Z][a-zA-Z0-9_]*)\s*\(/g),
       ...caseBody.matchAll(/KellyToolExecutor\.(_?[a-zA-Z][a-zA-Z0-9_]*)\s*\(/g),
@@ -527,25 +804,30 @@ export function traceToolHandler(
           fileAbs: abs,
           fileRel: rel,
           label: `${rel}#${name}`,
+          bindings: fileBindings,
         });
+      } else {
+        truncated = true;
+        truncNotes.push(
+          `dynamic-dispatch: could not resolve method body for ${rel}#${name}`
+        );
       }
     }
   } else {
-    // No case — scan a window around the line
     const lines = source.split("\n");
     const line = Math.max(0, (parseInt(lineStr || "1", 10) || 1) - 1);
-    const window = lines.slice(line, line + 80).join("\n");
     startSnippets.push({
-      text: window,
+      text: lines.slice(line, line + 80).join("\n"),
       fileAbs: abs,
       fileRel: rel,
-      label: `${handler}`,
+      label: handler,
+      bindings: fileBindings,
     });
   }
 
   const out: ReachResource[] = [];
   const seenResource = new Set<string>();
-  const visitedFiles = new Set<string>();
+  const visitedFiles = new Set<string>([abs]);
   let truncated = false;
   const truncNotes: string[] = [];
 
@@ -555,6 +837,7 @@ export function traceToolHandler(
     text: string;
     depth: number;
     pathSoFar: string[];
+    bindings: Map<string, string>;
   };
 
   const queue: QueueItem[] = startSnippets.map((s) => ({
@@ -563,63 +846,184 @@ export function traceToolHandler(
     text: s.text,
     depth: 0,
     pathSoFar: [s.label],
+    bindings: s.bindings,
   }));
 
-  // Always mark the handler file as visited for full-file walks so requires
-  // cannot pull the entire executor back in at depth 1+.
-  visitedFiles.add(abs);
+  // visitedFiles already seeded with handler file below
+
+  const pushResource = (
+    kind: ResourceKind,
+    name: string,
+    depth: number,
+    pathSoFar: string[],
+    evidence: string
+  ) => {
+    const key = resourceKey(kind, name);
+    const dedupe = `${key}@${depth}`;
+    if (seenResource.has(dedupe)) return;
+    seenResource.add(dedupe);
+    const { class: cls, guess } = classifyResource(kind, name, cfg);
+    trackClassification(cfg, kind, name, cls, guess);
+    out.push({
+      kind,
+      name,
+      class: cls,
+      depth,
+      path: [...pathSoFar, `${kind}:${name}`],
+      evidence,
+      guess: guess || undefined,
+    });
+  };
+
+  const attachDatabaseCache = (
+    dbAbs: string,
+    depth: number,
+    pathSoFar: string[],
+    method?: string
+  ) => {
+    const entry = extractDatabaseModule(dbAbs, repoRoot);
+    const label = method
+      ? `${entry.fileRel}#${method} (cached)`
+      : `${entry.fileRel} (cached tables)`;
+    const pathWithDb = [...pathSoFar, label];
+    if (method && entry.methodTables[method]) {
+      for (const t of entry.methodTables[method]!) {
+        pushResource("db", t, depth, pathWithDb, `${entry.fileRel}: ${method} → table ${t}`);
+      }
+    } else if (method) {
+      // Method exists as call but no SQL mapped — still record the call; tables unknown
+      pushResource(
+        "db_call",
+        method,
+        depth,
+        pathWithDb,
+        `${entry.fileRel}: db.${method} (no SQL mapped in function body)`
+      );
+    } else {
+      for (const t of entry.tables) {
+        pushResource("db", t, depth, pathWithDb, `${entry.fileRel}: cached table ${t}`);
+      }
+    }
+  };
 
   while (queue.length > 0) {
     const item = queue.shift()!;
+    if (!item.text) continue;
+
     const found = scanSnippet(item.text, item.fileRel);
-    for (const hint of found.truncatedHints) {
+    for (const hint of found.truncHints) {
       truncated = true;
       truncNotes.push(hint);
     }
 
     for (const r of found.resources) {
-      const key = resourceKey(r.kind, r.name);
-      const dedupe = `${key}@${item.depth}`;
-      if (seenResource.has(dedupe)) continue;
-      seenResource.add(dedupe);
-
-      const cls = classifyResource(r.kind, r.name, cfg);
-      if (cls === "unclassified") {
-        ensureUnclassifiedTracked(cfg, key);
-      } else if (!cfg.resources[key]) {
-        cfg.resources[key] = cls;
+      if (r.kind === "db_call") {
+        // Prefer resolving through database cache
+        const dbCandidates = [
+          path.join(path.dirname(item.fileAbs), "../database.js"),
+          path.join(path.dirname(item.fileAbs), "../../database.js"),
+          path.join(repoRoot, "middleware-platform/database.js"),
+          path.join(repoRoot, "database.js"),
+        ];
+        let resolvedDb: string | null = null;
+        for (const c of dbCandidates) {
+          if (fs.existsSync(c)) {
+            resolvedDb = c;
+            break;
+          }
+        }
+        // Also from require('../database') in same file bindings
+        for (const spec of item.bindings.values()) {
+          if (/database/.test(spec)) {
+            const rabs = resolveRequire(item.fileAbs, spec, repoRoot);
+            if (rabs && isDatabaseModule(rabs)) resolvedDb = rabs;
+          }
+        }
+        if (resolvedDb) {
+          attachDatabaseCache(resolvedDb, item.depth, item.pathSoFar, r.name);
+        } else {
+          pushResource(r.kind, r.name, item.depth, item.pathSoFar, r.evidence);
+        }
+        continue;
       }
+      pushResource(r.kind, r.name, item.depth, item.pathSoFar, r.evidence);
+    }
 
-      out.push({
-        kind: r.kind,
-        name: r.name,
-        class: cls,
-        depth: item.depth,
-        path: [...item.pathSoFar, `${r.kind}:${r.name}`],
-        evidence: r.evidence,
+    // Follow Binding.method via file requires (e.g. QueryPlanner.runRecordsRetrieval)
+    for (const bc of found.bindingCalls) {
+      const spec = item.bindings.get(bc.binding);
+      if (!spec) continue;
+      const resolved = resolveRequire(item.fileAbs, spec, repoRoot);
+      if (!resolved) {
+        truncated = true;
+        truncNotes.push(
+          `dynamic-dispatch: ${bc.binding}.${bc.method} require '${spec}' unresolved`
+        );
+        continue;
+      }
+      const serviceName =
+        path.basename(spec.replace(/\\/g, "/")).replace(/\.(js|ts|mjs)$/, "") ||
+        spec.replace(/^\.\//, "");
+      pushResource(
+        "service",
+        serviceName,
+        item.depth,
+        item.pathSoFar,
+        `${item.fileRel}: ${bc.binding}.${bc.method} via require('${spec}')`
+      );
+
+      if (visitedFiles.has(resolved)) continue;
+      const nextDepth = item.depth + 1;
+      if (nextDepth > maxDepth) {
+        truncated = true;
+        truncNotes.push(
+          `depth-limit: depth ${maxDepth} stopped before ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (${bc.binding}.${bc.method})`
+        );
+        continue;
+      }
+      if (isDatabaseModule(resolved)) {
+        attachDatabaseCache(resolved, nextDepth, [...item.pathSoFar, serviceName], bc.method);
+        visitedFiles.add(resolved);
+        continue;
+      }
+      let nextText = fs.readFileSync(resolved, "utf8");
+      if (bc.method) {
+        const body = extractMethodBody(nextText, bc.method!);
+        if (body) nextText = body;
+      }
+      if (nextText.length > 200_000 && !isDatabaseModule(resolved)) {
+        truncated = true;
+        truncNotes.push(
+          `module-size-cap: ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (${nextText.length} bytes)`
+        );
+        nextText = nextText.slice(0, 200_000);
+      }
+      visitedFiles.add(resolved);
+      queue.push({
+        fileAbs: resolved,
+        fileRel: path.relative(repoRoot, resolved).split(path.sep).join("/"),
+        text: nextText,
+        depth: nextDepth,
+        pathSoFar: [
+          ...item.pathSoFar,
+          path.relative(repoRoot, resolved).split(path.sep).join("/"),
+        ],
+        bindings: parseFileBindings(fs.readFileSync(resolved, "utf8")),
       });
     }
 
     for (const spec of found.localRequires) {
       const resolved = resolveRequire(item.fileAbs, spec, repoRoot);
-      const serviceName = path.basename(spec.replace(/\\/g, "/")).replace(/\.(js|ts|mjs)$/, "") ||
+      const serviceName =
+        path.basename(spec.replace(/\\/g, "/")).replace(/\.(js|ts|mjs)$/, "") ||
         spec.replace(/^\.\//, "");
-      const sKey = resourceKey("service", serviceName);
-      const dedupe = `${sKey}@${item.depth}`;
-      if (!seenResource.has(dedupe)) {
-        seenResource.add(dedupe);
-        const cls = classifyResource("service", serviceName, cfg);
-        if (cls === "unclassified") ensureUnclassifiedTracked(cfg, sKey);
-        else if (!cfg.resources[sKey]) cfg.resources[sKey] = cls;
-        out.push({
-          kind: "service",
-          name: serviceName,
-          class: cls,
-          depth: item.depth,
-          path: [...item.pathSoFar, `service:${serviceName}`],
-          evidence: `${item.fileRel}: require('${spec}')`,
-        });
-      }
+      pushResource(
+        "service",
+        serviceName,
+        item.depth,
+        item.pathSoFar,
+        `${item.fileRel}: require('${spec}')`
+      );
 
       if (!resolved) continue;
       if (visitedFiles.has(resolved)) continue;
@@ -628,59 +1032,66 @@ export function traceToolHandler(
       if (nextDepth > maxDepth) {
         truncated = true;
         truncNotes.push(
-          `depth ${maxDepth} truncated walk into ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (from ${item.fileRel} require '${spec}')`
+          `depth-limit: depth ${maxDepth} stopped before ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (require '${spec}')`
         );
         continue;
       }
+
+      // database.js: cache extract, do not re-walk
+      if (isDatabaseModule(resolved)) {
+        attachDatabaseCache(resolved, nextDepth, [...item.pathSoFar, serviceName]);
+        visitedFiles.add(resolved);
+        continue;
+      }
+
       let nextText: string;
       try {
         nextText = fs.readFileSync(resolved, "utf8");
       } catch {
         continue;
       }
-      // Cap large modules — prefer exported function bodies later; for now slice
-      if (nextText.length > 120_000) {
+      if (nextText.length > 200_000) {
         truncated = true;
         truncNotes.push(
-          `large module truncated: ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (${nextText.length} bytes)`
+          `module-size-cap: ${path.relative(repoRoot, resolved).split(path.sep).join("/")} (${nextText.length} bytes)`
         );
-        nextText = nextText.slice(0, 120_000);
+        nextText = nextText.slice(0, 200_000);
       }
       visitedFiles.add(resolved);
-      const nextRel = path.relative(repoRoot, resolved).split(path.sep).join("/");
       queue.push({
         fileAbs: resolved,
-        fileRel: nextRel,
+        fileRel: path.relative(repoRoot, resolved).split(path.sep).join("/"),
         text: nextText,
         depth: nextDepth,
-        pathSoFar: [...item.pathSoFar, nextRel],
+        pathSoFar: [
+          ...item.pathSoFar,
+          path.relative(repoRoot, resolved).split(path.sep).join("/"),
+        ],
+        bindings: parseFileBindings(nextText),
       });
     }
   }
 
-  // Prefer shallowest occurrence per resource key
+  // Prefer shallowest per key
   const byKey = new Map<string, ReachResource>();
   for (const r of out) {
     const k = resourceKey(r.kind, r.name);
     const prev = byKey.get(k);
     if (!prev || r.depth < prev.depth) byKey.set(k, r);
   }
+  const resources = [...byKey.values()].sort((a, b) =>
+    a.depth !== b.depth ? a.depth - b.depth : a.name.localeCompare(b.name)
+  );
 
+  const reasons = [...new Set(truncNotes)].slice(0, 12);
   return {
-    resources: [...byKey.values()].sort((a, b) =>
-      a.depth !== b.depth ? a.depth - b.depth : a.name.localeCompare(b.name)
-    ),
+    resources,
+    cells: buildCells(resources, truncated, reasons, false),
     truncated,
-    truncationNote: truncNotes.length
-      ? [...new Set(truncNotes)].slice(0, 8).join("; ")
-      : null,
+    truncationReasons: reasons,
   };
 }
 
-/**
- * Detect auth / identity checks that run before tools execute on this agent surface.
- * Does not infer safety from absence — reports found:false explicitly.
- */
 export function detectAgentAuth(
   repoRoot: string,
   agentFile: string,
@@ -710,7 +1121,6 @@ export function detectAgentAuth(
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    // Skip comments and string-only error codes
     if (/^\s*\/\//.test(line) || /^\s*\*/.test(line)) continue;
     for (const p of patterns) {
       if (p.re.test(line)) {
@@ -718,40 +1128,6 @@ export function detectAgentAuth(
           found: true,
           location: `${agentFile}:${i + 1}`,
           evidence: `${p.label}: ${line.trim().slice(0, 160)}`,
-        };
-      }
-    }
-  }
-
-  // Follow KellyToolExecutor / voice handlers for real identity gates before execute
-  const followFiles = [
-    path.join(repoRoot, agentFile),
-    path.join(repoRoot, "middleware-platform/services/kelly-tool-executor.js"),
-    path.join(
-      path.dirname(path.join(repoRoot, agentFile)),
-      "kelly-tool-executor.js"
-    ),
-  ];
-  const seen = new Set<string>();
-  for (const cand of followFiles) {
-    if (!fs.existsSync(cand) || seen.has(cand)) continue;
-    seen.add(cand);
-    const body = fs.readFileSync(cand, "utf8");
-    const blines = body.split("\n");
-    for (let i = 0; i < blines.length; i++) {
-      const line = blines[i]!;
-      if (/^\s*\/\//.test(line)) continue;
-      if (
-        /\b(verifyCallerIdentity|assertAuthenticated|requirePatientAuth|identityVerified\s*=\s*true)\b/.test(
-          line
-        ) &&
-        !/error_code|message\s*:/.test(line)
-      ) {
-        const rel = path.relative(repoRoot, cand).split(path.sep).join("/");
-        return {
-          found: true,
-          location: `${rel}:${i + 1}`,
-          evidence: line.trim().slice(0, 160),
         };
       }
     }
@@ -765,7 +1141,6 @@ export function detectAgentAuth(
   };
 }
 
-/** Prefer resolving tool handlers via KellyToolExecutor when agent dispatches there. */
 export function resolveHandlerViaKellyExecutor(
   repoRoot: string,
   toolName: string
@@ -785,4 +1160,43 @@ export function resolveHandlerViaKellyExecutor(
     }
   }
   return null;
+}
+
+/**
+ * After a scan, move camelCase db:* keys that are really call expressions into noise.
+ */
+export function scrubExtractionNoise(cfg: ClassifyConfig): {
+  noiseCount: number;
+  realUnclassified: number;
+} {
+  const noise: string[] = [...(cfg.noise ?? [])];
+  const keepUncl: string[] = [];
+  for (const key of cfg.unclassified) {
+    const [kind, ...rest] = key.split(":");
+    const name = rest.join(":");
+    if (kind === "db" && looksLikeCallExpression(name) && !looksLikeTableName(name)) {
+      noise.push(key);
+      delete cfg.resources[key];
+      delete cfg.guesses[key];
+      continue;
+    }
+    keepUncl.push(key);
+  }
+  // Also scrub resources/guesses maps
+  for (const map of [cfg.resources, cfg.guesses]) {
+    for (const key of Object.keys(map)) {
+      const [kind, ...rest] = key.split(":");
+      const name = rest.join(":");
+      if (kind === "db" && looksLikeCallExpression(name) && !looksLikeTableName(name)) {
+        noise.push(key);
+        delete map[key];
+      }
+    }
+  }
+  cfg.noise = [...new Set(noise)].sort();
+  cfg.unclassified = [...new Set(keepUncl)].sort();
+  return {
+    noiseCount: cfg.noise.length,
+    realUnclassified: cfg.unclassified.length,
+  };
 }
