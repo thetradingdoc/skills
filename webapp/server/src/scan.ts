@@ -11,6 +11,11 @@ import { embedAndPersistNodes } from "../../../src/ai/nodeEmbeddings.js";
 import { deriveProjectKey } from "./utils/deriveProjectKey.js";
 import { runViolationScan } from "./violationStore.js";
 import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
+import { upsertSystemModel } from "./systemModelRoutes.js";
+import {
+  insertScanHistory,
+  updateScanHistory,
+} from "./scanHistory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot =
@@ -149,6 +154,15 @@ router.post("/scan", optionalUser, async (req, res) => {
     scanArgs.push("--workspace-id", workspaceIdForScan);
   }
 
+  let scanHistoryId: string | null = null;
+  if (ownerId && workspaceIdForScan && supabaseAdmin) {
+    scanHistoryId = await insertScanHistory({
+      workspaceId: workspaceIdForScan,
+      status: "started",
+      trigger: "manual",
+    });
+  }
+
   try {
     const result = execFileSync("npx", scanArgs, {
       cwd: projectRoot,
@@ -192,17 +206,41 @@ router.post("/scan", optionalUser, async (req, res) => {
           jiraProjectKey = wsRow.jira_project_key;
         }
 
-        const { error: gErr } = await supabaseAdmin.from("graphs").insert({
-          workspace_id: workspaceId,
-          graph_json: graph,
-          repo_url: trimmed,
-        });
+        const { data: graphInsert, error: gErr } = await supabaseAdmin
+          .from("graphs")
+          .insert({
+            workspace_id: workspaceId,
+            graph_json: graph,
+            repo_url: trimmed,
+          })
+          .select("id")
+          .single();
         if (gErr) throw gErr;
 
+        const githubFullName = repoNameFromUrl(trimmed);
         await supabaseAdmin
           .from("workspaces")
-          .update({ repo_url: trimmed })
+          .update({
+            repo_url: trimmed,
+            github_full_name: githubFullName,
+          })
           .eq("id", workspaceId);
+
+        if (scanHistoryId) {
+          const nodeCount = Array.isArray((graph as { nodes?: unknown[] }).nodes)
+            ? (graph as { nodes?: unknown[] }).nodes!.length
+            : 0;
+          const edgeCount = Array.isArray((graph as { edges?: unknown[] }).edges)
+            ? (graph as { edges?: unknown[] }).edges!.length
+            : 0;
+          await updateScanHistory(scanHistoryId, {
+            status: "completed",
+            node_count: nodeCount,
+            edge_count: edgeCount,
+            completed_at: new Date().toISOString(),
+            graph_id: (graphInsert as { id: string })?.id ?? null,
+          });
+        }
 
         // Fire-and-forget: embed nodes for semantic search (best-effort)
         embedAndPersistNodes(
@@ -222,6 +260,13 @@ router.post("/scan", optionalUser, async (req, res) => {
         });
       } catch (e: any) {
         persistError = e?.message ? String(e.message) : String(e);
+        if (scanHistoryId) {
+          await updateScanHistory(scanHistoryId, {
+            status: "failed",
+            error_message: persistError,
+            completed_at: new Date().toISOString(),
+          });
+        }
         console.error("[scan] workspace persistence failed:", {
           ownerId,
           requestedWorkspaceId,
@@ -244,6 +289,14 @@ router.post("/scan", optionalUser, async (req, res) => {
       : "Auth service not configured.";
     res.json({ ...graph, workspaceId: null, persistError: anonError });
   } catch (err: unknown) {
+    if (scanHistoryId) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void updateScanHistory(scanHistoryId, {
+        status: "failed",
+        error_message: msg,
+        completed_at: new Date().toISOString(),
+      });
+    }
     const spawnErr = err as { stderr?: Buffer; code?: string };
     let message = "Scan failed";
 
@@ -299,6 +352,12 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
     res.status(400).json({ error: "Workspace repo_url is not a GitHub URL." });
     return;
   }
+  const scanHistoryId = await insertScanHistory({
+    workspaceId,
+    status: "started",
+    trigger: "manual",
+  });
+
   const scanArgs = ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId];
   try {
     const result = execFileSync(
@@ -313,12 +372,34 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
       repo_url: repoUrl,
     });
     if (insErr) throw insErr;
+    const githubFullName = repoNameFromUrl(repoUrl);
     await supabaseAdmin
       .from("workspaces")
-      .update({ repo_url: repoUrl })
+      .update({ repo_url: repoUrl, github_full_name: githubFullName })
       .eq("id", workspaceId);
+    const { data: gRow } = await supabaseAdmin
+      .from("graphs")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .single();
+    const graphId = (gRow as { id?: string })?.id ?? null;
+    if (scanHistoryId) {
+      const nodeCount = Array.isArray((graph as { nodes?: unknown[] }).nodes) ? (graph as { nodes?: unknown[] }).nodes!.length : 0;
+      const edgeCount = Array.isArray((graph as { edges?: unknown[] }).edges) ? (graph as { edges?: unknown[] }).edges!.length : 0;
+      await updateScanHistory(scanHistoryId, {
+        status: "completed",
+        node_count: nodeCount,
+        edge_count: edgeCount,
+        completed_at: new Date().toISOString(),
+        graph_id: graphId,
+      });
+    }
+    const graphTyped = graph as import("../../../src/types.js").ArchGraph;
+    upsertSystemModel(workspaceId, graphTyped, graphId ?? undefined).catch((e) => console.warn("[scan] SystemModel upsert:", e));
     embedAndPersistNodes(
-      graph as import("../../../src/types.js").ArchGraph,
+      graphTyped,
       workspaceId,
       supabaseAdmin,
       process.env.OPENAI_API_KEY?.trim()
@@ -326,6 +407,14 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
     runViolationScan(supabaseAdmin, workspaceId, graph, ARCH_RULESET_VERSION).catch(() => {});
     res.json({ ...graph, workspaceId });
   } catch (err: unknown) {
+    if (scanHistoryId) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void updateScanHistory(scanHistoryId, {
+        status: "failed",
+        error_message: msg,
+        completed_at: new Date().toISOString(),
+      });
+    }
     const spawnErr = err as { stderr?: Buffer; code?: string };
     let message = "Re-scan failed";
     if (spawnErr.code === "ENOENT") message = "Cannot find npx.";

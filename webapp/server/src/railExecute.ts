@@ -29,6 +29,9 @@ import {
 } from "./tasks.js";
 import { ensureProjectRoot } from "./cloneRepo.js";
 import type { Rail } from "../../../src/agent/types.js";
+import { setTodoStatusByRailId, appendTodoSessionLogByRailId } from "./taskSessionLog.js";
+import { computeSandboxDiffSummary } from "./sandboxDiffSummary.js";
+import { debugLog } from "./debugLog.js";
 
 const workspaceExecutionCounts = new Map<string, number>();
 const MAX_CONCURRENT_PER_WORKSPACE =
@@ -269,6 +272,36 @@ export async function triggerRailExecution(
           ? { passed: playwrightResult.passed, failures: playwrightResult.failures.length }
           : null,
       });
+      const diff = computeSandboxDiffSummary(root!, rail.id);
+      await appendTodoSessionLogByRailId(rail.id, "ready_to_review", {
+        verificationPassed: passed,
+        files_changed: diff.files.map((f) => f.path),
+        summary: diff.summary,
+        changed_files: diff.changedFiles,
+        total_bytes: diff.totalBytes,
+        files: diff.files.slice(0, 20),
+      });
+      // #region agent log
+      debugLog({
+        hypothesisId: "H4",
+        location: "railExecute.ts:needs_review",
+        message: "ready_to_review diff appended",
+        data: {
+          railId: rail.id,
+          passed,
+          changedFiles: diff.changedFiles,
+          summary: diff.summary.slice(0, 200),
+        },
+      });
+      // #endregion
+      await setTodoStatusByRailId(rail.id, "needs_review", {
+        verificationPassed: passed,
+      });
+      if (!passed) {
+        await appendTodoSessionLogByRailId(rail.id, "verification_failed", {
+          error: errorOutput?.slice(0, 2000),
+        });
+      }
       if (supabaseAdmin && workspaceId) {
         try {
           await supabaseAdmin.from("workspace_memories").insert({
@@ -293,6 +326,8 @@ export async function triggerRailExecution(
       updateRailPartial(root!, railId, {
         lastCritique: { source: "unknown", message: msg, createdAt: Date.now() },
       } as any);
+      void appendTodoSessionLogByRailId(railId, "error", { message: msg });
+      void setTodoStatusByRailId(railId, "todo", { failed: true });
     })
     .finally(() => {
       const cur = workspaceExecutionCounts.get(workspaceId) ?? 0;

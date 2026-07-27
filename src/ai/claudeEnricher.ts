@@ -39,6 +39,10 @@ export type AskResult = {
   usedSaveSkill?: boolean;
   /** Token usage from Claude responses (aggregated across steps). */
   tokenUsage?: { input: number; output: number };
+  /** Reasoning steps (tool calls, intermediate conclusions) for explainability. */
+  reasoningTrace?: string[];
+  /** Citations linking claims to nodes, edges, or files. */
+  citations?: Array<{ label: string; nodeId?: string; edgeId?: string; filePath?: string }>;
 };
 
 const VALID_LAYERS: NodeLayer[] = [
@@ -157,6 +161,19 @@ const TOOLS: Anthropic.Tool[] = [
           type: "string",
           description: "Optional module kind (service, route, adapter, etc.).",
         },
+        template: {
+          type: "string",
+          enum: ["api_route", "service"],
+          description: "Optional scaffold template: api_route for Express handlers, service for service layer.",
+        },
+        readme: {
+          type: "boolean",
+          description: "If true, create a README.md in the scaffolded directory.",
+        },
+        test: {
+          type: "boolean",
+          description: "If true, create a .test.ts stub file.",
+        },
       },
       required: ["archNodeId", "relPath"],
     },
@@ -226,6 +243,25 @@ const TOOLS: Anthropic.Tool[] = [
         maxResults: {
           type: "integer",
           description: "Maximum number of issues to return (default 10).",
+        },
+      },
+      required: ["archNodeId"],
+    },
+  },
+  {
+    name: "jira_watch",
+    description:
+      "Check the latest Jira issues for a given archNodeId label. Call this periodically to \"watch\" an issue or module over time.",
+    input_schema: {
+      type: "object",
+      properties: {
+        archNodeId: {
+          type: "string",
+          description: "archNodeId for the module you want to watch (labels are stored as archNodeId:<id>).",
+        },
+        maxResults: {
+          type: "integer",
+          description: "Maximum number of issues to return (default 5).",
         },
       },
       required: ["archNodeId"],
@@ -573,6 +609,83 @@ interface JiraToolContext {
   projectKey?: string;
 }
 
+function formatReasoningStep(
+  toolName: string,
+  input: Record<string, unknown>,
+  result: string
+): string {
+  switch (toolName) {
+    case "retrieve_files": {
+      const files = (input.files as string[] ?? []).slice(0, 3);
+      const count = (input.files as string[] ?? []).length;
+      const names = files.map((f) => path.basename(f));
+      return count > 0
+        ? `Retrieved code from ${names.join(", ")}${count > 3 ? ` (+${count - 3} more)` : ""}`
+        : "";
+    }
+    case "grep_codebase":
+      return `Searched codebase for "${String(input.pattern ?? "").slice(0, 40)}"`;
+    case "read_file":
+      return `Read file ${String(input.path ?? "").slice(-60)}`;
+    case "run_command":
+      return `Ran command: ${String(input.command ?? "").slice(0, 50)}`;
+    case "run_skill":
+      return `Executed skill "${String(input.id ?? "")}"`;
+    case "propose_architecture":
+      return `Proposed architecture with ${((input.nodes as unknown[]) ?? []).length} new modules`;
+    case "save_skill":
+      return `Saved skill "${String(input.name ?? "")}"`;
+    case "jira_watch":
+    case "jira_create_ticket":
+      return `Accessed Jira for ${String(input.archNodeId ?? "").slice(0, 30) || "issues"}`;
+    default:
+      return `Used ${toolName}`;
+  }
+}
+
+function collectCitations(
+  toolName: string,
+  input: Record<string, unknown>,
+  result: string,
+  out: Map<string, { label: string; nodeId?: string; edgeId?: string; filePath?: string }>,
+  relevantNodeIds: string[],
+  graph: ArchGraph
+): void {
+  if (toolName === "retrieve_files") {
+    const files = (input.files as string[]) ?? [];
+    for (const f of files) {
+      const key = `file:${f}`;
+      if (!out.has(key)) {
+        const node = graph.nodes.find((n) => n.files?.some((pf) => pf.includes(f) || f.includes(pf)));
+        out.set(key, {
+          label: path.basename(f),
+          filePath: f,
+          nodeId: node?.id,
+        });
+      }
+    }
+  } else if (toolName === "read_file") {
+    const p = String(input.path ?? "");
+    if (p) {
+      const key = `file:${p}`;
+      if (!out.has(key)) {
+        const node = graph.nodes.find((n) => n.files?.some((pf) => pf.includes(p) || p.includes(pf)));
+        out.set(key, { label: path.basename(p), filePath: p, nodeId: node?.id });
+      }
+    }
+  }
+  for (const nid of relevantNodeIds) {
+    const key = `node:${nid}`;
+    if (!out.has(key)) {
+      const node = graph.nodes.find((n) => n.id === nid);
+      out.set(key, {
+        label: node?.label ?? node?.path ?? nid,
+        nodeId: nid,
+      });
+    }
+  }
+}
+
 async function executeTool(
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -771,6 +884,13 @@ IMPORTANT: You have fulfilled the skill creation for this request.
         typeof toolInput.kind === "string"
           ? (toolInput.kind as string)
           : undefined;
+      const template =
+        typeof toolInput.template === "string"
+          ? (toolInput.template as string)
+          : undefined;
+      const readme =
+        toolInput.readme === true || toolInput.readme === "true";
+      const test = toolInput.test === true || toolInput.test === "true";
       if (!archNodeId || !relPath) {
         return {
           result:
@@ -782,6 +902,9 @@ IMPORTANT: You have fulfilled the skill creation for this request.
         relPath,
         layer,
         kind,
+        template,
+        readme,
+        test,
       });
       return {
         result: res.result ?? `Error scaffolding node: ${res.error}`,
@@ -855,6 +978,29 @@ IMPORTANT: You have fulfilled the skill creation for this request.
         result: res.result ?? `Jira search error: ${res.error}`,
       };
     }
+    case "jira_watch": {
+      const archNodeId = String(toolInput.archNodeId ?? "").trim();
+      const maxResultsRaw = toolInput.maxResults;
+      const maxResults =
+        typeof maxResultsRaw === "number" && Number.isFinite(maxResultsRaw)
+          ? (maxResultsRaw as number)
+          : 5;
+      if (!archNodeId) {
+        return {
+          result:
+            "archNodeId is required to watch Jira issues. Pass the module's archNodeId (e.g. 'services/auth').",
+        };
+      }
+      const res = await (toolExec as any).executeJiraSearchByArchNodeId(
+        basePath,
+        archNodeId,
+        maxResults,
+        jiraContext
+      );
+      return {
+        result: res.result ?? `Jira watch error: ${res.error}`,
+      };
+    }
     default:
       return { result: `Unknown tool: ${toolName}` };
   }
@@ -872,7 +1018,8 @@ export async function askAboutArchitecture(
   jiraProjectKey?: string,
   rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null,
   pdfBase64?: string,
-  pdfFileName?: string
+  pdfFileName?: string,
+  feedbackContext?: string
 ): Promise<AskResult> {
   const key = apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
   if (!key) {
@@ -924,7 +1071,7 @@ export async function askAboutArchitecture(
 
   const availablePaths = new Set<string>();
   for (const n of graph.nodes) {
-    for (const f of n.files.filter(
+    for (const f of (n.files ?? []).filter(
       (f) => /\.(ts|tsx|js|jsx|py|md|json)$/.test(f) && !/\.test\.|\.spec\./.test(f)
     )) {
       const norm = f.replace(/\\/g, "/").replace(/^\.\//, "");
@@ -996,10 +1143,13 @@ export async function askAboutArchitecture(
     .map((h) => h.content)
     .join("\n\n");
   const systemParts = [railSystemContent, systemFromHistory].filter(Boolean).join("\n\n");
-  const systemPrompt =
+  let systemPrompt =
     systemParts.length > 0
       ? systemParts + "\n\n" + buildSystemPrompt(graph)
       : buildSystemPrompt(graph);
+  if (feedbackContext && feedbackContext.trim()) {
+    systemPrompt = feedbackContext.trim() + "\n\n" + systemPrompt;
+  }
 
   // Prepend rail session turns as prior messages (user/assistant) so Claude sees the rail context.
   const railPriorTurns = railContext.filter(
@@ -1045,6 +1195,8 @@ export async function askAboutArchitecture(
   let usedSaveSkill = false;
   let totalInputTokens = 0;
   let totalOutputTokens = 0;
+  const reasoningSteps: string[] = [];
+  const citationSet = new Map<string, { label: string; nodeId?: string; edgeId?: string; filePath?: string }>();
 
   const jiraContext: JiraToolContext | undefined =
     jiraConfig || jiraProjectKey
@@ -1149,9 +1301,10 @@ export async function askAboutArchitecture(
           usedSaveSkill = true;
         }
 
+        const input = toolUse.input as Record<string, unknown>;
         const { result, proposal: prop } = await executeTool(
           toolUse.name,
-          toolUse.input as Record<string, unknown>,
+          input,
           basePath,
           graph,
           availablePaths,
@@ -1160,6 +1313,10 @@ export async function askAboutArchitecture(
         );
 
         if (prop) proposal = prop;
+
+        const stepLabel = formatReasoningStep(toolUse.name, input, result);
+        if (stepLabel) reasoningSteps.push(stepLabel);
+        collectCitations(toolUse.name, input, result, citationSet, route.relevantNodeIds ?? [], graph);
 
         emitTrace(
           "llm_call",
@@ -1189,6 +1346,9 @@ export async function askAboutArchitecture(
         finalAnswer = input.content;
         if (input.graphCommand) {
           finalGraphCommand = parseGraphCommand(input.graphCommand);
+          reasoningSteps.push(
+            `Emitted graph command: ${(input.graphCommand as { action?: string })?.action ?? "unknown"}`
+          );
         }
         toolResults.push({
           type: "tool_result",
@@ -1230,6 +1390,7 @@ export async function askAboutArchitecture(
       }
     }
 
+    const citations = Array.from(citationSet.values());
     return {
       answer: finalAnswer,
       ...(finalGraphCommand ? { graphCommand: finalGraphCommand } : {}),
@@ -1238,6 +1399,8 @@ export async function askAboutArchitecture(
       ...(totalInputTokens > 0 || totalOutputTokens > 0
         ? { tokenUsage: { input: totalInputTokens, output: totalOutputTokens } }
         : {}),
+      ...(reasoningSteps.length > 0 ? { reasoningTrace: reasoningSteps } : {}),
+      ...(citations.length > 0 ? { citations } : {}),
     };
   } catch (err) {
     return {

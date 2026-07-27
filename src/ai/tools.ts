@@ -243,36 +243,43 @@ export function executeRunSkill(
   }
 }
 
-export function executeScaffoldNode(
+function isSafeRelPath(relPath: string): boolean {
+  return !/\.\.|\\\\|\/\//.test(relPath);
+}
+
+function scaffoldNodeInline(
   rootPath: string,
-  params: { archNodeId: string; relPath: string; layer?: string; kind?: string }
+  params: { archNodeId: string; relPath: string; layer?: string; kind?: string; template?: string; readme?: boolean; test?: boolean }
 ): { result?: string; error?: string } {
+  const { archNodeId, relPath, layer, kind, template, readme, test } = params;
+  if (!archNodeId || !relPath) {
+    return { error: "archNodeId and relPath are required" };
+  }
+  if (!isSafeRelPath(relPath)) {
+    return { error: "Invalid relPath: path traversal blocked" };
+  }
+  const root = path.resolve(rootPath);
+  const absPath = path.resolve(root, relPath);
+  const rel = path.relative(root, absPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    return { error: "Path outside project root (blocked)" };
+  }
+  const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(relPath);
+  const targetDir = pathLooksLikeFile ? path.dirname(absPath) : absPath;
   try {
-    const root = path.resolve(rootPath);
-    const absPath = path.resolve(root, params.relPath);
-    if (!isUnderRoot(root, absPath)) {
-      return { error: "Path outside project root" };
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+    const indexPath = pathLooksLikeFile ? absPath : path.join(absPath, "index.ts");
+    const header = `// @archNodeId: ${archNodeId}`;
+    const layerStr = layer ?? "Uncategorized";
+    const kindStr = kind ?? "module";
+    let boilerplate: string;
+    if (template === "api_route") {
+      boilerplate = `\n\nimport { Request, Response } from "express";\n\nexport async function handle(req: Request, res: Response): Promise<void> {\n  res.json({ ok: true });\n}\n`;
+    } else if (template === "service") {
+      boilerplate = `\n\nexport async function execute(): Promise<unknown> {\n  return null;\n}\n`;
+    } else {
+      boilerplate = `\n\n// TODO: Implement ${kindStr} for layer ${layerStr}.\n\nexport function TODO_${archNodeId.replace(/[^a-zA-Z0-9_]/g, "_")}() {\n  // implementation pending\n}\n`;
     }
-
-    // Decide whether relPath is a file or a directory based on extension.
-    const pathLooksLikeFile = /\.(ts|tsx|js|jsx)$/.test(params.relPath);
-    const targetDir = pathLooksLikeFile ? path.dirname(absPath) : absPath;
-
-    if (!fs.existsSync(targetDir)) {
-      fs.mkdirSync(targetDir, { recursive: true });
-    }
-
-    const indexPath = pathLooksLikeFile
-      ? absPath
-      : path.join(absPath, "index.ts");
-
-    const header = `// @archNodeId: ${params.archNodeId}`;
-    const boilerplate = `\n\n// TODO: Implement ${params.kind ?? "module"} for layer ${
-      params.layer ?? "Uncategorized"
-    }.\n\nexport function TODO_${params.archNodeId.replace(
-      /[^a-zA-Z0-9_]/g,
-      "_"
-    )}() {\n  // implementation pending\n}\n`;
     if (fs.existsSync(indexPath)) {
       const existing = fs.readFileSync(indexPath, "utf-8");
       if (!existing.includes("@archNodeId:")) {
@@ -281,11 +288,61 @@ export function executeScaffoldNode(
     } else {
       fs.writeFileSync(indexPath, `${header}${boilerplate}`, "utf-8");
     }
-    const rel = path.relative(rootPath, indexPath).replace(/\\/g, "/");
-    return { result: `Scaffolded node at ${rel}` };
+    if (readme) {
+      const modName = path.basename(targetDir);
+      fs.writeFileSync(
+        path.join(targetDir, "README.md"),
+        `# ${modName}\n\nArchitecture node: \`${archNodeId}\`\n\n## Purpose\n\nTODO: Describe this module.\n`,
+        "utf-8"
+      );
+    }
+    if (test) {
+      const baseName = pathLooksLikeFile ? path.basename(absPath, path.extname(absPath)) : "index";
+      fs.writeFileSync(
+        path.join(targetDir, `${baseName}.test.ts`),
+        `// @archNodeId: ${archNodeId}\n\nimport { describe, it, expect } from "vitest";\n\ndescribe("${archNodeId}", () => {\n  it("should pass", () => {\n    expect(true).toBe(true);\n  });\n});\n`,
+        "utf-8"
+      );
+    }
+    const out = path.relative(rootPath, indexPath).replace(/\\/g, "/");
+    return { result: `Scaffolded node at ${out}` };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+export function executeScaffoldNode(
+  rootPath: string,
+  params: {
+    archNodeId: string;
+    relPath: string;
+    layer?: string;
+    kind?: string;
+    template?: string;
+    readme?: boolean;
+    test?: boolean;
+  }
+): { result?: string; error?: string } {
+  const encode = (s?: string) => (s ? s.trim().replace(/\s+/g, "__") : "");
+  const flagParts: string[] = [];
+  if (params.readme) flagParts.push("--readme");
+  if (params.test) flagParts.push("--test");
+  if (params.template) flagParts.push(`--template=${params.template}`);
+  const args = [
+    params.archNodeId,
+    params.relPath,
+    encode(params.layer),
+    encode(params.kind),
+    ...flagParts,
+  ]
+    .filter((x) => x && x.length > 0)
+    .join(" ");
+
+  const skillResult = executeRunSkill(rootPath, "scaffold-node", args);
+  if (skillResult.error && /skill not found|Skill not found/i.test(skillResult.error)) {
+    return scaffoldNodeInline(rootPath, params);
+  }
+  return skillResult;
 }
 
 export function executeTelemetryTail(

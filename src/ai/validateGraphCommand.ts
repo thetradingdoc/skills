@@ -56,6 +56,9 @@ export function validateGraphCommand(raw: unknown): GraphCommandValidationResult
         layer: o.layer as NodeLayer,
         description: typeof o.description === "string" ? o.description : undefined,
         archNodeId: typeof o.archNodeId === "string" ? o.archNodeId : undefined,
+        skeletonCode: typeof o.skeletonCode === "string" ? o.skeletonCode : undefined,
+        layoutHint: typeof o.layoutHint === "string" ? o.layoutHint : undefined,
+        group: typeof o.group === "string" ? o.group : undefined,
       },
     };
   }

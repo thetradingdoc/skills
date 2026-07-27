@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArchCanvas } from "./ArchCanvas";
+import CodeViewerPanel from "./CodeViewerPanel";
+import LearnPanel from "./LearnPanel";
 import type {
   ArchGraph,
   GraphCommand,
@@ -9,17 +11,37 @@ import type {
   BackgroundTask,
   WorkspaceSceneDoc,
   WorkspaceAnnotation,
+  WorkspaceRuntimeSnapshot,
+  ArchitectureChatMessage,
+  Persona,
 } from "./types";
 import type { CanvasDensity } from "./theme";
-import { analyseGraph, type EdgeFilter } from "./analysis/graphAnalyser";
+import { analyseGraph, type EdgeFilter, type NodeFilter } from "./analysis/graphAnalyser";
+import { computeGraphInsights } from "./analysis/graphInsights";
+import { SystemInsightsPanel } from "./SystemInsightsPanel";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { supabase, getSupabaseConfigError } from "./supabaseClient";
 import { logAuthHashErrors, logAuthStateChange } from "./authDebug";
 import { JiraConnectModal } from "./JiraConnectModal";
 import { MemoriesPanel } from "./MemoriesPanel";
+import { WorkspaceMembersPanel } from "./WorkspaceMembersPanel";
+import { ActivityLogPanel } from "./ActivityLogPanel";
+import { AnnotationCommentsPanel } from "./AnnotationCommentsPanel";
+import { ScanHistoryPanel } from "./ScanHistoryPanel";
+import { SnapshotSelectorPanel } from "./SnapshotSelectorPanel";
+import { ConnectGitHubModal } from "./ConnectGitHubModal";
 
 import { deriveProjectKey, isValidProjectKey } from "./utils/deriveProjectKey";
+import {
+  exportArchitectureSvg,
+  exportArchitectureMarkdown,
+  exportC4PlantUml,
+  exportMermaid,
+  exportPlantUml,
+  exportSceneBundle,
+  importSceneBundle,
+} from "./exporters";
 import { safeStorageGet, safeStorageSet, safeStorageRemove } from "./utils/safeStorage";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -867,6 +889,50 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [graph, setGraph] = useState<ArchGraph | null>(null);
+  const effectiveGraph = useMemo(() => {
+    if (!graph) return null;
+
+    const nodes = graph.nodes.map((n) => {
+      const tags = n.tags ?? [];
+      const fileCount = (n.semanticSignals?.fileCount as number | undefined) ?? (n.files?.length ?? 0);
+      const complexity =
+        n.complexity ??
+        (fileCount >= 12 ? "complex" : fileCount >= 5 ? "moderate" : "simple");
+      return {
+        ...n,
+        summary: n.summary ?? n.description,
+        tags,
+        complexity,
+      };
+    });
+
+    const layers =
+      graph.layers && graph.layers.length > 0
+        ? graph.layers
+        : (() => {
+            const byKey = new Map<string, { id: string; name: string; nodeIds: string[] }>();
+            for (const n of nodes) {
+              const key = (n.domain ?? (n.layer ?? "Uncategorized")) as string;
+              const id = `layer:${key}`;
+              const existing = byKey.get(id) ?? { id, name: key, nodeIds: [] };
+              existing.nodeIds.push(n.id);
+              byKey.set(id, existing);
+            }
+            return Array.from(byKey.values()).sort((a, b) => b.nodeIds.length - a.nodeIds.length);
+          })();
+
+    const tour =
+      graph.tour && graph.tour.length > 0
+        ? graph.tour
+        : layers.slice(0, 8).map((l, i) => ({
+            order: i + 1,
+            title: l.name,
+            description: `This step focuses on **${l.name}** and its core modules.\n\nUse the pills below to jump between key components.`,
+            nodeIds: l.nodeIds.slice(0, 12),
+          }));
+
+    return { ...graph, nodes, layers, tour };
+  }, [graph]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [workspaceScene, setWorkspaceScene] = useState<WorkspaceSceneDoc | null>(null);
   const [workspaceAnnotations, setWorkspaceAnnotations] = useState<WorkspaceAnnotation[]>([]);
@@ -875,6 +941,29 @@ export default function App() {
   const [repoUrl, setRepoUrl] = useState("");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [activeFilters, setActiveFilters] = useState<Set<EdgeFilter>>(new Set(["all"]));
+  const [activeNodeFilters, setActiveNodeFilters] = useState<Set<NodeFilter>>(new Set(["all"]));
+  const [persona, setPersona] = useState<Persona>("learn");
+  const [graphSearch, setGraphSearch] = useState("");
+  const graphSearchResults = useMemo(() => {
+    const q = graphSearch.trim().toLowerCase();
+    if (!q || !effectiveGraph) return [] as Array<{ nodeId: string; score: number }>;
+    const results: Array<{ nodeId: string; score: number }> = [];
+    for (const n of effectiveGraph.nodes) {
+      const hay = `${n.suggestedLabel ?? ""} ${n.label ?? ""} ${n.path ?? ""} ${n.domain ?? ""} ${(n.tags ?? []).join(" ")}`.toLowerCase();
+      const idx = hay.indexOf(q);
+      if (idx === -1) continue;
+      const score = idx === 0 ? 0.05 : idx < 10 ? 0.15 : idx < 40 ? 0.3 : 0.6;
+      results.push({ nodeId: n.id, score });
+    }
+    results.sort((a, b) => a.score - b.score);
+    return results.slice(0, 200);
+  }, [graphSearch, effectiveGraph]);
+  const [showInsightsPanel, setShowInsightsPanel] = useState(false);
+  const [showSupplyChainRisk, setShowSupplyChainRisk] = useState(false);
+  const [dependencyRisks, setDependencyRisks] = useState<
+    Array<{ id: string; tool: string; report_json: unknown; created_at: string }>
+  >([]);
+  const [npmAuditRunning, setNpmAuditRunning] = useState(false);
   const toggleFilter = useCallback((f: EdgeFilter) => {
     if (f === "all") {
       setActiveFilters(new Set(["all"]));
@@ -886,6 +975,20 @@ export default function App() {
       if (next.has(f)) next.delete(f);
       else next.add(f);
       return next.size > 0 ? next : new Set<EdgeFilter>(["all"]);
+    });
+  }, []);
+
+  const toggleNodeFilter = useCallback((f: NodeFilter) => {
+    if (f === "all") {
+      setActiveNodeFilters(new Set(["all"]));
+      return;
+    }
+    setActiveNodeFilters((prev) => {
+      const next = new Set(prev);
+      next.delete("all");
+      if (next.has(f)) next.delete(f);
+      else next.add(f);
+      return next.size > 0 ? next : new Set<NodeFilter>(["all"]);
     });
   }, []);
   const [aiQuestion, setAiQuestion] = useState("");
@@ -948,7 +1051,7 @@ export default function App() {
   useEffect(() => {
     setActiveThreadId(null);
   }, [activeWorkspaceId]);
-  const [chatSessions, setChatSessions] = useState<Record<string, Array<{ role: "user" | "assistant"; content: string }>>>(
+  const [chatSessions, setChatSessions] = useState<Record<string, ArchitectureChatMessage[]>>(
     { "1": [] }
   );
   const [chatLoading, setChatLoading] = useState(false);
@@ -987,10 +1090,21 @@ export default function App() {
     actual?: { changedFiles?: number; totalBytes?: number };
   } | null>(null);
   const [jiraProjectKeyReady, setJiraProjectKeyReady] = useState(false);
+  const [jiraCriticalOnly, setJiraCriticalOnly] = useState(false);
   const issuesByNodeId = useMemo(() => {
     const archLabelRe = /^archNodeId:(.+)$/;
     const map: Record<string, Array<{ key: string; summary: string; baseUrl: string }>> = {};
+    const isCriticalIssue = (i: any): boolean => {
+      const priority = (i.priority ?? "").toString().toLowerCase();
+      const severity = (i.severity ?? "").toString().toLowerCase();
+      const labels: string[] = Array.isArray(i.labels) ? i.labels : [];
+      if (priority.includes("critical") || priority.includes("highest")) return true;
+      if (severity === "critical") return true;
+      if (labels.some((l) => l.toLowerCase().includes("critical"))) return true;
+      return false;
+    };
     for (const i of jiraIssues) {
+      if (jiraCriticalOnly && !isCriticalIssue(i)) continue;
       const labels = i.labels ?? [];
       for (const label of labels) {
         const m = label.match(archLabelRe);
@@ -1003,7 +1117,7 @@ export default function App() {
       }
     }
     return map;
-  }, [jiraIssues]);
+  }, [jiraIssues, jiraCriticalOnly]);
   const [agentGraphCommand, setAgentGraphCommand] = useState<GraphCommand | null>(null);
   const [virtualNodes, setVirtualNodes] = useState<
     Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }>
@@ -1015,8 +1129,13 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationBeingFixed, setViolationBeingFixed] = useState<string | null>(null);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "memories">("dashboard");
+  const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "memories" | "code" | "learn">("dashboard");
+  const [tourActive, setTourActive] = useState(false);
+  const [currentTourStep, setCurrentTourStep] = useState(0);
   const [mainViewMode, setMainViewMode] = useState<"graph" | "board">("graph");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d">("2d");
+  const [graphCanvasViewMode, setGraphCanvasViewMode] =
+    useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
   const [showModeSwitchConfirm, setShowModeSwitchConfirm] = useState(false);
   const [pendingModeSwitch, setPendingModeSwitch] = useState<"graph" | "board" | null>(null);
   const [rails, setRails] = useState<
@@ -1081,6 +1200,45 @@ export default function App() {
   const [todoCreateTitle, setTodoCreateTitle] = useState("");
   const [todoCreatePhase, setTodoCreatePhase] = useState<number | "">("");
   const [todoCreateLoading, setTodoCreateLoading] = useState(false);
+
+  const personaNodeFilters = useMemo(() => {
+    if (persona === "overview") {
+      return new Set<NodeFilter>(["core"]);
+    }
+    // learn and deep_dive default to whatever the user has chosen.
+    return activeNodeFilters;
+  }, [persona, activeNodeFilters]);
+
+  // Persona presets: node filters, sidebar tab, tour default.
+
+  useEffect(() => {
+    if (persona === "overview") {
+      setActiveNodeFilters(new Set<NodeFilter>(["core"]));
+      setSidebarTab("dashboard");
+      setTourActive(false);
+    } else if (persona === "learn") {
+      setSidebarTab("learn");
+      // Auto-enable tour when available; otherwise stay inactive.
+      const hasTour = !!(effectiveGraph?.tour && effectiveGraph.tour.length > 0);
+      setTourActive(hasTour);
+      if (hasTour) setCurrentTourStep(0);
+    } else if (persona === "deep_dive") {
+      // Show full detail and chat by default.
+      setActiveNodeFilters(new Set<NodeFilter>(["all"]));
+      setSidebarTab("chat");
+      setTourActive(false);
+    }
+  }, [persona, effectiveGraph?.tour]);
+
+  useEffect(() => {
+    if (!tourActive || !effectiveGraph?.tour || effectiveGraph.tour.length === 0) return;
+    const steps = [...effectiveGraph.tour].slice().sort((a, b) => a.order - b.order);
+    const step = steps[Math.min(currentTourStep, steps.length - 1)];
+    if (!step) return;
+    if (!step.nodeIds || step.nodeIds.length === 0) return;
+    setAgentGraphCommand({ action: "highlight_nodes", nodeIds: step.nodeIds });
+    setAgentGraphCommand({ action: "focus_node", nodeId: step.nodeIds[0] });
+  }, [tourActive, currentTourStep, effectiveGraph?.tour]);
   const BOARD_FILTERS_KEY = "boardFilters";
   const readBoardFilters = () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -1247,6 +1405,7 @@ export default function App() {
   const [showMaterializeModal, setShowMaterializeModal] = useState(false);
   const [materializeTargetPath, setMaterializeTargetPath] = useState("");
   const [materializeLoading, setMaterializeLoading] = useState(false);
+  const [implementLoading, setImplementLoading] = useState(false);
   const [authStatus, setAuthStatus] = useState<"unknown" | "ok" | "mismatch">("unknown");
   const [authStatusMessage, setAuthStatusMessage] = useState<string | null>(null);
   const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
@@ -1267,11 +1426,31 @@ export default function App() {
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
   const [canvasDensity, setCanvasDensity] = useState<CanvasDensity>("standard");
   const [presentationMode, setPresentationMode] = useState(false);
+  const [sceneEditMode, setSceneEditMode] = useState(false);
+  const [activeSceneStateId, setActiveSceneStateId] = useState<string | null>(null);
+  const [scenePlaying, setScenePlaying] = useState(false);
+  const [scenePlaybackSpeed, setScenePlaybackSpeed] = useState(1);
+  const captureViewRef = useRef<(() => { viewport2D?: { x: number; y: number; zoom: number }; camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } }) | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
   const [shareLoading, setShareLoading] = useState(false);
   const [shareCopied, setShareCopied] = useState(false);
   const [showWorkspaceMenu, setShowWorkspaceMenu] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showMembersPanel, setShowMembersPanel] = useState(false);
+  const [showActivityPanel, setShowActivityPanel] = useState(false);
+  const [showScanHistoryPanel, setShowScanHistoryPanel] = useState(false);
+  const [showSnapshotPanel, setShowSnapshotPanel] = useState(false);
+  const [showConnectGitHubPanel, setShowConnectGitHubPanel] = useState(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      return p.get("github-connect") === "1" && !!p.get("workspaceId");
+    } catch {
+      return false;
+    }
+  });
+  const [selectedAnnotationForComments, setSelectedAnnotationForComments] = useState<string | null>(null);
+  const [activeWorkspaceIsOwner, setActiveWorkspaceIsOwner] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [workspaceTitleEditing, setWorkspaceTitleEditing] = useState(false);
   const [workspaceTitleDraft, setWorkspaceTitleDraft] = useState("");
@@ -1279,17 +1458,150 @@ export default function App() {
   const shareCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [panelWidth, setPanelWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const panelWidthBeforeCollapseRef = useRef<number>(320);
+  const leftPanelUserToggledRef = useRef(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const graphRef = useRef<typeof graph>(graph);
   const skipNextJiraFetchRef = useRef(false);
   const trackViolationRef = useRef<(v: CriticViolation) => void>(() => {});
   const fixPromptRef = useRef<string | null>(null);
   const workspaceDropUpRef = useRef<HTMLDivElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
   const tasksPollAbortRef = useRef<Map<string, boolean>>(new Map());
   const activeChatIdRef = useRef<string>(activeChatId);
-  const chatSessionsRef = useRef<Record<string, Array<{ role: "user" | "assistant"; content: string }>>>(chatSessions);
+  const chatSessionsRef = useRef<Record<string, ArchitectureChatMessage[]>>(chatSessions);
+  const [runtimeSnapshot, setRuntimeSnapshot] = useState<WorkspaceRuntimeSnapshot | null>(null);
+  const [runtimeLive, setRuntimeLive] = useState(false);
 
   const isGreenfieldMode = !!graph && graph.nodes.length === 0;
+
+  const downloadText = useCallback((filename: string, mime: string, text: string) => {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  // Poll latest runtime snapshot in live mode.
+  useEffect(() => {
+    if (!runtimeLive || !activeWorkspaceId || !accessToken) return;
+    let cancelled = false;
+    const API_BASE = "/api";
+    const poll = async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/workspaces/${encodeURIComponent(activeWorkspaceId)}/runtime/latest`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!res.ok) return;
+        const data: { snapshot?: { id: string; workspace_id: string; recorded_at: string; snapshot_json: any } } =
+          await res.json().catch(() => ({}));
+        if (cancelled || !data.snapshot) return;
+        const snapJson = data.snapshot.snapshot_json ?? {};
+        setRuntimeSnapshot({
+          id: data.snapshot.id,
+          workspaceId: data.snapshot.workspace_id,
+          recordedAt: data.snapshot.recorded_at,
+          edges: (snapJson.edges ?? {}) as WorkspaceRuntimeSnapshot["edges"],
+          nodes: (snapJson.nodes ?? {}) as WorkspaceRuntimeSnapshot["nodes"],
+        });
+      } catch {
+        // ignore
+      }
+    };
+    poll();
+    const id = window.setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [runtimeLive, activeWorkspaceId, accessToken]);
+
+  useEffect(() => {
+    if (!showSupplyChainRisk || !activeWorkspaceId || !accessToken) {
+      setDependencyRisks([]);
+      return;
+    }
+    let cancelled = false;
+    fetch(
+      `${API_BASE}/workspaces/${encodeURIComponent(activeWorkspaceId)}/dependency-risks?limit=5`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+      .then((r) => r.json().catch(() => ({})))
+      .then((data) => {
+        if (cancelled) return;
+        setDependencyRisks(data.risks ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setDependencyRisks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showSupplyChainRisk, activeWorkspaceId, accessToken]);
+
+  const vulnerableNodeIds = useMemo(() => {
+    if (!showSupplyChainRisk || !graph || dependencyRisks.length === 0) return undefined;
+    const latest = dependencyRisks[0];
+    const report = latest?.report_json as {
+      vulnerabilities?: Record<
+        string,
+        { via?: Array<string | { name?: string }>; severity?: string }
+      >;
+    } | null;
+    if (!report?.vulnerabilities) return new Set<string>();
+    const vulnPackages = new Set<string>();
+    for (const [pkg] of Object.entries(report.vulnerabilities)) {
+      vulnPackages.add(pkg);
+      vulnPackages.add(pkg.replace(/^@[^/]+\//, "")); // @scope/pkg -> pkg
+    }
+    const nodeIds = new Set<string>();
+    for (const node of graph.nodes) {
+      const imports = node.semanticSignals?.externalImports ?? [];
+      for (const imp of imports) {
+        const base = imp.replace(/^@[^/]+\//, "");
+        if (vulnPackages.has(imp) || vulnPackages.has(base)) {
+          nodeIds.add(node.id);
+          break;
+        }
+      }
+    }
+    return nodeIds;
+  }, [showSupplyChainRisk, graph, dependencyRisks]);
+
+  const runNpmAudit = useCallback(async () => {
+    if (!activeWorkspaceId || !accessToken) return;
+    setNpmAuditRunning(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/workspaces/${encodeURIComponent(activeWorkspaceId)}/run-npm-audit`,
+        { method: "POST", headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setShowSupplyChainRisk(true);
+        const refetch = async () => {
+          const r = await fetch(
+            `${API_BASE}/workspaces/${encodeURIComponent(activeWorkspaceId)}/dependency-risks?limit=5`,
+            { headers: { Authorization: `Bearer ${accessToken}` } }
+          );
+          const d = await r.json().catch(() => ({}));
+          setDependencyRisks(d.risks ?? []);
+        };
+        refetch();
+      } else {
+        alert(data.error ?? "Failed to run npm audit.");
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to run npm audit.");
+    } finally {
+      setNpmAuditRunning(false);
+    }
+  }, [activeWorkspaceId, accessToken]);
 
   useEffect(() => {
     try {
@@ -1809,6 +2121,7 @@ export default function App() {
       await supabase.auth.signOut();
       setAccessToken(null);
       setActiveWorkspaceId(null);
+      setActiveWorkspaceIsOwner(false);
       // Clear workspace so user lands on landing page (landing shows when !graph && !loading)
       setGraph(null);
       setSelectedNode(null);
@@ -1851,6 +2164,7 @@ export default function App() {
     });
     setRepoUrl("");
     setActiveWorkspaceId(null);
+    setActiveWorkspaceIsOwner(false);
     setJiraProjectKey(null);
     setJiraProjectKeyReady(false);
     setSelectedNode(null);
@@ -1973,6 +2287,146 @@ export default function App() {
     }
   }, [graph, activeWorkspaceId, accessToken, repoUrl]);
 
+  const handleSaveScene = useCallback(
+    async (scene: WorkspaceSceneDoc): Promise<void> => {
+      if (!activeWorkspaceId || !accessToken) return;
+      const res = await fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/scenes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ name: "Scene", scene }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      setWorkspaceScene(scene);
+    },
+    [activeWorkspaceId, accessToken]
+  );
+
+  const ensureSceneBase = useCallback((): WorkspaceSceneDoc => {
+    return workspaceScene && typeof workspaceScene === "object"
+      ? workspaceScene
+      : { schemaVersion: 1, objects: [], states: [], cameraPresets: [] };
+  }, [workspaceScene]);
+
+  const graphLayoutMode = useMemo(() => {
+    const lm = (workspaceScene?.settings as any)?.layoutMode;
+    return (lm === "domain" || lm === "elk" || lm === "depth") ? lm : "depth";
+  }, [workspaceScene?.settings]);
+
+  const setGraphLayoutMode = useCallback(
+    (mode: "depth" | "domain" | "elk") => {
+      const base = ensureSceneBase();
+      setWorkspaceScene({ ...base, settings: { ...(base.settings as any), layoutMode: mode } as any });
+    },
+    [ensureSceneBase, setWorkspaceScene]
+  );
+
+  const upsertSceneState = useCallback(
+    (partial: {
+      id: string;
+      name?: string;
+      cameraPresetId?: string;
+      viewport2D?: { x: number; y: number; zoom: number };
+      camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } };
+      visibility?: Record<string, boolean>;
+      annotationIds?: string[];
+    }) => {
+      const base = ensureSceneBase();
+      const states = Array.isArray(base.states) ? [...base.states] : [];
+      const idx = states.findIndex((s) => s.id === partial.id);
+      const next = {
+        id: partial.id,
+        name: partial.name ?? (idx >= 0 ? states[idx]!.name : "State"),
+        cameraPresetId: partial.cameraPresetId ?? (idx >= 0 ? states[idx]!.cameraPresetId : undefined),
+        viewport2D: partial.viewport2D ?? (idx >= 0 ? (states[idx] as any).viewport2D : undefined),
+        camera3D: partial.camera3D ?? (idx >= 0 ? (states[idx] as any).camera3D : undefined),
+        visibility: partial.visibility ?? (idx >= 0 ? (states[idx] as any).visibility : undefined),
+        annotationIds: partial.annotationIds ?? (idx >= 0 ? (states[idx] as any).annotationIds : undefined),
+      } as any;
+      if (idx >= 0) states[idx] = { ...(states[idx] as any), ...next };
+      else states.push(next);
+      setWorkspaceScene({ ...base, states });
+    },
+    [ensureSceneBase, setWorkspaceScene]
+  );
+
+  const activeSceneState = useMemo(() => {
+    const s = workspaceScene?.states ?? [];
+    return activeSceneStateId ? s.find((x) => x.id === activeSceneStateId) ?? null : null;
+  }, [workspaceScene, activeSceneStateId]);
+
+  const sceneStates = useMemo(() => (workspaceScene?.states ?? []) as any[], [workspaceScene]);
+
+  useEffect(() => {
+    if (!scenePlaying) return;
+    const states = sceneStates;
+    if (states.length === 0) return;
+    const intervalMs = Math.max(800, 2500 / scenePlaybackSpeed);
+    const tick = window.setInterval(() => {
+      setActiveSceneStateId((prev) => {
+        const idx = states.findIndex((s) => s.id === prev);
+        const next = idx < 0 ? states[0].id : states[(idx + 1) % states.length].id;
+        return next;
+      });
+    }, intervalMs);
+    return () => window.clearInterval(tick);
+  }, [scenePlaying, sceneStates, scenePlaybackSpeed]);
+
+  // Player API (digital twin): allow external control via window.archPlayer and postMessage.
+  useEffect(() => {
+    const api = {
+      setState: (id: string | null) => setActiveSceneStateId(id),
+      play: () => setScenePlaying(true),
+      pause: () => setScenePlaying(false),
+      next: () =>
+        setActiveSceneStateId((prev) => {
+          const states = sceneStates;
+          if (states.length === 0) return prev;
+          const idx = states.findIndex((s) => s.id === prev);
+          return idx < 0 ? states[0].id : states[(idx + 1) % states.length].id;
+        }),
+      prev: () =>
+        setActiveSceneStateId((prev) => {
+          const states = sceneStates;
+          if (states.length === 0) return prev;
+          const idx = states.findIndex((s) => s.id === prev);
+          return idx <= 0 ? states[states.length - 1].id : states[idx - 1].id;
+        }),
+      setNodeStatus: (nodeId: string, status: string) =>
+        setGraph((g) => {
+          if (!g) return g;
+          return {
+            ...g,
+            nodes: g.nodes.map((n) => (n.id === nodeId ? ({ ...n, status } as any) : n)),
+          };
+        }),
+      highlightNodes: (nodeIds: string[]) =>
+        setAgentGraphCommand(nodeIds.length > 0 ? { action: "highlight_nodes", nodeIds } : null),
+    };
+    (window as any).archPlayer = api;
+
+    const onMessage = (e: MessageEvent) => {
+      const d = e.data as any;
+      if (!d || d.type !== "arch_player") return;
+      if (d.action === "set_state") api.setState(typeof d.stateId === "string" ? d.stateId : null);
+      if (d.action === "play") api.play();
+      if (d.action === "pause") api.pause();
+      if (d.action === "next") api.next();
+      if (d.action === "prev") api.prev();
+      if (d.action === "set_node_status" && typeof d.nodeId === "string" && typeof d.status === "string") {
+        api.setNodeStatus(d.nodeId, d.status);
+      }
+      if (d.action === "highlight_nodes" && Array.isArray(d.nodeIds)) {
+        api.highlightNodes(d.nodeIds);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [sceneStates]);
+
   const handleDeleteWorkspace = useCallback(async (): Promise<void> => {
     if (!activeWorkspaceId || !accessToken || isDeletingWorkspace) return;
     setIsDeletingWorkspace(true);
@@ -1991,17 +2445,22 @@ export default function App() {
       }
       // Remove from saved list immediately (server also filters archived).
       setSavedWorkspaces((prev) => prev.filter((w) => w.id !== activeWorkspaceId));
-      // Clear local state and autosave pointer.
+      // Clear local state, chat, and autosave pointer.
       try {
         const last = localStorage.getItem("lastWorkspaceId");
         if (last && last === activeWorkspaceId) {
           localStorage.removeItem("lastWorkspaceId");
         }
         localStorage.removeItem(`workspaceGraph:${activeWorkspaceId}`);
+        safeStorageRemove(`chat:${activeWorkspaceId}`);
       } catch {
         // ignore storage issues
       }
+      setChatTabs([{ id: "1", label: "Chat 1" }]);
+      setActiveChatId("1");
+      setChatSessions({ "1": [] });
       setActiveWorkspaceId(null);
+      setActiveWorkspaceIsOwner(false);
       setGraph(null);
       setActiveViolations([]);
       setViolationsRestoreError(null);
@@ -2147,6 +2606,7 @@ export default function App() {
 
             // Start the user in a clean, empty workspace instead of leaving them in a broken state.
             setActiveWorkspaceId(null);
+            setActiveWorkspaceIsOwner(false);
             setRepoUrl("");
             setActiveViolations([]);
             setViolationsRestoreError(null);
@@ -2186,25 +2646,36 @@ export default function App() {
           setJiraProjectKey(jiraKey ?? (repo ? deriveProjectKey(repo) : null));
           setJiraProjectKeyReady(true);
           setAutoExecuteEnabled(Boolean(data.autoExecuteEnabled));
+          setActiveWorkspaceIsOwner(Boolean(data.isOwner));
           setShowWorkspaceDropUp(false);
           setError(null);
-          // Restore saved chat context for this workspace
+          // Restore saved chat context for this workspace, or reset to empty when none exists
           try {
-            const saved = localStorage.getItem(`chat:${workspaceId}`);
+            const saved = safeStorageGet(`chat:${workspaceId}`);
             if (saved) {
               const parsed = JSON.parse(saved) as {
-                chatTabs: Array<{ id: string; label: string }>;
-                chatSessions: Record<string, Array<{ role: "user" | "assistant"; content: string }>>;
-                activeChatId: string;
+                chatTabs?: Array<{ id: string; label: string }>;
+                chatSessions?: Record<string, Array<{ role: "user" | "assistant"; content: string }>>;
+                activeChatId?: string;
               };
-              if (parsed.chatTabs?.length && parsed.chatSessions) {
+              if (parsed.chatTabs?.length && parsed.chatSessions && Object.keys(parsed.chatSessions).length > 0) {
                 setChatTabs(parsed.chatTabs);
                 setChatSessions(parsed.chatSessions);
                 setActiveChatId(parsed.activeChatId ?? parsed.chatTabs[0]?.id ?? "1");
+              } else {
+                setChatTabs([{ id: "1", label: "Chat 1" }]);
+                setActiveChatId("1");
+                setChatSessions({ "1": [] });
               }
+            } else {
+              setChatTabs([{ id: "1", label: "Chat 1" }]);
+              setActiveChatId("1");
+              setChatSessions({ "1": [] });
             }
           } catch {
-            // ignore malformed chat state
+            setChatTabs([{ id: "1", label: "Chat 1" }]);
+            setActiveChatId("1");
+            setChatSessions({ "1": [] });
           }
         } else {
           throw new Error("Invalid graph data");
@@ -2622,6 +3093,7 @@ export default function App() {
         // Signed-in path MUST return workspaceId (server enforces this).
         if (data.workspaceId) {
           setActiveWorkspaceId(data.workspaceId);
+          setActiveWorkspaceIsOwner(true);
           setJiraProjectKey((data.jiraProjectKey as string | null | undefined) ?? (url ? deriveProjectKey(url) : null));
           setJiraProjectKeyReady(true);
           // lastWorkspaceId is also maintained by the autosave effect,
@@ -2746,7 +3218,10 @@ export default function App() {
         : "";
       const fullQuestion = docPrefix + q;
       const currentHistory = chatSessionsRef.current[activeChatIdRef.current] ?? [];
-      const historyForRequest = [...currentHistory, { role: "user" as const, content: fullQuestion }];
+      const historyForRequest: ArchitectureChatMessage[] = [
+        ...currentHistory,
+        { role: "user", content: fullQuestion },
+      ];
       const cid = activeChatIdRef.current;
       setChatSessions((s) => ({
         ...s,
@@ -2851,6 +3326,9 @@ export default function App() {
         if (acceptanceCriteria) {
           setGreenfieldAcceptanceCriteria(acceptanceCriteria);
         }
+        if (data.showInsightsPanel === true) {
+          setShowInsightsPanel(true);
+        }
       const criticReport =
         typeof data.criticReport === "string" && data.criticReport
           ? data.criticReport
@@ -2879,8 +3357,8 @@ export default function App() {
         );
         const graphCommands = (data.graphCommands ?? (data.graphCommand ? [data.graphCommand] : [])) as GraphCommand[];
         const relevantNodeIds = Array.isArray(data.relevantNodeIds)
-        ? (data.relevantNodeIds as string[]).filter((id): id is string => typeof id === "string")
-        : [];
+          ? (data.relevantNodeIds as string[]).filter((id): id is string => typeof id === "string")
+          : [];
         if (graphCommands.length > 0) {
         setAgentGraphCommand(graphCommands[0]);
         const newNodes: Array<{ id: string; label: string; layer?: string; archNodeId?: string; description?: string }> = [];
@@ -2932,12 +3410,46 @@ export default function App() {
 
       const rs = Array.isArray((data as any).rails) ? (data as any).rails as Array<{ id?: string }> : [];
       const railIds = rs.filter((r) => typeof r.id === "string").map((r) => ({ id: r.id! }));
+      const reasoningSteps =
+        Array.isArray((data as any).reasoningTrace) && (data as any).reasoningTrace.every((x: unknown) => typeof x === "string")
+          ? ((data as any).reasoningTrace as string[])
+          : typeof (data as any).reasoningTrace === "string"
+            ? [(data as any).reasoningTrace as string]
+            : [];
+      const citations =
+        Array.isArray((data as any).citations) && (data as any).citations.length > 0
+          ? ((data as any).citations as Array<{
+              label: string;
+              nodeId?: string;
+              edgeId?: string;
+              filePath?: string;
+            }>).filter((c) => typeof c?.label === "string")
+          : [];
+      const confidenceScore =
+        typeof (data as any).confidenceScore === "number" ? ((data as any).confidenceScore as number) : null;
+      const suggestedActions =
+        Array.isArray((data as any).suggestedActions) && (data as any).suggestedActions.length > 0
+          ? ((data as any).suggestedActions as unknown[]).filter((x): x is string => typeof x === "string")
+          : [];
+      const taskIdFromResult = typeof (data as any).taskId === "string" ? ((data as any).taskId as string) : clientTaskId;
       const cidInner = activeChatIdRef.current;
       setChatSessions((prev) => {
         const currentInner = prev[cidInner] ?? [];
-        const updated: Array<{ role: "user" | "assistant"; content: string; rails?: { id: string }[] }> = [
+        const assistantMessage: ArchitectureChatMessage = {
+          role: "assistant",
+          content: answer,
+          ...(railIds.length > 0 ? { rails: railIds } : {}),
+          reasoningSteps,
+          citations,
+          confidenceScore,
+          suggestedActions,
+          graphCommands,
+          relevantNodeIds,
+          taskId: taskIdFromResult,
+        };
+        const updated: ArchitectureChatMessage[] = [
           ...currentInner,
-          { role: "assistant", content: answer, ...(railIds.length > 0 ? { rails: railIds } : {}) },
+          assistantMessage,
           ...(criticReport
             ? [{ role: "assistant" as const, content: `Critic: ${criticReport}` }]
             : []),
@@ -2978,6 +3490,11 @@ export default function App() {
         if (!token) {
           throw new Error("Please sign in first.");
         }
+        const trackMatch = /^\s*(track|create\s+jira|track\s+in\s+jira)\s*$/i.test(fullQuestion.trim());
+        const untrackedViolations = activeViolations.filter((v) => !v.jiraKey);
+        const pendingViolations =
+          trackMatch && untrackedViolations.length > 0 ? untrackedViolations : undefined;
+
         const res = await fetch(`${API_BASE}/chat-async`, {
           method: "POST",
           headers: {
@@ -2995,6 +3512,7 @@ export default function App() {
               ? { greenfieldSessionId }
               : {}),
             ...(pdfToSend ? { pdfBase64: pdfToSend.base64, pdfFileName: pdfToSend.name } : {}),
+            ...(pendingViolations ? { pendingViolations } : {}),
           }),
         });
 
@@ -3143,6 +3661,7 @@ export default function App() {
       activeThreadId,
       pdfAttachment,
       docAttachment,
+      activeViolations,
     ]
   );
 
@@ -3530,6 +4049,34 @@ export default function App() {
     }
   }, [jiraError]);
 
+  // Jira polling: sync violation status from Jira every 5 min when configured
+  useEffect(() => {
+    if (jiraConfigured !== true || !activeWorkspaceId || !accessToken) return;
+    const interval = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/jira-sync`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.synced) {
+          const { violations } = await fetchViolationsRaw(activeWorkspaceId);
+          if (violations.length > 0) {
+            setGraph((prev) => (prev ? mergeViolationsIntoGraph(prev, violations) : prev));
+            setActiveViolations(violations);
+          }
+        }
+      } catch {
+        // non-fatal; ignore
+      }
+    }, 5 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [jiraConfigured, activeWorkspaceId, accessToken, fetchViolationsRaw]);
+
   const handleConfirmNode = useCallback(
     async (node: { id: string; label: string; layer?: string; archNodeId?: string }) => {
       if (!graph) return;
@@ -3553,16 +4100,34 @@ export default function App() {
         if (!res.ok) {
           throw new Error(data.error || res.statusText);
         }
-        // Remove confirmed node and its virtual edges; a later scan can pick up the real node.
+        // Remove confirmed node and its virtual edges; then refresh scan to persist the new module.
         setVirtualNodes((prev) => prev.filter((v) => v.id !== node.id));
         setVirtualEdges((prev) =>
           prev.filter((e) => e.fromId !== node.id && e.toId !== node.id)
         );
+        if (activeWorkspaceId && accessToken) {
+          try {
+            const r = await fetch(`${API_BASE}/scan/refresh`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+            });
+            const refreshData = await r.json().catch(() => ({}));
+            if (r.ok && refreshData.nodes) {
+              setGraph(analyseGraph(refreshData));
+            }
+          } catch {
+            // Non-fatal
+          }
+        }
       } catch (err) {
         console.error("Scaffold failed:", err);
       }
     },
-    [graph, accessToken]
+    [graph, accessToken, activeWorkspaceId]
   );
 
   const handleUpdateVirtualNode = useCallback(
@@ -3861,6 +4426,67 @@ export default function App() {
     activeChatId,
     scanRepo,
     activeWorkspaceId,
+  ]);
+
+  const handleImplement = useCallback(async () => {
+    const targetRoot = materializeTargetPath.trim();
+    if (!targetRoot || !accessToken || !greenfieldSessionId || !activeWorkspaceId || virtualNodes.length === 0) return;
+    setMaterializeError(null);
+    setImplementLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/greenfield/implement`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          sessionId: greenfieldSessionId,
+          workspaceId: activeWorkspaceId,
+          targetRoot,
+          acceptanceCriteria: greenfieldAcceptanceCriteria ?? undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || res.statusText);
+      }
+      const railIds = Array.isArray(data.railIds) ? data.railIds : [];
+      const errors = Array.isArray(data.errors) ? data.errors : [];
+      setShowMaterializeModal(false);
+      setChatSessions((prev) => {
+        const current = prev[activeChatId] ?? [];
+        const msg =
+          railIds.length > 0
+            ? `Started implementing ${railIds.length} node(s). Rails are running in the background. Check the board for progress.${
+                errors.length > 0 ? ` (${errors.length} failed: ${errors.join("; ")})` : ""
+              }`
+            : errors.length > 0
+              ? `Implement failed: ${errors.join("; ")}`
+              : "No nodes implemented.";
+        return { ...prev, [activeChatId]: [...current, { role: "assistant", content: msg }] };
+      });
+      if (railIds.length > 0) {
+        setSelectedRailId(railIds[0]);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setMaterializeError(msg);
+      setChatSessions((prev) => {
+        const current = prev[activeChatId] ?? [];
+        return { ...prev, [activeChatId]: [...current, { role: "assistant", content: `Implement failed: ${msg}` }] };
+      });
+    } finally {
+      setImplementLoading(false);
+    }
+  }, [
+    materializeTargetPath,
+    accessToken,
+    greenfieldSessionId,
+    activeWorkspaceId,
+    virtualNodes.length,
+    greenfieldAcceptanceCriteria,
+    activeChatId,
   ]);
 
   const handleApprovePendingRail = useCallback(async () => {
@@ -4190,16 +4816,28 @@ export default function App() {
     trackViolationRef.current = handleTrackViolation;
   }, [handleTrackViolation]);
 
+  // Responsive: auto-collapse left panel on narrow viewports unless user toggled it.
+  useEffect(() => {
+    const apply = () => {
+      if (leftPanelUserToggledRef.current) return;
+      const w = window.innerWidth || 0;
+      if (w > 0 && w < 1100) setLeftPanelCollapsed(true);
+    };
+    apply();
+    window.addEventListener("resize", apply);
+    return () => window.removeEventListener("resize", apply);
+  }, []);
+
   const panelStyle: React.CSSProperties = {
-    width: panelWidth,
-    minWidth: 240,
+    width: leftPanelCollapsed ? 56 : panelWidth,
+    minWidth: leftPanelCollapsed ? 56 : 240,
     background: "#161b22",
     borderRight: "1px solid #30363d",
     display: "flex",
     flexDirection: "column",
-    padding: 16,
-    gap: 12,
-    overflowY: "auto",
+    padding: leftPanelCollapsed ? 10 : 16,
+    gap: leftPanelCollapsed ? 10 : 12,
+    overflowY: leftPanelCollapsed ? "hidden" : "auto",
     fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
     fontSize: 13,
     color: "#e6edf3",
@@ -4719,6 +5357,88 @@ export default function App() {
               </form>
             </div>
           </div>
+        )}
+
+        {/* Workspace members / activity / annotation comments panels */}
+        {showMembersPanel && activeWorkspaceId && (
+          <WorkspaceMembersPanel
+            workspaceId={activeWorkspaceId}
+            accessToken={accessToken}
+            isOwner={activeWorkspaceIsOwner}
+            onClose={() => setShowMembersPanel(false)}
+          />
+        )}
+        {showActivityPanel && activeWorkspaceId && (
+          <ActivityLogPanel
+            workspaceId={activeWorkspaceId}
+            accessToken={accessToken}
+            onClose={() => setShowActivityPanel(false)}
+          />
+        )}
+        {showScanHistoryPanel && activeWorkspaceId && (
+          <ScanHistoryPanel
+            workspaceId={activeWorkspaceId}
+            accessToken={accessToken}
+            onClose={() => setShowScanHistoryPanel(false)}
+          />
+        )}
+        {showSnapshotPanel && activeWorkspaceId && (
+          <SnapshotSelectorPanel
+            workspaceId={activeWorkspaceId}
+            accessToken={accessToken}
+            onClose={() => setShowSnapshotPanel(false)}
+            onLoadSnapshot={(g) => setGraph(analyseGraph(g as ArchGraph))}
+          />
+        )}
+        {showConnectGitHubPanel && (activeWorkspaceId || (() => {
+          try {
+            const ws = new URLSearchParams(window.location.search).get("workspaceId");
+            return ws ?? null;
+          } catch {
+            return null;
+          }
+        })()) && (
+          <ConnectGitHubModal
+            workspaceId={
+              (() => {
+                try {
+                  const ws = new URLSearchParams(window.location.search).get("workspaceId");
+                  if (ws && new URLSearchParams(window.location.search).get("github-connect") === "1") return ws;
+                } catch {
+                  /* ignore */
+                }
+                return activeWorkspaceId!;
+              })()
+            }
+            accessToken={accessToken}
+            onClose={() => {
+              setShowConnectGitHubPanel(false);
+              try {
+                const u = new URL(window.location.href);
+                u.searchParams.delete("github-connect");
+                u.searchParams.delete("workspaceId");
+                window.history.replaceState({}, "", u.pathname + u.search + u.hash);
+              } catch {
+                /* ignore */
+              }
+            }}
+            onConnected={(fullName) => {
+              setRepoUrl(`https://github.com/${fullName}`);
+            }}
+            oauthState={(() => {
+              const params = new URLSearchParams(window.location.search);
+              if (params.get("github-connect") === "1") return params.get("workspaceId");
+              return null;
+            })()}
+          />
+        )}
+        {selectedAnnotationForComments && activeWorkspaceId && (
+          <AnnotationCommentsPanel
+            workspaceId={activeWorkspaceId}
+            annotationId={selectedAnnotationForComments}
+            accessToken={accessToken}
+            onClose={() => setSelectedAnnotationForComments(null)}
+          />
         )}
 
         {/* Auth modal (signup / login) */}
@@ -5736,7 +6456,7 @@ export default function App() {
           </span>
         </div>
       )}
-      <div style={{ display: "flex", width: "100vw", height: "100vh" }}>
+      <div style={{ display: "flex", width: "100vw", height: "100vh", minWidth: 0 }}>
       <div style={panelStyle}>
         <div
           style={{
@@ -5746,16 +6466,44 @@ export default function App() {
             marginBottom: 8,
           }}
         >
-        <div
+        {!leftPanelCollapsed ? (
+          <div
+            style={{
+              color: "#7d8590",
+              fontSize: 11,
+              textTransform: "uppercase",
+              letterSpacing: 1,
+            }}
+          >
+            Repo
+          </div>
+        ) : (
+          <div style={{ width: 1 }} />
+        )}
+        <button
+          type="button"
+          title={leftPanelCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onClick={() => {
+            leftPanelUserToggledRef.current = true;
+            setLeftPanelCollapsed((c) => {
+              const next = !c;
+              if (next) panelWidthBeforeCollapseRef.current = panelWidth;
+              else setPanelWidth(panelWidthBeforeCollapseRef.current || 320);
+              return next;
+            });
+          }}
           style={{
-            color: "#7d8590",
+            padding: "4px 8px",
             fontSize: 11,
-            textTransform: "uppercase",
-            letterSpacing: 1,
+            background: "#21262d",
+            color: "#8b949e",
+            border: "1px solid #30363d",
+            borderRadius: 6,
+            cursor: "pointer",
           }}
         >
-          Repo
-        </div>
+          {leftPanelCollapsed ? "›" : "‹"}
+        </button>
         {(accessToken || isSigningOut) && (
           <div>
             <button
@@ -5777,7 +6525,38 @@ export default function App() {
           </div>
         )}
         </div>
-        {graph!.nodes.length === 0 && !graph!.projectRoot ? (
+        {leftPanelCollapsed ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "stretch" }}>
+            {(
+              [
+                { key: "dashboard", label: "Dashboard", short: "D" },
+                { key: "chat", label: "Chat", short: "C" },
+                { key: "memories", label: "Memories", short: "M" },
+                { key: "learn", label: "Learn", short: "L" },
+                { key: "code", label: "Code", short: "<>" },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                title={t.label}
+                onClick={() => setSidebarTab(t.key as any)}
+                style={{
+                  padding: "10px 0",
+                  fontSize: 11,
+                  fontFamily: "monospace",
+                  borderRadius: 10,
+                  border: sidebarTab === (t.key as any) ? "1px solid #58a6ff" : "1px solid #30363d",
+                  background: sidebarTab === (t.key as any) ? "#1f2937" : "transparent",
+                  color: sidebarTab === (t.key as any) ? "#e6edf3" : "#8b949e",
+                  cursor: "pointer",
+                }}
+              >
+                {t.short}
+              </button>
+            ))}
+          </div>
+        ) : graph!.nodes.length === 0 && !graph!.projectRoot ? (
           <div style={{ marginBottom: 12 }}>
             <input
               type="url"
@@ -5833,7 +6612,7 @@ export default function App() {
         </div>
         )}
 
-        {/* Sidebar tabs: Dashboard / Chat */}
+        {/* Sidebar tabs: Dashboard / Chat / Memories / Code */}
         <div
           style={{
             display: "flex",
@@ -5925,6 +6704,42 @@ export default function App() {
             }}
           >
             Memories
+          </button>
+          <button
+            onClick={() => setSidebarTab("learn")}
+            style={{
+              flex: 1,
+              fontSize: 11,
+              padding: "4px 8px",
+              borderRadius: 999,
+              border:
+                sidebarTab === "learn"
+                  ? "1px solid #58a6ff"
+                  : "1px solid #30363d",
+              background: sidebarTab === "learn" ? "#1f2937" : "#161b22",
+              color: sidebarTab === "learn" ? "#e6edf3" : "#8b949e",
+              cursor: "pointer",
+            }}
+          >
+            Learn
+          </button>
+          <button
+            onClick={() => setSidebarTab("code")}
+            style={{
+              flex: 1,
+              fontSize: 11,
+              padding: "4px 8px",
+              borderRadius: 999,
+              border:
+                sidebarTab === "code"
+                  ? "1px solid #58a6ff"
+                  : "1px solid #30363d",
+              background: sidebarTab === "code" ? "#1f2937" : "#161b22",
+              color: sidebarTab === "code" ? "#e6edf3" : "#8b949e",
+              cursor: "pointer",
+            }}
+          >
+            Code
           </button>
         </div>
 
@@ -6555,17 +7370,7 @@ export default function App() {
             {/* Architecture */}
             <DashboardCard title="Architecture">
               <div style={{ marginBottom: selectedNode ? 8 : 0 }}>
-                <div
-                  style={{
-                    color: "#7d8590",
-                    fontSize: 11,
-                    textTransform: "uppercase",
-                    letterSpacing: 1,
-                    marginBottom: 6,
-                  }}
-                >
-                  Edges
-                </div>
+                <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Edges</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
                   {(
                     [
@@ -6584,6 +7389,42 @@ export default function App() {
                       <button
                         key={v}
                         onClick={() => toggleFilter(v)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: 10,
+                          background: isActive ? "#238636" : "#21262d",
+                          color: isActive ? "white" : "#7d8590",
+                          border: `1px solid ${isActive ? "#238636" : "#30363d"}`,
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {l}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 }}>Nodes</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                  {(
+                    [
+                      { v: "all" as const, l: "All" },
+                      { v: "core" as const, l: "Core" },
+                      { v: "databases" as const, l: "DBs" },
+                      { v: "queues" as const, l: "Queues" },
+                      { v: "utilities" as const, l: "Utils" },
+                      { v: "external" as const, l: "External" },
+                    ] as const
+                  ).map(({ v, l }) => {
+                    const isActive =
+                      v === "all"
+                        ? activeNodeFilters.has("all") || activeNodeFilters.size === 0
+                        : activeNodeFilters.has(v);
+                    return (
+                      <button
+                        key={v}
+                        onClick={() => toggleNodeFilter(v)}
                         style={{
                           padding: "4px 8px",
                           fontSize: 10,
@@ -6635,6 +7476,51 @@ export default function App() {
                     </button>
                   </div>
                 )}
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid #21262d" }}>
+                  <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>
+                    Supply chain
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowSupplyChainRisk((v) => !v)}
+                      style={{
+                        padding: "4px 8px",
+                        fontSize: 10,
+                        background: showSupplyChainRisk ? "#b45309" : "#21262d",
+                        color: showSupplyChainRisk ? "white" : "#7d8590",
+                        border: `1px solid ${showSupplyChainRisk ? "#b45309" : "#30363d"}`,
+                        borderRadius: 6,
+                        cursor: "pointer",
+                        flexShrink: 0,
+                      }}
+                    >
+                      Risks
+                    </button>
+                    <button
+                      type="button"
+                      onClick={runNpmAudit}
+                      disabled={!activeWorkspaceId || npmAuditRunning}
+                      style={{
+                        padding: "4px 8px",
+                        fontSize: 10,
+                        background: "#21262d",
+                        color: npmAuditRunning ? "#6b7280" : "#7d8590",
+                        border: "1px solid #30363d",
+                        borderRadius: 6,
+                        cursor: activeWorkspaceId && !npmAuditRunning ? "pointer" : "not-allowed",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {npmAuditRunning ? "Running…" : "npm audit"}
+                    </button>
+                  </div>
+                  {showSupplyChainRisk && vulnerableNodeIds && vulnerableNodeIds.size > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 10, color: "#f59e0b" }}>
+                      {vulnerableNodeIds.size} node{vulnerableNodeIds.size !== 1 ? "s" : ""} with risky deps
+                    </div>
+                  )}
+                </div>
               </div>
             </DashboardCard>
 
@@ -6699,7 +7585,7 @@ export default function App() {
                     Could not restore violations: {violationsRestoreError}
                   </div>
                 )}
-                {jiraError && activeViolations.length > 0 && jiraProjectKeyReady && (
+                {jiraError && activeViolations.length > 0 && (
                   <div
                     style={{
                       padding: "6px 12px",
@@ -6712,6 +7598,36 @@ export default function App() {
                     }}
                   >
                     {jiraError}
+                  </div>
+                )}
+                {activeViolations.length > 0 && jiraConfigured === true && !jiraProjectKeyReady && !jiraError && (
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      margin: "0 12px 8px",
+                      background: "rgba(248,81,73,0.12)",
+                      border: "1px solid rgba(248,81,73,0.3)",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      color: "#f87171",
+                    }}
+                  >
+                    Jira is connected, but no project key is selected. Select a project in the Governance panel to track violations.
+                  </div>
+                )}
+                {activeViolations.length > 0 && jiraConfigured === false && !jiraError && (
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      margin: "0 12px 8px",
+                      background: "rgba(248,81,73,0.12)",
+                      border: "1px solid rgba(248,81,73,0.3)",
+                      borderRadius: 6,
+                      fontSize: 10,
+                      color: "#f87171",
+                    }}
+                  >
+                    Jira is not connected or credentials are invalid. Reconnect in the Governance panel.
                   </div>
                 )}
                 {activeViolations.length === 0 && !violationsRestoreError ? (
@@ -7322,6 +8238,27 @@ export default function App() {
                       )
                     )}
 
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                      <div style={{ fontSize: 11, color: "#7d8590" }}>Jira issues</div>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 10,
+                          color: "#7d8590",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={jiraCriticalOnly}
+                          onChange={(e) => setJiraCriticalOnly(e.target.checked)}
+                          style={{ margin: 0 }}
+                        />
+                        <span>Highlight critical only</span>
+                      </label>
+                    </div>
                     <div style={{ maxHeight: 220, overflowY: "auto", fontSize: 11 }}>
                       {jiraIssues.length === 0 && !jiraLoading && !jiraError && (
                         <div
@@ -7878,6 +8815,51 @@ export default function App() {
               graph={graph}
             />
           </div>
+        )}
+
+        {sidebarTab === "learn" && (
+          <LearnPanel
+            graph={effectiveGraph}
+            tourActive={tourActive}
+            currentStep={currentTourStep}
+            onStart={() => {
+              setTourActive(true);
+              setCurrentTourStep(0);
+            }}
+            onStop={() => {
+              setTourActive(false);
+            }}
+            onSetStep={(i) => {
+              setTourActive(true);
+              setCurrentTourStep(i);
+            }}
+            onNext={() => {
+              const steps = effectiveGraph?.tour
+                ? [...effectiveGraph.tour].slice().sort((a, b) => a.order - b.order)
+                : [];
+              if (steps.length === 0) return;
+              setTourActive(true);
+              setCurrentTourStep((prev) =>
+                Math.min(prev + 1, steps.length - 1)
+              );
+            }}
+            onPrev={() => {
+              setTourActive(true);
+              setCurrentTourStep((prev) => Math.max(prev - 1, 0));
+            }}
+            onSelectNode={(nodeId) => {
+              setSelectedNode(nodeId);
+              setAgentGraphCommand({ action: "focus_node", nodeId });
+            }}
+          />
+        )}
+
+        {sidebarTab === "code" && (
+          <CodeViewerPanel
+            node={selectedNodeData ?? null}
+            graph={effectiveGraph ?? null}
+            selectedNodeId={selectedNode}
+          />
         )}
 
         <div
@@ -9050,6 +10032,268 @@ export default function App() {
                     (match) => `[${match}](#rail:${match})`
                   )}
                 </ReactMarkdown>
+                {isAssistant && !isCritic && (() => {
+                  const am = m as ArchitectureChatMessage;
+                  const hasMeta =
+                    (am.reasoningSteps && am.reasoningSteps.length > 0) ||
+                    (am.citations && am.citations.length > 0) ||
+                    typeof am.confidenceScore === "number";
+                  if (!hasMeta) return null;
+                  const confidence =
+                    typeof am.confidenceScore === "number"
+                      ? Math.round(Math.max(0, Math.min(1, am.confidenceScore)) * 100)
+                      : null;
+                  return (
+                    <div style={{ marginTop: 8, paddingTop: 6, borderTop: "1px solid #30363d", fontSize: 11 }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          marginBottom: 4,
+                          gap: 8,
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          {confidence !== null && (
+                            <span
+                              style={{
+                                padding: "2px 8px",
+                                borderRadius: 999,
+                                border: "1px solid #475569",
+                                fontSize: 10,
+                                color: "#e5e7eb",
+                                background:
+                                  confidence >= 80
+                                    ? "rgba(22,163,74,0.15)"
+                                    : confidence >= 50
+                                      ? "rgba(202,138,4,0.12)"
+                                      : "rgba(220,38,38,0.12)",
+                              }}
+                            >
+                              Confidence {confidence}%
+                            </span>
+                          )}
+                        </div>
+                        {am.taskId && (
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ fontSize: 10, color: "#6b7280" }}>Feedback</span>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await fetch(`${API_BASE}/chat-feedback`, {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                                    },
+                                    body: JSON.stringify({
+                                      taskId: am.taskId,
+                                      rating: "up",
+                                      ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}),
+                                    }),
+                                  });
+                                  setChatSessions((prev) => {
+                                    const copy = { ...prev };
+                                    const list = copy[activeChatId] ?? [];
+                                    const idx = list.indexOf(m as ArchitectureChatMessage);
+                                    if (idx >= 0) {
+                                      const updated = [...list];
+                                      updated[idx] = { ...(updated[idx] as ArchitectureChatMessage), feedback: "up" };
+                                      copy[activeChatId] = updated;
+                                    }
+                                    return copy;
+                                  });
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                color: am.feedback === "up" ? "#4ade80" : "#9ca3af",
+                                cursor: "pointer",
+                                fontSize: 12,
+                              }}
+                            >
+                              👍
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await fetch(`${API_BASE}/chat-feedback`, {
+                                    method: "POST",
+                                    headers: {
+                                      "Content-Type": "application/json",
+                                      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                                    },
+                                    body: JSON.stringify({
+                                      taskId: am.taskId,
+                                      rating: "down",
+                                      ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}),
+                                    }),
+                                  });
+                                  setChatSessions((prev) => {
+                                    const copy = { ...prev };
+                                    const list = copy[activeChatId] ?? [];
+                                    const idx = list.indexOf(m as ArchitectureChatMessage);
+                                    if (idx >= 0) {
+                                      const updated = [...list];
+                                      updated[idx] = { ...(updated[idx] as ArchitectureChatMessage), feedback: "down" };
+                                      copy[activeChatId] = updated;
+                                    }
+                                    return copy;
+                                  });
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              style={{
+                                border: "none",
+                                background: "transparent",
+                                color: am.feedback === "down" ? "#f97373" : "#9ca3af",
+                                cursor: "pointer",
+                                fontSize: 12,
+                              }}
+                            >
+                              👎
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {am.reasoningSteps && am.reasoningSteps.length > 0 && (
+                        <details style={{ marginTop: 4 }}>
+                          <summary style={{ cursor: "pointer", color: "#9ca3af" }}>Show reasoning steps</summary>
+                          <ol style={{ marginTop: 4, paddingLeft: 18 }}>
+                            {am.reasoningSteps.map((step, idx) => (
+                              <li key={idx} style={{ marginBottom: 2 }}>
+                                {step}
+                              </li>
+                            ))}
+                          </ol>
+                        </details>
+                      )}
+                      {am.citations && am.citations.length > 0 && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: "#9ca3af" }}>
+                          <div style={{ marginBottom: 2 }}>Citations:</div>
+                          <ul style={{ paddingLeft: 16, margin: 0, listStyle: "none" }}>
+                            {am.citations.map((c, idx) => (
+                              <li key={idx} style={{ marginBottom: 4 }}>
+                                {c.nodeId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedNode(c.nodeId!);
+                                      setAgentGraphCommand(
+                                        { action: "highlight_nodes" as const, nodeIds: [c.nodeId!] }
+                                      );
+                                    }}
+                                    style={{
+                                      background: "transparent",
+                                      border: "none",
+                                      color: "#58a6ff",
+                                      cursor: "pointer",
+                                      padding: 0,
+                                      fontSize: "inherit",
+                                      textAlign: "left",
+                                      textDecoration: "underline",
+                                    }}
+                                    title={`Focus on ${c.nodeId}`}
+                                  >
+                                    {c.label}
+                                    {c.nodeId ? ` · ${c.nodeId}` : ""}
+                                  </button>
+                                ) : c.filePath ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard?.writeText(c.filePath!).then(
+                                        () => {},
+                                        () => {}
+                                      );
+                                    }}
+                                    style={{
+                                      background: "transparent",
+                                      border: "none",
+                                      color: "#58a6ff",
+                                      cursor: "pointer",
+                                      padding: 0,
+                                      fontSize: "inherit",
+                                      textAlign: "left",
+                                      textDecoration: "underline",
+                                    }}
+                                    title={`Copy path: ${c.filePath}`}
+                                  >
+                                    {c.label} · {c.filePath}
+                                  </button>
+                                ) : (
+                                  <span>
+                                    {c.label}
+                                    {c.edgeId ? ` · edge ${c.edgeId}` : ""}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {am.suggestedActions && am.suggestedActions.length > 0 && (
+                        <div style={{ marginTop: 4, fontSize: 10, color: "#9ca3af" }}>
+                          <div style={{ marginBottom: 2 }}>Suggested actions:</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {am.suggestedActions.map((label, idx) => (
+                              <button
+                                key={idx}
+                                type="button"
+                                disabled={chatLoading}
+                                onClick={() => {
+                                  if (am.graphCommands && am.graphCommands.length > 0) {
+                                    const first = am.graphCommands[0];
+                                    if (first) {
+                                      if (first.action === "highlight_nodes" && first.nodeIds?.length) {
+                                        setAgentGraphCommand({ action: "highlight_nodes", nodeIds: first.nodeIds });
+                                        if (first.nodeIds[0]) setSelectedNode(first.nodeIds[0]);
+                                      } else if (first.action === "focus_node" && first.nodeId) {
+                                        setSelectedNode(first.nodeId);
+                                        setAgentGraphCommand({ action: "highlight_nodes", nodeIds: [first.nodeId] });
+                                      } else if (first.action === "filter_layer" && first.layer) {
+                                        setAgentGraphCommand({ action: "filter_layer", layer: first.layer as any });
+                                      } else if (first.action === "trace_path" && first.nodeIds?.length) {
+                                        setAgentGraphCommand(first);
+                                        if (first.nodeIds[0]) setSelectedNode(first.nodeIds[0]);
+                                      } else if (first.action === "reset") {
+                                        setAgentGraphCommand({ action: "reset" });
+                                        setSelectedNode(null);
+                                      } else {
+                                        setAgentGraphCommand(first);
+                                      }
+                                    }
+                                  } else if (am.relevantNodeIds && am.relevantNodeIds.length > 0) {
+                                    setAgentGraphCommand({ action: "highlight_nodes", nodeIds: am.relevantNodeIds });
+                                    if (am.relevantNodeIds[0]) setSelectedNode(am.relevantNodeIds[0]);
+                                  }
+                                }}
+                                style={{
+                                  padding: "3px 8px",
+                                  borderRadius: 999,
+                                  border: "1px solid #30363d",
+                                  background: "#111827",
+                                  color: "#e5e7eb",
+                                  cursor: chatLoading ? "not-allowed" : "pointer",
+                                  fontSize: 10,
+                                }}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 {isAssistant && (() => {
                   const raw = m as { rails?: { id: string }[] };
                   const msgRails = Array.isArray(raw?.rails) ? raw.rails : [];
@@ -9718,23 +10962,25 @@ export default function App() {
         </div>
       </div>
 
-      <div
-        onMouseDown={() => setIsResizing(true)}
-        title="Drag to resize panel"
-        style={{
-          width: 6,
-          flexShrink: 0,
-          background: isResizing ? "#30363d" : "transparent",
-          cursor: "col-resize",
-          transition: "background 0.1s",
-        }}
-        onMouseEnter={(e) => {
-          if (!isResizing) e.currentTarget.style.background = "#30363d";
-        }}
-        onMouseLeave={(e) => {
-          if (!isResizing) e.currentTarget.style.background = "transparent";
-        }}
-      />
+      {!leftPanelCollapsed && (
+        <div
+          onMouseDown={() => setIsResizing(true)}
+          title="Drag to resize panel"
+          style={{
+            width: 6,
+            flexShrink: 0,
+            background: isResizing ? "#30363d" : "transparent",
+            cursor: "col-resize",
+            transition: "background 0.1s",
+          }}
+          onMouseEnter={(e) => {
+            if (!isResizing) e.currentTarget.style.background = "#30363d";
+          }}
+          onMouseLeave={(e) => {
+            if (!isResizing) e.currentTarget.style.background = "transparent";
+          }}
+        />
+      )}
 
       {showReplaceDraftPrompt && (
         <div
@@ -9891,7 +11137,7 @@ export default function App() {
             justifyContent: "center",
             zIndex: 100,
           }}
-          onClick={() => !materializeLoading && setShowMaterializeModal(false)}
+          onClick={() => !materializeLoading && !implementLoading && setShowMaterializeModal(false)}
         >
           <div
             style={{
@@ -9906,7 +11152,7 @@ export default function App() {
             onClick={(e) => e.stopPropagation()}
           >
             <div style={{ marginBottom: 12, fontSize: 14, color: "#e6edf3" }}>
-              Materialize Architecture
+              Materialize or Implement
             </div>
             <div
               style={{
@@ -9915,7 +11161,8 @@ export default function App() {
                 color: "#7d8590",
               }}
             >
-              Generated files include boilerplate only. Implement as needed. You approve creation.
+              <strong>Materialize</strong> — creates folders and index stubs. <strong>Implement</strong> — runs the
+              code writer to generate real implementations for each node.
             </div>
             <div style={{ marginBottom: 12, fontSize: 12, color: "#7d8590" }}>
               Enter the target folder path where modules will be created:
@@ -9997,17 +11244,17 @@ export default function App() {
                 marginBottom: 16,
               }}
             />
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
               <button
-                onClick={() => !materializeLoading && setShowMaterializeModal(false)}
-                disabled={materializeLoading}
+                onClick={() => !materializeLoading && !implementLoading && setShowMaterializeModal(false)}
+                disabled={materializeLoading || implementLoading}
                 style={{
                   padding: "8px 16px",
                   background: "#30363d",
                   color: "#e6edf3",
                   border: "none",
                   borderRadius: 6,
-                  cursor: materializeLoading ? "wait" : "pointer",
+                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
                   fontSize: 13,
                 }}
               >
@@ -10015,18 +11262,34 @@ export default function App() {
               </button>
               <button
                 onClick={handleMaterialize}
-                disabled={materializeLoading || !materializeTargetPath.trim()}
+                disabled={materializeLoading || implementLoading || !materializeTargetPath.trim()}
                 style={{
                   padding: "8px 16px",
-                  background: "#7c3aed",
+                  background: "#6e40c9",
                   color: "white",
                   border: "none",
                   borderRadius: 6,
-                  cursor: materializeLoading ? "wait" : "pointer",
+                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
                   fontSize: 13,
                 }}
               >
                 {materializeLoading ? "Creating…" : "Materialize"}
+              </button>
+              <button
+                onClick={handleImplement}
+                disabled={materializeLoading || implementLoading || !materializeTargetPath.trim()}
+                style={{
+                  padding: "8px 16px",
+                  background: "#238636",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 6,
+                  cursor: materializeLoading || implementLoading ? "wait" : "pointer",
+                  fontSize: 13,
+                }}
+                title="Create todos + rails and run the code writer for each node"
+              >
+                {implementLoading ? "Implementing…" : "Implement"}
               </button>
             </div>
           </div>
@@ -10612,8 +11875,8 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        {/* [ Graph | Board | Chat ] tabs */}
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {/* [ Graph | Board | Chat ] tabs + persona selector */}
         <div
           style={{
             display: "flex",
@@ -10624,6 +11887,30 @@ export default function App() {
             flexShrink: 0,
           }}
         >
+            <button
+              type="button"
+              title={leftPanelCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              onClick={() => {
+                leftPanelUserToggledRef.current = true;
+                setLeftPanelCollapsed((c) => {
+                  const next = !c;
+                  if (next) panelWidthBeforeCollapseRef.current = panelWidth;
+                  else setPanelWidth(panelWidthBeforeCollapseRef.current || 320);
+                  return next;
+                });
+              }}
+              style={{
+                padding: "6px 10px",
+                fontSize: 12,
+                borderRadius: 8,
+                border: "1px solid #30363d",
+                background: "#161b22",
+                color: "#e6edf3",
+                cursor: "pointer",
+              }}
+            >
+              {leftPanelCollapsed ? "Show panel" : "Hide panel"}
+            </button>
           {mainViewMode === "graph" && graph && (
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 16 }}>
               {workspaceTitleEditing && handleRenameWorkspaceTitle ? (
@@ -10661,20 +11948,20 @@ export default function App() {
               ) : (
                 <span
                   onClick={() => {
-                    if (handleRenameWorkspaceTitle) {
+                    if (activeWorkspaceId && accessToken) {
                       setWorkspaceTitleDraft(graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace"));
                       setWorkspaceTitleEditing(true);
                     }
                   }}
-                  title={handleRenameWorkspaceTitle ? "Click to rename" : undefined}
+                  title={activeWorkspaceId && accessToken ? "Click to rename" : undefined}
                   style={{
                     fontSize: 11,
-                    color: "#e6edf3",
+                    color: "#000000",
                     maxWidth: 140,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
-                    cursor: handleRenameWorkspaceTitle ? "pointer" : "default",
+                    cursor: activeWorkspaceId && accessToken ? "pointer" : "default",
                   }}
                 >
                   {graph.projectName ?? (isGreenfieldMode ? "New Design" : "My workspace")}
@@ -10682,10 +11969,10 @@ export default function App() {
               )}
               <button
                 type="button"
-                disabled={!handleSaveWorkspace || saveLoading || !activeWorkspaceId || graph.nodes.length === 0}
-                title={handleSaveWorkspace ? (saveStatus === "saved" ? "Saved" : "Save workspace") : "Sign in to save"}
+                disabled={saveLoading || !activeWorkspaceId || !accessToken || graph.nodes.length === 0}
+                title={activeWorkspaceId && accessToken ? (saveStatus === "saved" ? "Saved" : "Save workspace") : "Sign in to save"}
                 onClick={async () => {
-                  if (!handleSaveWorkspace || saveLoading || !activeWorkspaceId) return;
+                  if (saveLoading || !activeWorkspaceId || !accessToken) return;
                   setSaveLoading(true);
                   setSaveStatus("idle");
                   try {
@@ -10708,18 +11995,18 @@ export default function App() {
                   border: "1px solid #238636",
                   background: "#238636",
                   color: "white",
-                  cursor: !handleSaveWorkspace || saveLoading || !activeWorkspaceId ? "not-allowed" : "pointer",
-                  opacity: !handleSaveWorkspace || saveLoading || !activeWorkspaceId ? 0.5 : 1,
+                  cursor: saveLoading || !activeWorkspaceId || !accessToken ? "not-allowed" : "pointer",
+                  opacity: saveLoading || !activeWorkspaceId || !accessToken ? 0.5 : 1,
                 }}
               >
                 {saveLoading ? "…" : saveStatus === "saved" ? "Saved" : "Save"}
               </button>
               <button
                 type="button"
-                disabled={!handleShare || shareLoading}
-                title={handleShare ? "Get share link" : "Sign in to share"}
+                disabled={shareLoading || !activeWorkspaceId || !accessToken}
+                title={activeWorkspaceId && accessToken ? "Get share link" : "Sign in to share"}
                 onClick={async () => {
-                  if (!handleShare || shareLoading) return;
+                  if (shareLoading || !activeWorkspaceId || !accessToken) return;
                   setShareLoading(true);
                   try {
                     const r = await handleShare();
@@ -10740,12 +12027,66 @@ export default function App() {
                   border: "1px solid #1f6feb",
                   background: shareCopied ? "#238636" : "#1f6feb",
                   color: "white",
-                  cursor: !handleShare || shareLoading ? "not-allowed" : "pointer",
-                  opacity: !handleShare || shareLoading ? 0.5 : 1,
+                  cursor: shareLoading || !activeWorkspaceId || !accessToken ? "not-allowed" : "pointer",
+                  opacity: shareLoading || !activeWorkspaceId || !accessToken ? 0.5 : 1,
                 }}
               >
                 {shareLoading ? "…" : shareCopied ? "Copied" : "Share"}
               </button>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  marginLeft: 8,
+                  padding: "2px 4px",
+                  borderRadius: 6,
+                  border: "1px solid #30363d",
+                  background: "#020617",
+                }}
+              >
+                {(["overview", "learn", "deep_dive"] as Persona[]).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setPersona(p)}
+                    style={{
+                      padding: "2px 6px",
+                      fontSize: 10,
+                      borderRadius: 4,
+                      border: "none",
+                      background: persona === p ? "#238636" : "transparent",
+                      color: persona === p ? "white" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                    title={
+                      p === "overview"
+                        ? "High-level architecture view"
+                        : p === "learn"
+                        ? "Learning-focused view"
+                        : "Deep dive for experienced engineers"
+                    }
+                  >
+                    {p === "overview" ? "Overview" : p === "learn" ? "Learn" : "Deep Dive"}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={graphSearch}
+                onChange={(e) => setGraphSearch(e.target.value)}
+                placeholder="Search nodes…"
+                style={{
+                  marginLeft: 8,
+                  width: 160,
+                  padding: "2px 6px",
+                  fontSize: 11,
+                  background: "#0b1120",
+                  border: "1px solid #30363d",
+                  borderRadius: 6,
+                  color: "#e6edf3",
+                  outline: "none",
+                }}
+              />
               <div style={{ position: "relative" }}>
                 <button
                   type="button"
@@ -10803,6 +12144,108 @@ export default function App() {
                       >
                         Rename
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMembersPanel(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        Members
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowActivityPanel(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        Activity log
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowScanHistoryPanel(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        Scan history
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSnapshotPanel(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        title="Switch between graph snapshots (scan history)"
+                      >
+                        Snapshot timeline
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowConnectGitHubPanel(true);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        title="Connect workspace to a GitHub repo (OAuth + repo picker)"
+                      >
+                        Connect from GitHub
+                      </button>
                       <label
                         style={{
                           display: "flex",
@@ -10822,7 +12265,101 @@ export default function App() {
                         />
                         Remember on device
                       </label>
-                      {activeWorkspaceId && handleDeleteWorkspace && (
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                        }}
+                        title="Enable scene editor (snap/grid in 2D, gizmo + GLB/GLTF import in 3D)"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={sceneEditMode}
+                          onChange={(e) => setSceneEditMode(e.target.checked)}
+                          style={{ accentColor: "#1f6feb" }}
+                        />
+                        Scene editor
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const scene = ensureSceneBase();
+                          const json = exportSceneBundle(scene, { graph: graph ?? undefined, workspaceId: activeWorkspaceId ?? undefined });
+                          const blob = new Blob([json], { type: "application/json" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `scene-bundle-${activeWorkspaceId ?? "workspace"}.json`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        title="Export scene JSON (includes embedded GLB/GLTF data URLs)"
+                      >
+                        Export scene bundle…
+                      </button>
+                      <label
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                        title="Import a previously exported scene bundle"
+                      >
+                        <input
+                          type="file"
+                          accept="application/json,.json"
+                          style={{ display: "none" }}
+                          onChange={async (e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            const text = await f.text();
+                            try {
+                              const { scene: next, graph: importedGraph } = importSceneBundle(text);
+                              if (next && typeof next === "object" && Array.isArray((next as any).objects)) {
+                                setWorkspaceScene(next);
+                                setActiveSceneStateId(null);
+                                if (importedGraph && !graph) setGraph(importedGraph);
+                              }
+                            } catch {
+                              try {
+                                const fallback = JSON.parse(text) as { scene?: WorkspaceSceneDoc };
+                                if (fallback?.scene && Array.isArray((fallback.scene as any)?.objects)) {
+                                  setWorkspaceScene(fallback.scene);
+                                  setActiveSceneStateId(null);
+                                }
+                              } catch {
+                                /* invalid JSON */
+                              }
+                            } finally {
+                              e.target.value = "";
+                              setShowWorkspaceMenu(false);
+                            }
+                          }}
+                        />
+                        Import scene bundle…
+                      </label>
+                      {activeWorkspaceId && accessToken && (
                         <button
                           type="button"
                           onClick={() => {
@@ -10912,6 +12449,163 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+              {sceneEditMode && (
+                <>
+                  <div style={{ width: 1, alignSelf: "stretch", background: "#30363d", margin: "0 4px" }} />
+                  <select
+                    value={activeSceneStateId ?? ""}
+                    onChange={(e) => setActiveSceneStateId(e.target.value || null)}
+                    style={{
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      background: "#161b22",
+                      color: "#e6edf3",
+                      border: "1px solid #30363d",
+                      borderRadius: 6,
+                      padding: "4px 6px",
+                    }}
+                    title="Scene states"
+                  >
+                    <option value="">(no state)</option>
+                    {sceneStates.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const id = `state-${Date.now()}`;
+                      upsertSceneState({ id, name: `State ${sceneStates.length + 1}` });
+                      setActiveSceneStateId(id);
+                    }}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: 10,
+                      borderRadius: 6,
+                      border: "1px solid #30363d",
+                      background: "transparent",
+                      color: "#8b949e",
+                      cursor: "pointer",
+                    }}
+                    title="Add state"
+                  >
+                    +State
+                  </button>
+                  <select
+                    value={(activeSceneState?.cameraPresetId as string) ?? ""}
+                    onChange={(e) => {
+                      if (!activeSceneStateId) return;
+                      const v = e.target.value || undefined;
+                      upsertSceneState({ id: activeSceneStateId, cameraPresetId: v });
+                    }}
+                    style={{
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      background: "#161b22",
+                      color: "#e6edf3",
+                      border: "1px solid #30363d",
+                      borderRadius: 6,
+                      padding: "4px 6px",
+                    }}
+                    title="3D camera preset for this state"
+                  >
+                    <option value="">camera: (none)</option>
+                    {["top", "front", "side", "iso"].map((p) => (
+                      <option key={p} value={p}>
+                        camera: {p}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeSceneStateId) return;
+                      const captured = captureViewRef.current?.();
+                      if (captured?.viewport2D || captured?.camera3D) {
+                        upsertSceneState({
+                          id: activeSceneStateId,
+                          ...(captured?.viewport2D && { viewport2D: captured.viewport2D }),
+                          ...(captured?.camera3D && { camera3D: captured.camera3D }),
+                        });
+                      }
+                    }}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: 10,
+                      borderRadius: 6,
+                      border: "1px solid #30363d",
+                      background: "transparent",
+                      color: "#8b949e",
+                      cursor: activeSceneStateId ? "pointer" : "not-allowed",
+                    }}
+                    title="Capture current view into this state"
+                    disabled={!activeSceneStateId}
+                  >
+                    Capture
+                  </button>
+                  <select
+                    value={scenePlaybackSpeed}
+                    onChange={(e) => setScenePlaybackSpeed(Number(e.target.value))}
+                    style={{
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      background: "#161b22",
+                      color: "#e6edf3",
+                      border: "1px solid #30363d",
+                      borderRadius: 6,
+                      padding: "2px 6px",
+                    }}
+                    title="Playback speed"
+                  >
+                    {[0.5, 1, 1.5, 2].map((s) => (
+                      <option key={s} value={s}>
+                        {s}x
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    {sceneStates.map((s, i) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setActiveSceneStateId(s.id)}
+                        style={{
+                          width: 20,
+                          height: 14,
+                          padding: 0,
+                          fontSize: 9,
+                          borderRadius: 4,
+                          border: activeSceneStateId === s.id ? "1px solid #7dd3fc" : "1px solid #30363d",
+                          background: activeSceneStateId === s.id ? "rgba(56,189,248,0.2)" : "transparent",
+                          color: "#8b949e",
+                          cursor: "pointer",
+                        }}
+                        title={`Go to ${s.name}`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setScenePlaying((p) => !p)}
+                    style={{
+                      padding: "2px 8px",
+                      fontSize: 10,
+                      borderRadius: 6,
+                      border: "1px solid #30363d",
+                      background: scenePlaying ? "rgba(56,189,248,0.12)" : "transparent",
+                      color: scenePlaying ? "#7dd3fc" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                    title="Play/Pause timeline"
+                  >
+                    {scenePlaying ? "Pause" : "Play"}
+                  </button>
+                </>
+              )}
                 </div>
               )}
             </div>
@@ -10944,8 +12638,109 @@ export default function App() {
             </button>
           ))}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            {mainViewMode === "graph" && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  background: "rgba(6,12,26,0.65)",
+                  border: "1px solid #30363d",
+                  borderRadius: 10,
+                  padding: 4,
+                  backdropFilter: "blur(10px)",
+                }}
+              >
+                <button
+                  type="button"
+                  title="2D view"
+                  onClick={() => setGraphViewMode("2d")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "2d" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "2d" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "2d" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  2D
+                </button>
+                <button
+                  type="button"
+                  title="3D view"
+                  onClick={() => setGraphViewMode("3d")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "3d" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "3d" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "3d" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  3D
+                </button>
+                <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
+                {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    title={
+                      mode === "architecture"
+                        ? "Layer-based architecture"
+                        : mode === "domains"
+                          ? "Group by domain"
+                          : mode === "runtime"
+                            ? "Emphasize runtime flows"
+                            : "Blast radius on select"
+                    }
+                    onClick={() => setGraphCanvasViewMode(mode)}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      border: graphCanvasViewMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphCanvasViewMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphCanvasViewMode === mode ? "#93c5fd" : "#9ca3af",
+                      cursor: "pointer",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {mode === "architecture" ? "Arch" : mode}
+                  </button>
+                ))}
+                <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
+                {(["depth", "domain", "elk"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    title={mode === "depth" ? "By layer (depth)" : mode === "domain" ? "By domain" : "ELK auto-layout"}
+                    onClick={() => setGraphLayoutMode(mode)}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      border: graphLayoutMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphLayoutMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphLayoutMode === mode ? "#93c5fd" : "#9ca3af",
+                      cursor: "pointer",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Theme</span>
+              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Theme</span>
               <button
                 type="button"
                 onClick={() =>
@@ -10965,7 +12760,7 @@ export default function App() {
               </button>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Presentation</span>
+              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Presentation</span>
               <button
                 type="button"
                 onClick={() => setPresentationMode((p) => !p)}
@@ -10981,7 +12776,23 @@ export default function App() {
               >
                 {presentationMode ? "On" : "Off"}
               </button>
-              <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>Density</span>
+              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Runtime</span>
+              <button
+                type="button"
+                onClick={() => setRuntimeLive((p) => !p)}
+                style={{
+                  padding: "4px 10px",
+                  fontSize: 10,
+                  borderRadius: 999,
+                  border: runtimeLive ? "1px solid #22c55e" : "1px solid #30363d",
+                  background: runtimeLive ? "rgba(34,197,94,0.16)" : "transparent",
+                  color: runtimeLive ? "#bbf7d0" : "#9ca3af",
+                  cursor: "pointer",
+                }}
+              >
+                {runtimeLive ? "Live" : "Off"}
+              </button>
+              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Density</span>
               <button
                 type="button"
                 onClick={() =>
@@ -11000,79 +12811,217 @@ export default function App() {
                 {canvasDensity === "standard" ? "Std" : "Compact"}
               </button>
             </div>
+            <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => setShowExportMenu((v) => !v)}
+                style={{
+                  padding: "4px 12px",
+                  fontSize: 10,
+                  borderRadius: 999,
+                  border: "1px solid #30363d",
+                  background: showExportMenu ? "rgba(96,165,250,0.15)" : "transparent",
+                  color: "#9ca3af",
+                  cursor: "pointer",
+                  fontFamily: "monospace",
+                }}
+              >
+                Export ▾
+              </button>
+              {showExportMenu && (
+                <>
+                  <div
+                    style={{
+                      position: "fixed",
+                      inset: 0,
+                      zIndex: 40,
+                    }}
+                    onClick={() => setShowExportMenu(false)}
+                    aria-hidden="true"
+                  />
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      left: 0,
+                      marginTop: 4,
+                      minWidth: 100,
+                      background: "#161b22",
+                      border: "1px solid #30363d",
+                      borderRadius: 8,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                      zIndex: 50,
+                      padding: 4,
+                    }}
+                  >
+                    {[
+                      { id: "svg", label: "SVG", fn: () => exportArchitectureSvg, file: "architecture.svg", mime: "image/svg+xml" },
+                      { id: "doc", label: "Doc", fn: () => exportArchitectureMarkdown, file: "architecture.md", mime: "text/markdown" },
+                      { id: "c4", label: "C4", fn: () => exportC4PlantUml, file: "architecture-c4.puml", mime: "text/plain" },
+                      { id: "mermaid", label: "Mermaid", fn: () => exportMermaid, file: "architecture.mmd", mime: "text/plain" },
+                      { id: "puml", label: "PUML", fn: () => exportPlantUml, file: "architecture.puml", mime: "text/plain" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          if (!graphRef.current) return;
+                          const text = opt.fn()(graphRef.current);
+                          downloadText(opt.file, opt.mime, text);
+                          setShowExportMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 10px",
+                          fontSize: 10,
+                          fontFamily: "monospace",
+                          background: "none",
+                          border: "none",
+                          color: "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          borderRadius: 4,
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
         {mainViewMode === "graph" && (
-        <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-        <ArchCanvas
-          graph={graph!}
-          selectedNode={selectedNode}
-          selectedNodeData={selectedNodeData}
-          repoUrl={repoUrl}
-          onNodeSelect={setSelectedNode}
-          edgeFilter={activeFilters}
-          agentGraphCommand={
-            mainViewMode === "graph" && railImpactNodeIds && railImpactNodeIds.length > 0
-              ? { action: "highlight_nodes" as const, nodeIds: railImpactNodeIds }
-              : mainViewMode === "graph" &&
-                selectedRailDetail &&
-                (selectedRailDetail.baselineNodeIds?.length ||
-                  (Array.isArray(selectedRailDetail.logicPath) &&
-                    selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string")))
-              ? {
-                  action: "highlight_nodes" as const,
-                  nodeIds:
-                    selectedRailDetail.baselineNodeIds ??
-                    (selectedRailDetail.logicPath ?? [])
-                      .map((s: any) => (s && typeof s.nodeId === "string" ? s.nodeId : null))
-                      .filter(Boolean),
-                }
-              : agentGraphCommand
-          }
-          proposedNodes={virtualNodes}
-          proposedEdges={virtualEdges}
-          theme={canvasTheme}
-          density={canvasDensity}
-          ghostNodeStatus={
-            virtualNodes.length > 0 &&
-            tasksForWorkspace.some((t) => t.kind === "materialize" && t.status === "failed")
-              ? "error"
-              : undefined
-          }
-          workspaceId={activeWorkspaceId ?? undefined}
-          accessToken={accessToken}
-          violationBeingFixedKey={violationBeingFixed}
-          issuesByNodeId={issuesByNodeId}
-          annotations={workspaceAnnotations}
-          onAnnotationsChange={fetchAnnotations}
-          onExplainArea={(prompt) => {
-            setAiQuestion(prompt);
-            chatInputRef.current?.focus();
-          }}
-          presentationMode={presentationMode}
-          onPresentationModeChange={setPresentationMode}
-        />
-        {railImpactNodeIds && railImpactNodeIds.length > 0 && selectedRailDetail && (
+          <div
+            style={{
+              position: "relative",
+              flex: 1,
+              minHeight: 0,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              height: "100%",
+            }}
+          >
+            <ArchCanvas
+              graph={effectiveGraph!}
+              selectedNode={selectedNode}
+              selectedNodeData={selectedNodeData}
+              repoUrl={repoUrl}
+              onNodeSelect={setSelectedNode}
+              edgeFilter={activeFilters}
+              nodeFilter={personaNodeFilters}
+              persona={persona}
+              searchResults={graphSearchResults}
+              viewMode={graphViewMode}
+              onViewModeChange={setGraphViewMode}
+              canvasViewMode={graphCanvasViewMode}
+              onCanvasViewModeChange={setGraphCanvasViewMode}
+              layoutMode={graphLayoutMode}
+              onLayoutModeChange={setGraphLayoutMode as any}
+              agentGraphCommand={
+                mainViewMode === "graph" && railImpactNodeIds && railImpactNodeIds.length > 0
+                  ? { action: "highlight_nodes" as const, nodeIds: railImpactNodeIds }
+                  : mainViewMode === "graph" &&
+                    selectedRailDetail &&
+                    (selectedRailDetail.baselineNodeIds?.length ||
+                      (Array.isArray(selectedRailDetail.logicPath) &&
+                        selectedRailDetail.logicPath.some((s: any) => s && typeof s.nodeId === "string")))
+                  ? {
+                      action: "highlight_nodes" as const,
+                      nodeIds:
+                        selectedRailDetail.baselineNodeIds ??
+                        (selectedRailDetail.logicPath ?? [])
+                          .map((s: any) => (s && typeof s.nodeId === "string" ? s.nodeId : null))
+                          .filter(Boolean),
+                    }
+                  : agentGraphCommand
+              }
+              proposedNodes={virtualNodes}
+              proposedEdges={virtualEdges}
+              theme={canvasTheme}
+              density={canvasDensity}
+              ghostNodeStatus={
+                virtualNodes.length > 0 &&
+                tasksForWorkspace.some((t) => t.kind === "materialize" && t.status === "failed")
+                  ? "error"
+                  : undefined
+              }
+              workspaceId={activeWorkspaceId ?? undefined}
+              accessToken={accessToken}
+              violationBeingFixedKey={violationBeingFixed}
+              issuesByNodeId={issuesByNodeId}
+              annotations={workspaceAnnotations}
+              onAnnotationsChange={fetchAnnotations}
+              onOpenComments={(annId) => setSelectedAnnotationForComments(annId)}
+              scene={workspaceScene}
+              sceneEditMode={sceneEditMode}
+              onSceneChange={setWorkspaceScene}
+              onSaveScene={handleSaveScene}
+              activeSceneStateId={activeSceneStateId}
+              captureViewRef={captureViewRef}
+              viewportToApply={
+                activeSceneState?.viewport2D && (workspaceScene?.settings as any)?.layoutMode !== "elk"
+                  ? activeSceneState.viewport2D
+                  : null
+              }
+              onExplainArea={(prompt) => {
+                setAiQuestion(prompt);
+                chatInputRef.current?.focus();
+              }}
+              presentationMode={presentationMode}
+              onPresentationModeChange={setPresentationMode}
+              runtimeSnapshot={runtimeSnapshot}
+              runtimeLive={runtimeLive}
+              vulnerableNodeIds={showSupplyChainRisk ? vulnerableNodeIds : undefined}
+            />
+            {railImpactNodeIds && railImpactNodeIds.length > 0 && selectedRailDetail && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: 12,
+                  left: 12,
+                  padding: "6px 12px",
+                  borderRadius: 8,
+                  background: "rgba(30,58,95,0.95)",
+                  border: "1px solid #2563eb",
+                  color: "#7dd3fc",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  zIndex: 10,
+                }}
+              >
+                Impact: {railImpactNodeIds.length} node{railImpactNodeIds.length !== 1 ? "s" : ""}
+              </div>
+            )}
+          </div>
+        )}
+        {showInsightsPanel && graph && (
           <div
             style={{
               position: "absolute",
               top: 12,
-              left: 12,
-              padding: "6px 12px",
+              right: 12,
+              width: 260,
+              maxHeight: 320,
+              overflow: "auto",
+              background: "rgba(15,23,42,0.96)",
+              border: "1px solid #334155",
               borderRadius: 8,
-              background: "rgba(30,58,95,0.95)",
-              border: "1px solid #2563eb",
-              color: "#7dd3fc",
-              fontSize: 11,
-              fontWeight: 600,
-              zIndex: 10,
+              zIndex: 11,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             }}
           >
-            Impact: {railImpactNodeIds.length} node{railImpactNodeIds.length !== 1 ? "s" : ""}
+            <SystemInsightsPanel
+              insights={computeGraphInsights(analyseGraph(graph))}
+              onHighlight={(nodeIds) => setAgentGraphCommand({ action: "highlight_nodes", nodeIds })}
+              onClose={() => setShowInsightsPanel(false)}
+            />
           </div>
         )}
         </div>
-        )}
         {mainViewMode === "board" && (
           <div
             style={{
@@ -11844,7 +13793,6 @@ export default function App() {
           </div>
         )}
       </div>
-    </div>
 
       {selectedRailDetail && (
         <div

@@ -9,11 +9,14 @@ import type {
   CriticResult,
   CriticViolation,
 } from "../types";
+import { logArchEvent } from "./logger";
 import { ArchError, ArchErrorCode, ErrorCode, logArchError, toUserMessage } from "./errors";
 import type { RouteResult } from "./questionRouter";
 import { routeQuestion } from "./questionRouter";
+import { retrieveFileSnippets } from "./retriever";
+import { formatSkillSummary } from "../agent/skillStore";
 import { askAboutArchitecture as askWithClaude } from "./claudeEnricher";
-import { askGreenfield, inferGreenfieldArchetype } from "./greenfieldEnricher";
+import { askGreenfield, askGreenfieldStream, inferGreenfieldArchetype } from "./greenfieldEnricher";
 import { askGreenfieldMock } from "./mockGreenfieldEnricher";
 import { reviewArchitectureAnswer, reviewGreenfieldAnswer } from "./critic";
 import { recordSuccessfulRun } from "../agent/templateLibrary";
@@ -41,6 +44,14 @@ export interface ManagerResult {
   archetype?: string;
   /** Optional rails created/updated during this interaction (for UI linkback). */
   rails?: Array<{ id: string; outcome?: string; state?: string; archetype?: string }>;
+  /** Reasoning steps for explainability (from agent tool use). */
+  reasoningTrace?: string[];
+  /** Citations linking claims to nodes, edges, or files. */
+  citations?: Array<{ label: string; nodeId?: string; edgeId?: string; filePath?: string }>;
+  /** Confidence 0–1 derived from critic or heuristics. */
+  confidenceScore?: number;
+  /** Suggested actions (e.g. "Highlight these nodes") derived from graph command. */
+  suggestedActions?: string[];
 }
 
 /** Pluggable mode interface — enables future modes without touching orchestrator */
@@ -68,12 +79,17 @@ export async function runArchitectureTask(params: {
   /** Optional PDF attachment (base64) for analysis chat */
   pdfBase64?: string;
   pdfFileName?: string;
+  /** Feedback-loop: hint when user has recent downvotes (prefer concise responses). */
+  feedbackContext?: string;
 }): Promise<ManagerResult> {
   const { mode, rootPath, ...rest } = params;
   const traceId = crypto.randomUUID();
   const startMs = Date.now();
 
-  console.log(`[manager] traceId=${traceId} mode=${mode}`);
+  logArchEvent("info", "runArchitectureTask start", {
+    traceId,
+    mode,
+  });
 
   const modeRegistry: Record<AgentMode, ArchitectureMode> = {
     analysis: {
@@ -134,6 +150,7 @@ async function runAnalysisTask(params: {
   rail?: { outcome: string; state: string; logicPath: Array<{ layer: string; nodeId: string }>; sessionId: string } | null;
   pdfBase64?: string;
   pdfFileName?: string;
+  feedbackContext?: string;
 }): Promise<ManagerResult> {
   const {
     question,
@@ -150,6 +167,7 @@ async function runAnalysisTask(params: {
     rail,
     pdfBase64,
     pdfFileName,
+    feedbackContext,
   } = params;
 
   const resolvedRoot = path.resolve(rootPath);
@@ -161,9 +179,12 @@ async function runAnalysisTask(params: {
       .some((e) => !e.name.startsWith("."));
 
   if (!rootExists || !hasFiles) {
-    console.warn(
-      `[manager] Preflight failed for rootPath=${resolvedRoot} | exists=${rootExists} | hasFiles=${hasFiles}`
-    );
+    logArchEvent("warn", "manager preflight failed", {
+      traceId,
+      rootPath: resolvedRoot,
+      rootExists,
+      hasFiles,
+    });
     return {
       answer:
         "ERROR: The source code for this project is missing or has been cleaned up. " +
@@ -176,9 +197,11 @@ async function runAnalysisTask(params: {
     };
   }
 
-  console.log(
-    `[manager] runAnalysisTask | rootPath=${resolvedRoot} | question="${question.slice(0, 80)}${question.length > 80 ? "…" : ""}"`
-  );
+  logArchEvent("info", "runAnalysisTask", {
+    traceId,
+    rootPath: resolvedRoot,
+    question: question.slice(0, 200),
+  });
 
   let localHistory = history ?? [];
 
@@ -245,6 +268,8 @@ async function runAnalysisTask(params: {
   let lastProposal: unknown;
   let lastViolations: CriticViolation[] = [];
   let lastTokenUsage: ManagerResult["tokenUsage"];
+  let lastReasoningTrace: string[] | undefined;
+  let lastCitations: ManagerResult["citations"];
 
   while (attempts < maxAttempts) {
     const claudeResult = await askWithClaude(
@@ -259,12 +284,15 @@ async function runAnalysisTask(params: {
       jiraProjectKey,
       rail ?? undefined,
       pdfBase64,
-      pdfFileName
+      pdfFileName,
+      feedbackContext
     );
 
     lastAnswer = claudeResult.answer;
     lastGraphCommand = claudeResult.graphCommand;
     lastProposal = claudeResult.proposal;
+    lastReasoningTrace = (claudeResult as { reasoningTrace?: string[] }).reasoningTrace;
+    lastCitations = (claudeResult as { citations?: ManagerResult["citations"] }).citations;
     const usedSaveSkill = claudeResult.usedSaveSkill === true;
     if (claudeResult.tokenUsage) {
       lastTokenUsage = {
@@ -417,6 +445,50 @@ async function runAnalysisTask(params: {
     attempts += 1;
   }
 
+  // Prefer telemetry + trace_path when the user is asking about a runtime flow
+  // and the model did not already emit a trace_path command.
+  if (
+    route.intent === "trace_flow" &&
+    !lastGraphCommand &&
+    lastAnswer &&
+    Array.isArray(route.relevantNodeIds) &&
+    route.relevantNodeIds.length >= 2
+  ) {
+    const ids = route.relevantNodeIds.slice(0, 8);
+    lastGraphCommand = {
+      action: "trace_path",
+      nodeIds: ids,
+    };
+    lastAnswer =
+      lastAnswer +
+      "\n\n---\nI have highlighted a `trace_path` across the most relevant nodes so you can inspect the runtime flow on the canvas.";
+  }
+
+  // Fix-or-Track protocol: when critic found violations, explicitly ask the user
+  // whether to fix now (rails) or track in Jira (ticket creation).
+  if (lastViolations.length > 0) {
+    const alreadyAsked =
+      /fix\s+now|track\s+\(create\s+jira\)|track\s+in\s+jira/i.test(lastAnswer);
+    if (!alreadyAsked) {
+      const top = lastViolations.slice(0, 3);
+      const bullets = top
+        .map((v) => {
+          const pair = v.targetNodeId ? `${v.sourceNodeId} → ${v.targetNodeId}` : v.sourceNodeId;
+          return `- ${v.severity.toUpperCase()}: ${v.type} (${pair}) — ${v.description}`;
+        })
+        .join("\n");
+      lastAnswer =
+        lastAnswer +
+        `\n\n---\n**Architectural violations detected. Fix now or track (create Jira)?**\n\n${bullets}\n\nReply with **Fix** to open a rail/refactor flow, or **Track** to create Jira tickets tagged with \`archNodeId:<id>\`.`;
+    }
+  }
+
+  const confidenceScore =
+    lastCriticScore != null && lastCriticScore >= 0
+      ? Math.max(0, Math.min(1, lastCriticScore / 10))
+      : undefined;
+  const suggestedActions = deriveSuggestedActions(lastGraphCommand, route.relevantNodeIds);
+
   return {
     answer: lastAnswer,
     graphCommand: lastGraphCommand,
@@ -427,7 +499,44 @@ async function runAnalysisTask(params: {
     traceId,
     relevantNodeIds: route.relevantNodeIds,
     ...(lastTokenUsage ? { tokenUsage: lastTokenUsage } : {}),
+    ...(confidenceScore != null ? { confidenceScore } : {}),
+    ...(suggestedActions.length > 0 ? { suggestedActions } : {}),
+    ...(lastReasoningTrace?.length ? { reasoningTrace: lastReasoningTrace } : {}),
+    ...(lastCitations?.length ? { citations: lastCitations } : {}),
   };
+}
+
+function deriveSuggestedActions(
+  cmd: GraphCommand | undefined,
+  relevantNodeIds: string[] | undefined
+): string[] {
+  if (!cmd && (!relevantNodeIds || relevantNodeIds.length === 0)) return [];
+  const actions: string[] = [];
+  if (cmd) {
+    switch (cmd.action) {
+      case "highlight_nodes":
+        actions.push("Highlight these nodes");
+        break;
+      case "focus_node":
+        actions.push("Focus on this node");
+        break;
+      case "filter_layer":
+        actions.push(`Show ${cmd.layer} layer`);
+        break;
+      case "trace_path":
+        actions.push("Show request flow");
+        break;
+      case "reset":
+        actions.push("Reset view");
+        break;
+      default:
+        break;
+    }
+  }
+  if (actions.length === 0 && relevantNodeIds && relevantNodeIds.length > 0) {
+    actions.push("Highlight these nodes");
+  }
+  return actions;
 }
 
 async function runGreenfieldTask(params: {
@@ -439,6 +548,12 @@ async function runGreenfieldTask(params: {
   apiKeyClaude?: string;
   findings?: ContractFinding[];
   traceId: string;
+  pdfBase64?: string;
+  pdfFileName?: string;
+  jiraConfig?: { baseUrl: string; email: string; apiToken: string };
+  jiraProjectKey?: string;
+  /** When provided, uses streaming for greenfield (single-turn, no Jira) and invokes for each text chunk */
+  onTextChunk?: (chunk: string) => void;
 }): Promise<ManagerResult> {
   const {
     question,
@@ -446,6 +561,8 @@ async function runGreenfieldTask(params: {
     apiKeyOpenAI,
     apiKeyClaude,
     traceId,
+    pdfBase64,
+    pdfFileName,
   } = params;
 
   console.log(
@@ -453,46 +570,123 @@ async function runGreenfieldTask(params: {
   );
 
   const HISTORY_BUDGET = 60_000;
-  const trimmedHistory = trimHistoryToBudget(
+  let trimmedHistory = trimHistoryToBudget(
     (history ?? []) as { role: string; content: string }[],
     HISTORY_BUDGET
   ) as ArchitectureChatHistory;
 
-  try {
   const useMock = process.env.USE_MOCK_GREENFIELD === "1" || process.env.USE_MOCK_GREENFIELD === "true";
-  const greenfieldResult = useMock
-    ? await askGreenfieldMock({ question, history: trimmedHistory })
-    : await askGreenfield({ question, history: trimmedHistory, apiKeyClaude });
-
   const archetype = inferGreenfieldArchetype(params.question);
   const rootPath =
     params.graph?.projectRoot && typeof params.graph.projectRoot === "string" && params.graph.projectRoot.trim()
       ? params.graph.projectRoot.trim()
       : null;
 
-  const review = await reviewGreenfieldAnswer({
-    question,
-    answer: greenfieldResult.answer,
-    graphCommands: greenfieldResult.graphCommands,
-    graphCommand: greenfieldResult.graphCommand,
-    apiKey: apiKeyOpenAI,
-    apiKeyClaude,
-    existingGraph: params.graph?.nodes?.length ? params.graph : null,
-    rootPath,
-    archetype,
-  });
+  let contextBlock: string | undefined;
+  if (rootPath && params.graph?.nodes?.length) {
+    try {
+      const route = routeQuestion(
+        question,
+        params.graph,
+        params.findings ?? [],
+        params.nodeId,
+        history
+      );
+      if (route.filesToRead.length > 0) {
+        const retrieved = retrieveFileSnippets(
+          rootPath,
+          route.filesToRead,
+          params.graph,
+          route.keywords
+        );
+        if (retrieved.formatted) {
+          contextBlock = `## Code context from existing repo\n${retrieved.formatted}`;
+        }
+      }
+      try {
+        const skillsText = formatSkillSummary(rootPath, 12);
+        if (skillsText) {
+          contextBlock = (contextBlock ?? "") + `\n\n## Skill Library (from .agent/skill_index.json)\n${skillsText}\n`;
+        }
+      } catch {
+        // Non-fatal
+      }
+    } catch {
+      // Best-effort; proceed without retrieval
+    }
+  }
 
-  const graphCommands = greenfieldResult.graphCommands ?? (greenfieldResult.graphCommand ? [greenfieldResult.graphCommand] : undefined);
+  const maxAttempts = 2;
+  let attempts = 0;
+  let lastResult: Awaited<ReturnType<typeof askGreenfield>> | null = null;
+  let lastReview: Awaited<ReturnType<typeof reviewGreenfieldAnswer>> | null = null;
+
+  const useStream = !!params.onTextChunk && !params.jiraConfig && !params.jiraProjectKey;
+  const askParams = {
+    question,
+    history: trimmedHistory,
+    apiKeyClaude,
+    ...(pdfBase64 ? { pdfBase64, pdfFileName: pdfFileName ?? "document.pdf" } : {}),
+    ...(contextBlock ? { contextBlock } : {}),
+    ...(params.jiraConfig ? { jiraConfig: params.jiraConfig } : {}),
+    ...(params.jiraProjectKey ? { jiraProjectKey: params.jiraProjectKey } : {}),
+    ...(useStream && params.onTextChunk ? { onTextChunk: params.onTextChunk } : {}),
+  };
+
+  try {
+  while (attempts < maxAttempts) {
+    const greenfieldResult = useMock
+      ? await askGreenfieldMock({ question, history: trimmedHistory })
+      : useStream
+        ? await askGreenfieldStream(askParams)
+        : await askGreenfield(askParams);
+    lastResult = greenfieldResult;
+
+    const review = await reviewGreenfieldAnswer({
+      question,
+      answer: greenfieldResult.answer,
+      graphCommands: greenfieldResult.graphCommands,
+      graphCommand: greenfieldResult.graphCommand,
+      apiKey: apiKeyOpenAI,
+      apiKeyClaude,
+      existingGraph: params.graph?.nodes?.length ? params.graph : null,
+      rootPath,
+      archetype,
+    });
+    lastReview = review;
+
+    const approved = review.approved === true && (typeof review.score === "number" ? review.score >= 6 : true);
+    if (approved || attempts === maxAttempts - 1) break;
+
+    trimmedHistory = [
+      ...trimmedHistory,
+      { role: "assistant" as const, content: greenfieldResult.answer },
+      {
+        role: "user" as const,
+        content: `Critic feedback on your previous design:\n${review.report}\n\nPlease revise the design to address these issues.`,
+      },
+    ];
+    attempts += 1;
+  }
+
+  const graphCommands = lastResult
+    ? (lastResult.graphCommands ?? (lastResult.graphCommand ? [lastResult.graphCommand] : undefined))
+    : undefined;
+  const gfScore = lastReview?.score ?? 0;
+  const confidenceScore = typeof gfScore === "number" ? Math.max(0, Math.min(1, gfScore / 10)) : undefined;
+  const suggestedActions = deriveSuggestedActions(graphCommands?.[0], undefined);
   return {
-    answer: greenfieldResult.answer,
+    answer: lastResult?.answer ?? "Design generation failed.",
     graphCommands,
     graphCommand: graphCommands?.[0],
-    criticReport: review.report,
-    criticScore: review.score,
-    violations: Array.isArray(review.violations) ? review.violations : [],
+    criticReport: lastReview?.report ?? "No review.",
+    criticScore: gfScore,
+    violations: Array.isArray(lastReview?.violations) ? lastReview.violations : [],
     traceId,
-    acceptanceCriteria: review.acceptanceCriteria,
+    acceptanceCriteria: lastReview?.acceptanceCriteria,
     archetype,
+    ...(confidenceScore != null ? { confidenceScore } : {}),
+    ...(suggestedActions.length > 0 ? { suggestedActions } : {}),
   };
   } catch (err) {
     if (err instanceof ArchError) throw err;

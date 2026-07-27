@@ -5,6 +5,7 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { SystemModel } from "../../../src/types.js";
 
 const MEMORIES_LIMIT = 20;
 const MEMORIES_MAX_AGE_DAYS = 30;
@@ -29,6 +30,12 @@ export interface SnapshotForContext {
   intent_summary: string;
   outcome_summary: string;
   created_at?: string | null;
+}
+
+export interface GraphEvolutionEntry {
+  completed_at: string;
+  node_count: number;
+  edge_count: number;
 }
 
 /**
@@ -93,6 +100,66 @@ export async function getSnapshotsForContext(
 }
 
 /**
+ * Load scan_history for graph evolution context (time-based architecture questions).
+ */
+export async function getGraphEvolutionForContext(
+  db: SupabaseClient,
+  workspaceId: string,
+  options: { limit?: number; maxAgeDays?: number } = {}
+): Promise<GraphEvolutionEntry[]> {
+  const limit = options.limit ?? 10;
+  const maxAgeDays = options.maxAgeDays ?? 30;
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await db
+    .from("scan_history")
+    .select("completed_at, node_count, edge_count")
+    .eq("workspace_id", workspaceId)
+    .eq("status", "completed")
+    .not("completed_at", "is", null)
+    .gte("completed_at", cutoff)
+    .order("completed_at", { ascending: false })
+    .limit(limit);
+
+  if (error) return [];
+  return (data ?? []) as GraphEvolutionEntry[];
+}
+
+/**
+ * Load SystemModel for AI context. Returns condensed summary for architecture/system questions.
+ */
+export async function getSystemModelForContext(
+  db: SupabaseClient,
+  workspaceId: string
+): Promise<string | null> {
+  const { data, error } = await db
+    .from("workspace_system_models")
+    .select("system_model_json")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+
+  if (error || !data?.system_model_json) return null;
+  const model = data.system_model_json as SystemModel;
+  return formatSystemModelSummary(model);
+}
+
+/**
+ * Produce a concise text summary of SystemModel for AI context.
+ */
+function formatSystemModelSummary(model: SystemModel): string {
+  const domains = model.domains?.slice(0, 12) ?? [];
+  const nodes = model.nodes ?? [];
+  const byTier = { core: nodes.filter((n) => n.tier === "core"), supporting: nodes.filter((n) => n.tier === "supporting"), peripheral: nodes.filter((n) => n.tier === "peripheral") };
+  const coreSample = byTier.core.slice(0, 8).map((n) => `${n.label ?? n.id} (${n.domain}, ${(n.runtimeRoles ?? []).join("/") || "service"})`).join("; ");
+  const lines: string[] = [
+    `Domains: ${domains.join(", ") || "—"}`,
+    `Nodes: ${nodes.length} (${byTier.core.length} core, ${byTier.supporting.length} supporting, ${byTier.peripheral.length} peripheral)`,
+  ];
+  if (coreSample) lines.push(`Core: ${coreSample}`);
+  return lines.join("\n");
+}
+
+/**
  * Load user_memories for cross-workspace context (preferences, patterns).
  */
 export async function getUserMemoriesForContext(
@@ -130,13 +197,15 @@ function relativeAge(createdAt: string | null | undefined): string {
 }
 
 /**
- * Build injected context string from memories + snapshots + user memories for chat.
+ * Build injected context string from memories + snapshots + user memories + graph evolution + SystemModel for chat.
  * Freshness hints ([2d ago]) help the model weight newer information over older.
  */
 export function buildMemoryContextBlock(
   memories: MemoryForContext[],
   snapshots: SnapshotForContext[],
-  userMemories?: UserMemoryForContext[]
+  userMemories?: UserMemoryForContext[],
+  graphEvolution?: GraphEvolutionEntry[],
+  systemModelSummary?: string | null
 ): string {
   const parts: string[] = [];
 
@@ -171,6 +240,21 @@ export function buildMemoryContextBlock(
       })
       .join("\n");
     parts.push(`## Recent exchanges\n${snapLines}`);
+  }
+
+  if (graphEvolution && graphEvolution.length > 0) {
+    const evoLines = graphEvolution
+      .map((e) => {
+        const age = relativeAge(e.completed_at);
+        const hint = age ? ` [${age}]` : "";
+        return `- Scan: ${e.node_count} nodes, ${e.edge_count} edges${hint}`;
+      })
+      .join("\n");
+    parts.push(`## Architecture evolution (scans)\n${evoLines}`);
+  }
+
+  if (systemModelSummary) {
+    parts.push(`## SystemModel (current architecture)\n${systemModelSummary}`);
   }
 
   if (parts.length === 0) return "";

@@ -70,6 +70,15 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
   return stableDir;
 }
 
+/** Returns true if path exists and is a directory (Option A: allow non-git for greenfield). */
+function isExistingDir(dir: string): boolean {
+  try {
+    return fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureProjectRoot(
   workspaceId: string,
   graph: ArchGraph,
@@ -78,10 +87,14 @@ export async function ensureProjectRoot(
   const stored = graph.projectRoot?.trim();
   if (stored) {
     const resolved = path.resolve(stored);
-    if (fs.existsSync(resolved) && isCloneValid(resolved)) return { rootPath: resolved };
-    const clonesBase = path.resolve(getClonesDir());
-    const rel = path.relative(clonesBase, resolved);
-    if (!rel.startsWith("..") && !path.isAbsolute(rel) && fs.existsSync(resolved) && !isCloneValid(resolved)) {
+    if (isCloneValid(resolved)) return { rootPath: resolved };
+    if (isExistingDir(resolved)) {
+      const clonesBase = path.resolve(getClonesDir());
+      const rel = path.relative(clonesBase, resolved);
+      const underClones = !rel.startsWith("..") && !path.isAbsolute(rel);
+      if (!underClones) {
+        return { rootPath: resolved };
+      }
       try {
         fs.rmSync(resolved, { recursive: true, force: true });
       } catch {
@@ -167,6 +180,33 @@ export async function ensureProjectRoot(
   recloneLocks.set(workspaceId, promise);
   const result = await promise;
   return result !== null ? { rootPath: result } : { rootPath: null, error: "Reclone failed." };
+}
+
+/** Option B: Bootstrap a directory for greenfield — create if missing, run git init. */
+export async function bootstrapProjectRoot(targetPath: string): Promise<{ rootPath: string; error?: string }> {
+  const root = path.resolve(targetPath.trim());
+  if (!root || root === "/" || root.length < 2) {
+    return { rootPath: "", error: "Invalid target path." };
+  }
+  const baseDir = process.env.PROJECTS_BASE_DIR?.trim();
+  if (baseDir) {
+    const baseNorm = path.resolve(baseDir);
+    if (!root.startsWith(baseNorm + path.sep) && root !== baseNorm) {
+      return { rootPath: "", error: "Target path must be within the allowed projects directory." };
+    }
+  }
+  try {
+    if (!fs.existsSync(root)) {
+      fs.mkdirSync(root, { recursive: true });
+    }
+    if (!isCloneValid(root)) {
+      await simpleGit(root).init();
+    }
+    return { rootPath: root };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { rootPath: "", error: `Bootstrap failed: ${msg}` };
+  }
 }
 
 export function deleteWorkspaceClone(workspaceId: string): void {

@@ -49,6 +49,26 @@ export async function requireUser(req: Request, res: Response, next: NextFunctio
   const authHeader = req.header("authorization") || req.header("Authorization");
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : "";
 
+  // Dev bypass: skip auth when CHAT_DEV_BYPASS=1 and request is from localhost (for terminal tests)
+  const devBypass = process.env.CHAT_DEV_BYPASS === "1";
+  const host = req.get("host") ?? "";
+  const remote = req.socket?.remoteAddress ?? req.ip ?? "";
+  const fromLocalhost =
+    req.ip === "127.0.0.1" ||
+    req.ip === "::1" ||
+    remote === "127.0.0.1" ||
+    remote === "::1" ||
+    remote === "::ffff:127.0.0.1" ||
+    host.startsWith("localhost") ||
+    host.startsWith("127.0.0.1") ||
+    req.get("x-forwarded-for")?.includes("127.0.0.1");
+  if (!token && devBypass && fromLocalhost) {
+    logAuth("requireUser", { devBypass: true });
+    req.user = { id: "dev-bypass-user", email: "dev@local" };
+    next();
+    return;
+  }
+
   if (!token) {
     logAuth("requireUser", { hasToken: false });
     res.status(401).json({ error: "Unauthorized: missing Bearer token" });

@@ -1,4 +1,4 @@
-import { request } from "#lib/http";
+import { request } from "../../lib/http";
 
 export function createClient() {
   return {

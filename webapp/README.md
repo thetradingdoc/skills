@@ -50,6 +50,27 @@ To trigger violation re-scans externally (e.g. from cron or GitHub Actions):
    curl -X POST -H "X-Scan-Trigger-Secret: $SECRET" -H "Content-Type: application/json" -d '{"workspaceId":"..."}' https://your-api/api/violations/scan-trigger
    ```
 
+## GitHub Webhook (Push/PR → Full Scan)
+
+To trigger **full architecture scans** on push or pull_request:
+
+1. Set `GITHUB_WEBHOOK_SECRET` in your environment.
+2. Create a GitHub webhook for your repo: `https://your-api/api/webhooks/github`
+3. Content type: `application/json`. Events: push, pull_request.
+4. Workspaces are matched by `github_full_name` (owner/repo). Ensure the workspace has been scanned at least once so `github_full_name` is set.
+
+## PR Architecture Diff
+
+`GET /api/workspaces/:workspaceId/diff?base=main&head=feature` — computes added/removed nodes and edges between branches. Requires auth.
+
+## PR Violations Comment
+
+`POST /api/workspaces/:workspaceId/pr-comment` with `{ pullNumber, owner, repo }` — posts active violations as a PR issue comment. Requires GITHUB_TOKEN and auth.
+
+## Scan History
+
+`GET /api/workspaces/:workspaceId/scan-history` — list of scans (manual, webhook, cron) with status, branch, duration. "Scan history" in workspace menu (⋮).
+
 ## Public Repos Only
 
 Currently only **public** GitHub repositories work (no auth). Private repos will fail to clone.

@@ -82,6 +82,8 @@ export type TechKind =
 
 export type CloudProvider = "aws" | "gcp" | "azure" | "other" | "unknown";
 
+export type Persona = "overview" | "learn" | "deep_dive";
+
 export interface ArchNode {
   id: string;
   label: string;
@@ -100,6 +102,23 @@ export interface ArchNode {
   techKind?: TechKind;
   cloudProvider?: CloudProvider;
   tags?: string[];
+  /** Short natural-language summary of what the node represents. */
+  summary?: string;
+  /**
+   * Optional language/idiom notes for this node — used by the Learn / Code
+   * viewer panels to teach concepts.
+   */
+  languageNotes?: string;
+  /**
+   * Rough complexity hint for visualization and badges in the inspector.
+   * Free-form string but typically "simple" | "moderate" | "complex".
+   */
+  complexity?: string;
+  /**
+   * Optional line range in the primary file this node maps to, for code
+   * viewer line hints (e.g. [42, 87]).
+   */
+  lineRange?: [number, number];
   iconKey?: string;
   files: string[];
   health: { hasDocs: boolean; hasTests: boolean; hasContext: boolean };
@@ -110,15 +129,26 @@ export interface ArchNode {
   isEntryPoint?: boolean;
   depth?: number;
   violationState?: ArchNodeViolationState;
+  /** Inferred domain (auth, payments, users, etc.). From SystemModel. */
+  domain?: string;
+  /** Inferred runtime roles (controller, service, repository, etc.). From SystemModel. */
+  runtimeRoles?: string[];
+  /** Inferred tier (core/supporting/peripheral). From SystemModel. */
+  tier?: "core" | "supporting" | "peripheral";
 }
 
 export type EdgeImportance = "architectural" | "utility" | "config";
+
+/** Request/flow edge semantics: dependency (static), runtime_path (observed), event (async), job (scheduled). */
+export type FlowKind = "dependency" | "runtime_path" | "event" | "job";
 
 export interface ArchEdge {
   id: string;
   source: string;
   target: string;
   type: "import" | "reexport" | "dynamic" | "runtime";
+  /** Request/flow semantics for runtime and path analysis. */
+  flowKind?: FlowKind;
   isDrift: boolean;
   driftReason?: string;
   importance?: EdgeImportance;
@@ -172,6 +202,18 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  layers?: Array<{
+    id: string;
+    name: string;
+    nodeIds: string[];
+  }>;
+  tour?: Array<{
+    order: number;
+    title: string;
+    description: string;
+    nodeIds: string[];
+    languageLesson?: string;
+  }>;
 }
 
 // ── Scene model (iCraft-style authored scenes) ────────────────────────────────
@@ -183,9 +225,15 @@ export interface CameraPreset {
   target: { x: number; y: number; z: number };
 }
 
+export type LayoutMode = "depth" | "layer" | "domain" | "elk";
+
 export interface WorkspaceSceneDoc {
   schemaVersion: number;
-  settings?: Record<string, unknown>;
+  settings?: {
+    layoutMode?: LayoutMode;
+    pinnedNodeIds?: string[];
+    [key: string]: unknown;
+  };
   objects: Array<{
     id: string;
     kind: "node" | "group" | "plate" | "annotation" | "link" | "custom";
@@ -200,7 +248,17 @@ export interface WorkspaceSceneDoc {
   states?: Array<{
     id: string;
     name: string;
+    /** Built-in 3D camera preset name (top/front/side/iso) */
     cameraPresetId?: string;
+    /** Full 2D viewport (ReactFlow x, y, zoom). */
+    viewport2D?: { x: number; y: number; zoom: number };
+    /** Full 3D camera position/target (overrides preset when set). */
+    camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } };
+    /** Hide/show nodes (nodeId -> visible) */
+    visibility?: Record<string, boolean>;
+    /** Which annotations are visible in this state (annotation ids). Omit to show all. */
+    annotationIds?: string[];
+    /** Per-object overrides (e.g. node position, props). */
     objectOverrides?: Record<string, Record<string, unknown>>;
   }>;
   cameraPresets?: CameraPreset[];
@@ -230,6 +288,27 @@ export interface WorkspaceAnnotation {
   updated_at: string;
 }
 
+export interface RuntimeEdgeMetrics {
+  latencyMs?: number;
+  errorRate?: number;
+  throughputPerMin?: number;
+  /** Request/flow semantics when inferred from traces. */
+  flowKind?: FlowKind;
+}
+
+export interface RuntimeNodeMetrics {
+  errorRate?: number;
+  throughputPerMin?: number;
+}
+
+export interface WorkspaceRuntimeSnapshot {
+  id: string;
+  workspaceId: string;
+  recordedAt: string;
+  edges: Record<string, RuntimeEdgeMetrics>;
+  nodes: Record<string, RuntimeNodeMetrics>;
+}
+
 /** Chat can trigger graph actions (highlight, filter, design, trace). From manager response. */
 export type GraphCommand =
   | { action: "highlight_nodes"; nodeIds: string[] }
@@ -244,6 +323,9 @@ export type GraphCommand =
       layer: NodeLayer | string;
       description?: string;
       archNodeId?: string;
+      skeletonCode?: string;
+      layoutHint?: string;
+      group?: string;
     }
   | {
       action: "connect";
@@ -252,3 +334,22 @@ export type GraphCommand =
       edgeType?: "import" | "reexport" | "dynamic";
     }
   | { action: "trace_path"; nodeIds: string[]; intensity?: number };
+
+export type ArchitectureChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  rails?: { id: string }[];
+  reasoningSteps?: string[];
+  citations?: Array<{
+    label: string;
+    nodeId?: string;
+    edgeId?: string;
+    filePath?: string;
+  }>;
+  confidenceScore?: number | null;
+  suggestedActions?: string[];
+  graphCommands?: GraphCommand[];
+  relevantNodeIds?: string[];
+  taskId?: string;
+  feedback?: "up" | "down";
+};

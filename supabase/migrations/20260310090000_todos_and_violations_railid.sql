@@ -40,9 +40,16 @@ CREATE INDEX IF NOT EXISTS violations_rail_id_idx
   WHERE rail_id IS NOT NULL;
 
 -- Protect against self-dependencies in depends_on
-ALTER TABLE todos
-  ADD CONSTRAINT IF NOT EXISTS todos_no_self_dependency
-  CHECK (NOT (id = ANY(COALESCE(depends_on, ARRAY[]::uuid[]))));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'todos_no_self_dependency'
+  ) THEN
+    ALTER TABLE todos
+      ADD CONSTRAINT todos_no_self_dependency
+      CHECK (NOT (id = ANY(COALESCE(depends_on, ARRAY[]::uuid[]))));
+  END IF;
+END $$;
 
 -- updated_at trigger (shared function; safe to CREATE OR REPLACE)
 CREATE OR REPLACE FUNCTION set_updated_at()

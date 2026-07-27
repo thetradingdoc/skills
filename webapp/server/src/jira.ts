@@ -41,7 +41,7 @@ function isJiraOpen(status: string): boolean {
 }
 
 /** Sync violation policy_state from Jira: if a tracked ticket is resolved/closed, mark violation resolved. */
-async function syncViolationsFromJiraStatus(
+export async function syncViolationsFromJiraStatus(
   workspaceId: string,
   config: { baseUrl: string; email: string; apiToken: string }
 ): Promise<void> {
@@ -254,6 +254,32 @@ router.post("/jira-add-label", requireUser, async (req, res) => {
       res.status(400).json({ error: err.message, code: "jira_decrypt_failed" });
       return;
     }
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+/** Sync violation policy_state from Jira — poll this to update tracked violations when tickets are resolved. */
+router.post("/jira-sync", requireUser, async (req, res) => {
+  const { workspaceId } = req.body as { workspaceId?: string };
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  const owned = await userOwnsWorkspace(workspaceId, req.user!.id);
+  if (!owned) {
+    res.status(403).json({ error: "Workspace not found or access denied" });
+    return;
+  }
+  try {
+    const config = await getUserJiraConfig(req.user!.id);
+    if (!config) {
+      res.json({ synced: false, message: "Jira not connected" });
+      return;
+    }
+    await syncViolationsFromJiraStatus(workspaceId, config);
+    res.json({ synced: true });
+  } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
   }

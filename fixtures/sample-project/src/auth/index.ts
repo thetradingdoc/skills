@@ -1,4 +1,4 @@
-import { formatToken } from "@/shared/utils";
+import { formatToken } from "../shared/utils";
 
 export function getSession() {
   return formatToken("session");

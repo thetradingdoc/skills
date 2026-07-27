@@ -138,6 +138,21 @@ export function matchQueryToGraph(query: string, graph: ArchGraph): MatchResult 
   };
 }
 
+/** Match a short label/name to the single best node. Used for path search (no layer matching). */
+export function matchNodeByLabel(query: string, graph: ArchGraph): string | null {
+  const q = query.trim();
+  if (!q || graph.nodes.length === 0) return null;
+  const subjectTokens = tokenize(q);
+  if (subjectTokens.length === 0) return null;
+
+  const scored = graph.nodes
+    .map((n) => ({ node: n, score: scoreNode(n, subjectTokens) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored.length > 0 ? scored[0].node.id : null;
+}
+
 export function formatMatchedNodesForPrompt(matchedNodeIds: string[], graph: ArchGraph): string {
   if (matchedNodeIds.length === 0) return "";
 
@@ -153,4 +168,3 @@ export function formatMatchedNodesForPrompt(matchedNodeIds: string[], graph: Arc
   }
   return lines.join("\n");
 }
-

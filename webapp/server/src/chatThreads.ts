@@ -4,38 +4,18 @@
 
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
+import { requireWorkspaceAccess } from "./middleware/requireWorkspaceAccess.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 
 const router = Router();
 const MESSAGES_LIMIT = 100;
 
-async function verifyWorkspace(workspaceId: string, ownerId: string): Promise<boolean> {
-  if (!supabaseAdmin) return false;
-  const { data } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  return !!data;
-}
-
-router.get("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
+router.get("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId required" });
-    return;
-  }
-  const ok = await verifyWorkspace(workspaceId, ownerId);
-  if (!ok) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
-    return;
-  }
+  const workspaceId = req.params.workspaceId!;
   const q = (typeof req.query.q === "string" ? req.query.q.trim() : "") || null;
   let query = supabaseAdmin
     .from("chat_threads")
@@ -54,23 +34,13 @@ router.get("/workspaces/:workspaceId/threads", requireUser, async (req, res) => 
   res.json({ threads: data ?? [] });
 });
 
-router.post("/workspaces/:workspaceId/threads", requireUser, async (req, res) => {
+router.post("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const workspaceId = req.params.workspaceId;
+  const workspaceId = req.params.workspaceId!;
   const title = typeof req.body?.title === "string" ? req.body.title.trim() || "New chat" : "New chat";
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId required" });
-    return;
-  }
-  const ok = await verifyWorkspace(workspaceId, ownerId);
-  if (!ok) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
-    return;
-  }
   const { data, error } = await supabaseAdmin
     .from("chat_threads")
     .insert({ workspace_id: workspaceId, title })
@@ -83,21 +53,15 @@ router.post("/workspaces/:workspaceId/threads", requireUser, async (req, res) =>
   res.status(201).json(data);
 });
 
-router.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
+router.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const workspaceId = req.params.workspaceId;
+  const workspaceId = req.params.workspaceId!;
   const threadId = req.params.threadId;
-  if (!workspaceId || !threadId) {
-    res.status(400).json({ error: "workspaceId and threadId required" });
-    return;
-  }
-  const ok = await verifyWorkspace(workspaceId, ownerId);
-  if (!ok) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!threadId) {
+    res.status(400).json({ error: "threadId required" });
     return;
   }
   const limit = Math.min(parseInt(String(req.query.limit ?? MESSAGES_LIMIT), 10) || MESSAGES_LIMIT, 200);
@@ -124,26 +88,20 @@ router.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, a
   res.json({ messages: data ?? [] });
 });
 
-router.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, async (req, res) => {
+router.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const workspaceId = req.params.workspaceId;
+  const workspaceId = req.params.workspaceId!;
   const threadId = req.params.threadId;
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  if (!workspaceId || !threadId) {
-    res.status(400).json({ error: "workspaceId and threadId required" });
+  if (!threadId) {
+    res.status(400).json({ error: "threadId required" });
     return;
   }
   if (messages.length === 0) {
     res.status(400).json({ error: "messages array required (at least one {role, content})" });
-    return;
-  }
-  const ok = await verifyWorkspace(workspaceId, ownerId);
-  if (!ok) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
     return;
   }
   const { data: thread } = await supabaseAdmin
@@ -183,22 +141,16 @@ router.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, 
   res.status(201).json({ messages: data ?? [] });
 });
 
-router.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, async (req, res) => {
+router.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const workspaceId = req.params.workspaceId;
+  const workspaceId = req.params.workspaceId!;
   const threadId = req.params.threadId;
   const title = typeof req.body?.title === "string" ? req.body.title.trim() : undefined;
-  if (!workspaceId || !threadId || !title) {
-    res.status(400).json({ error: "workspaceId, threadId, and title required" });
-    return;
-  }
-  const ok = await verifyWorkspace(workspaceId, ownerId);
-  if (!ok) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!threadId || !title) {
+    res.status(400).json({ error: "threadId and title required" });
     return;
   }
   const { data, error } = await supabaseAdmin

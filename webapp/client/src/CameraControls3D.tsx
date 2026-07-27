@@ -5,10 +5,10 @@ import { useSpring } from "@react-spring/web";
 import * as THREE from "three";
 import { useSceneAnimation } from "./SceneAnimations";
 
-export const DEFAULT_CAM_POS: [number, number, number] = [18, 18, 24];
+export const DEFAULT_CAM_POS: [number, number, number] = [26, 20, 32];
 export const DEFAULT_TARGET: [number, number, number] = [0, 7, 0];
-const MIN_DISTANCE = 4;
-const MAX_DISTANCE = 60;
+const MIN_DISTANCE = 6;
+const MAX_DISTANCE = 90;
 const MIN_POLAR = 0.1;
 const MAX_POLAR = Math.PI - 0.1;
 
@@ -18,11 +18,11 @@ export function presetToPosTarget(preset: ViewPreset): { pos: [number, number, n
   const t: [number, number, number] = [0, 7, 0];
   switch (preset) {
     case "top":
-      return { pos: [0, 25, 0.1], target: t };
+      return { pos: [0, 32, 0.1], target: t };
     case "front":
-      return { pos: [0, 7, 22], target: t };
+      return { pos: [0, 10, 32], target: t };
     case "side":
-      return { pos: [22, 7, 0], target: t };
+      return { pos: [32, 10, 0], target: t };
     case "iso":
     default:
       return { pos: DEFAULT_CAM_POS, target: DEFAULT_TARGET };
@@ -33,9 +33,11 @@ interface CameraControls3DProps {
   selectedNodePos: { x: number; y: number; z: number } | null;
   snapPreset: ViewPreset | null;
   onSnapComplete: () => void;
+  /** Override from scene state (captured camera position/target). */
+  camera3DOverride?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } | null;
 }
 
-export function CameraControls3D({ selectedNodePos, snapPreset, onSnapComplete }: CameraControls3DProps) {
+export function CameraControls3D({ selectedNodePos, snapPreset, onSnapComplete, camera3DOverride }: CameraControls3DProps) {
   const controlsRef = useRef<any>(null);
   const { camera } = useThree();
   const targetRef = useRef(new THREE.Vector3(...DEFAULT_TARGET));
@@ -104,6 +106,31 @@ export function CameraControls3D({ selectedNodePos, snapPreset, onSnapComplete }
       },
     });
   }, [snapPreset, api, onSnapComplete]);
+
+  useEffect(() => {
+    if (!camera3DOverride) return;
+    const { position, target } = camera3DOverride;
+    setAnimating(true);
+    api.start({
+      from: {
+        posX: camera.position.x,
+        posY: camera.position.y,
+        posZ: camera.position.z,
+        tgtX: controlsRef.current?.target?.x ?? targetRef.current.x,
+        tgtY: controlsRef.current?.target?.y ?? targetRef.current.y,
+        tgtZ: controlsRef.current?.target?.z ?? targetRef.current.z,
+      },
+      to: {
+        posX: position.x,
+        posY: position.y,
+        posZ: position.z,
+        tgtX: target.x,
+        tgtY: target.y,
+        tgtZ: target.z,
+      },
+      onRest: () => setAnimating(false),
+    });
+  }, [camera3DOverride?.position.x, camera3DOverride?.position.y, camera3DOverride?.position.z, camera3DOverride?.target.x, camera3DOverride?.target.y, camera3DOverride?.target.z, api]);
 
   useSceneAnimation(() => {
     if (!animating) return;

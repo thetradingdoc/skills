@@ -127,7 +127,7 @@ export function routeQuestion(
   const root = graph.projectRoot;
   const filesToRead: string[] = [];
   for (const node of allRelevantNodes.slice(0, 4)) {
-    const preferred = node.files
+    const preferred = (node.files ?? [])
       .filter((f) => /\.(ts|tsx|py)$/.test(f) && !/\.test\.|\.spec\./.test(f))
       .slice(0, 2);
     for (const f of preferred) {

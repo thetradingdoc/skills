@@ -15,7 +15,7 @@ Architecture Visualizer is a tool that:
 - **Chats** about the architecture using AI (Claude)
 - **Executes code changes** via “rails” — planned tasks that run in a sandbox, verify with lint/tests, then materialize after approval
 
-See [PRODUCT_STATUS.md](./PRODUCT_STATUS.md) for current feature status and [TODO_AUDIT.md](./TODO_AUDIT.md) for tracked work.
+See [PRODUCT_STATUS.md](./PRODUCT_STATUS.md) for current feature status.
 
 ---
 
@@ -146,9 +146,7 @@ npm test
 |-----|---------|
 | [CODEBASE.md](./CODEBASE.md) | This file — structure and flow |
 | [PRODUCT_STATUS.md](./PRODUCT_STATUS.md) | Current features, APIs |
-| [TODO_AUDIT.md](./TODO_AUDIT.md) | Tracked work, done vs pending |
-| [current-implementation.md](./current-implementation.md) | Implementation details |
-| [EXECUTION_PLAN.md](./EXECUTION_PLAN.md) | Agent execution phases |
+| [ARCHITECTURE_AGENT_SYSTEMS.md](./ARCHITECTURE_AGENT_SYSTEMS.md) | Agent systems architecture |
 | [ops/ENV.md](./ops/ENV.md) | Environment variables |
 
 ---

@@ -1,4 +1,7 @@
 import "./loadEnv.js";
+import { registerTodoSessionLogSink } from "./taskSessionLog.js";
+
+registerTodoSessionLogSink();
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -19,12 +22,26 @@ import { todosRoutes } from "./todos.js";
 import { todosImportRoutes } from "./todosImport.js";
 import { shareRoutes } from "./shareRoutes.js";
 import { metricsRoutes } from "./metrics.js";
+import { feedbackRoutes } from "./feedback.js";
+import { dependencyRisksRoutes } from "./dependencyRisks.js";
+import { telemetryRoutes } from "./telemetryRoutes.js";
 import { taskRoutes } from "./taskRoutes.js";
 import { violationsRoutes } from "./violations.js";
 import { railsRoutes } from "./railsRoutes.js";
 import { greenfieldRoutes } from "./greenfieldRoutes.js";
 import { chatThreadRoutes } from "./chatThreads.js";
 import { userMemoriesRoutes } from "./userMemories.js";
+import { activityRoutes } from "./activityLog.js";
+import { annotationCommentsRoutes } from "./annotationComments.js";
+import { workspaceMembersRoutes } from "./workspaceMembers.js";
+import { githubWebhookRoutes } from "./githubWebhook.js";
+import { scanHistoryRoutes } from "./scanHistory.js";
+import { graphSnapshotsRoutes } from "./graphSnapshots.js";
+import { systemModelRoutes } from "./systemModelRoutes.js";
+import { repoDiffRoutes } from "./repoDiff.js";
+import { githubPrCommentRoutes } from "./githubPrComments.js";
+import { githubConnectRoutes } from "./githubConnect.js";
+import { soloWorkspaceRoutes } from "./soloWorkspace.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../client/dist");
@@ -35,6 +52,11 @@ if (!fs.existsSync(distPath)) {
 const app = express();
 app.set("trust proxy", 1);
 app.use(cors());
+app.use(
+  "/api/webhooks/github",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  githubWebhookRoutes
+);
 app.use(
   express.json({
     limit: "10mb",
@@ -60,10 +82,23 @@ app.use("/api", todosImportRoutes);
 app.use("/api", chatThreadRoutes);
 app.use("/api", userMemoriesRoutes);
 app.use("/api", shareRoutes);
+app.use("/api", activityRoutes);
+app.use("/api", annotationCommentsRoutes);
+app.use("/api", workspaceMembersRoutes);
+app.use("/api", scanHistoryRoutes);
+app.use("/api", graphSnapshotsRoutes);
+app.use("/api", systemModelRoutes);
+app.use("/api", repoDiffRoutes);
+app.use("/api", githubPrCommentRoutes);
+app.use("/api", githubConnectRoutes);
 app.use("/api", metricsRoutes);
 app.use("/api", taskRoutes);
 app.use("/api", greenfieldRoutes);
 app.use("/api", railsRoutes);
+app.use("/api", feedbackRoutes);
+app.use("/api", dependencyRisksRoutes);
+app.use("/api", telemetryRoutes);
+app.use("/api", soloWorkspaceRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });

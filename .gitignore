@@ -8,6 +8,13 @@ webview-ui/node_modules
 *.log
 .DS_Store
 
+# Webapp build artifacts
+webapp/client/dist
+webapp/server/dist
+
+# Webapp server agent scratch (drafts, stamps)
+webapp/server/.agent/greenfield/
+
 # Agent session and staging (AGENT_ROADMAP v4)
 .arch-agent-session.json
 .arch-agent-staging/

@@ -17,6 +17,12 @@ export interface DraftNode {
   layer?: string;
   description?: string;
   archNodeId?: string;
+  /** Optional minimal skeleton code proposed by designer */
+  skeletonCode?: string;
+  /** Optional layout hint for canvas auto-arrangement */
+  layoutHint?: string;
+  /** Optional group ID to cluster nodes visually */
+  group?: string;
 }
 
 export interface DraftEdge {

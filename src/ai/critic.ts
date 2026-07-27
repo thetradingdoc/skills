@@ -394,10 +394,11 @@ export async function reviewGreenfieldAnswer(params: {
   }
   const graphSummary = nodes.map((n) => `- ${n.id} (${n.layer})`).join("\n");
   const edgeSummary = edges.map((e) => `  ${e.source} → ${e.target}`).join("\n");
-  const antiWarnings =
+  const baseForAntiPatterns =
     rootPath && rootPath.trim()
-      ? getAntiPatternWarnings(rootPath, archetype ?? undefined)
-      : [];
+      ? rootPath
+      : (process.env.PROJECTS_BASE_DIR?.trim() || process.env.PROJECT_ROOT?.trim() || process.cwd());
+  const antiWarnings = getAntiPatternWarnings(baseForAntiPatterns, archetype ?? undefined);
   const playbookSnippet = getGreenfieldCriticSystemSnippet(antiWarnings);
   const prompt = `${playbookSnippet}
 

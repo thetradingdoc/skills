@@ -8,7 +8,9 @@ export default defineConfig({
     exclude: [
       "**/node_modules/**",
       "**/dist/**",
-      "**/scripts/playwright*.spec.ts",
+      "**/scripts/**/*.spec.ts",
+      "**/scripts/**/*.spec.js",
+      "**/scripts/**/*.spec.tsx",
       "**/playwright-template.spec.ts",
     ],
   },

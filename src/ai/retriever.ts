@@ -12,6 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { ArchGraph, ArchNode } from "../types";
+import { redactSecrets } from "../analyzer/driftDetector";
 
 export interface FileSnippet {
   filePath: string;
@@ -132,6 +133,16 @@ export function retrieveFileSnippets(
       continue;
     }
 
+    // Redact secrets in config/env-like files before including in prompts
+    const basename = path.basename(absPath).toLowerCase();
+    if (
+      basename.startsWith(".env") ||
+      basename.includes("config") ||
+      /\.(config|env|secret|credentials)\.(json|yaml|yml|toml)$/i.test(absPath)
+    ) {
+      content = redactSecrets(content);
+    }
+
     const extracted = extractSignificantLines(
       content,
       MAX_LINES_PER_FILE,
@@ -177,7 +188,7 @@ export function retrieveNodeContext(
   node: ArchNode,
   graph: ArchGraph
 ): RetrievedContext {
-  const filePaths = node.files
+  const filePaths = (node.files ?? [])
     .filter((f) => /\.(ts|tsx|js|py)$/.test(f) && !/\.test\.|\.spec\./.test(f))
     .slice(0, 3)
     .map((f) => path.join(graph.projectRoot, f));

@@ -18,6 +18,12 @@ export interface TraceContext {
 }
 
 let traceContext: TraceContext = {};
+let agentTraceSink: ((entry: AgentTrace) => void) | null = null;
+
+/** Optional sink (e.g. Phase 1 todo session_log). */
+export function setAgentTraceSink(cb: ((entry: AgentTrace) => void) | null): void {
+  agentTraceSink = cb;
+}
 
 export function setTraceContext(ctx: TraceContext): void {
   traceContext = { ...ctx };
@@ -96,6 +102,7 @@ function emitAgentTrace(entry: Omit<AgentTrace, "id" | "timestamp">): AgentTrace
   };
   agentTraces.push(full);
   agentSubscriber?.(full);
+  agentTraceSink?.(full);
   return full;
 }
 

@@ -3,6 +3,28 @@ import { readContextFile } from "./contextReader";
 import { readArchRules } from "./archRulesReader";
 import * as path from "path";
 
+/** Heuristic redaction for secrets (exported for retriever/config use). */
+export function redactSecrets(raw: string): string {
+  if (!raw) return raw;
+  let out = raw;
+  // .env-style KEY=VALUE lines where KEY hints at secret
+  out = out.replace(
+    /^([A-Z0-9_]*(SECRET|TOKEN|KEY|PASSWORD|PWD)[A-Z0-9_]*\s*=\s*)(.+)$/gim,
+    "$1[REDACTED]"
+  );
+  // Common JSON/YAML style: "apiKey": "....", password: "...."
+  out = out.replace(
+    /(["']?(apiKey|api_key|secret|token|password|pwd)["']?\s*[:=]\s*["'])([^"']+)(["'])/gi,
+    "$1[REDACTED]$4"
+  );
+  // Long high-entropy tokens (base64-ish or hex) of length >= 32
+  out = out.replace(
+    /\b([A-Za-z0-9+/_-]{32,}|[A-Fa-f0-9]{40,})\b/g,
+    "[REDACTED]"
+  );
+  return out;
+}
+
 function matchesPattern(moduleId: string, pattern: string): boolean {
   if (pattern.includes("*")) {
     const regex = new RegExp(
@@ -57,7 +79,9 @@ export function detectDrift(graph: ArchGraph): ArchGraph {
     const updates: Partial<typeof node> = {};
     if (context?.isDeprecated) updates.status = "deprecated";
     if (context?.role) updates.role = context.role;
-    if (context?.rawContent) updates.contextRawContent = context.rawContent;
+    if (context?.rawContent) {
+      updates.contextRawContent = redactSecrets(context.rawContent);
+    }
     return { ...node, ...updates };
   });
 

@@ -20,19 +20,29 @@ import type {
   ArchNode,
   NodeLayer,
   ArchNodeViolationState,
+  Persona,
+  WorkspaceSceneDoc,
   WorkspaceAnnotation,
+  WorkspaceRuntimeSnapshot,
 } from "./types";
 import { NodePopup } from "./NodePopup";
+import { NodeIntelPanel } from "./NodeIntelPanel";
 import { Arch3DView } from "./Arch3DView";
 import { computeDepthLayout } from "./layout/depthLayout";
 import { computeLayerLayout } from "./layout/layerLayout";
+import { computeDomainLayout, domainFromPath, type DomainRegion } from "./layout/domainLayout";
+import { computeElkLayout } from "./layout/elkLayout";
+import type { LayoutMode } from "./types";
 import { NODE_W } from "./layout/canvasConstants";
 import { LAYER_COLORS, LAYER_CFG } from "./layerPalette";
 import { canvasTheme, densityScale, type CanvasDensity, type CanvasThemeName } from "./theme";
-import { filterEdges, type EdgeFilter } from "./analysis/graphAnalyser";
+import { filterEdges, filterNodes, type EdgeFilter, type NodeFilter } from "./analysis/graphAnalyser";
+import { computeBlastRadius, computeBlastRadiusWithSeverity } from "./analysis/blastRadius";
 import { isFlagEnabled } from "./featureFlags";
+import { PresenceCursorsOverlay } from "./PresenceCursorsOverlay";
 
 const DEFAULT_EDGE_FILTER = new Set<EdgeFilter>(["all"]);
+const DEFAULT_NODE_FILTER = new Set<NodeFilter>(["all"]);
 import type { GraphCommand } from "./types";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -56,29 +66,28 @@ const KIND_ICON: Record<string, string> = {
 };
 
 const TECH_ICON: Record<string, string> = {
-  "database": "🗄️",
-  "cache": "⚡",
-  "queue": "📨",
-  "message-bus": "📡",
-  "http-api": "🌐",
-  "web-ui": "🖥️",
-  "mobile-app": "📱",
-  "kubernetes": "☸️",
-  "container-service": "📦",
-  "serverless": "⚙️",
-  "object-storage": "🗂️",
-  "external-saas": "☁️",
-  "generic-service": "🔧",
-  // additional infra / UI pictograms driven by tags
-  "cdn": "🌀",
-  "api-gateway": "🧭",
-  "redis": "🧱",
-  "mysql": "🍚",
-  "user": "👤",
-  "device": "💻",
-  "laptop": "💻",
-  "mobile": "📱",
-  "unknown": "◻️",
+  database: "DB",
+  cache: "C",
+  queue: "Q",
+  "message-bus": "MB",
+  "http-api": "API",
+  "web-ui": "UI",
+  "mobile-app": "M",
+  kubernetes: "K8s",
+  "container-service": "CT",
+  serverless: "SV",
+  "object-storage": "S3",
+  "external-saas": "SaaS",
+  "generic-service": "SRV",
+  cdn: "CDN",
+  "api-gateway": "GW",
+  redis: "RDS",
+  mysql: "SQL",
+  user: "USR",
+  device: "DEV",
+  laptop: "DEV",
+  mobile: "MOB",
+  unknown: "•",
 };
 
 const CLOUD_ICON: Record<string, string> = {
@@ -88,6 +97,20 @@ const CLOUD_ICON: Record<string, string> = {
   other: "☁️",
   unknown: "",
 };
+
+const DOMAIN_REGION_COLORS = [
+  { fill: "rgba(59, 130, 246, 0.08)", border: "rgba(59, 130, 246, 0.35)" },
+  { fill: "rgba(34, 197, 94, 0.08)", border: "rgba(34, 197, 94, 0.35)" },
+  { fill: "rgba(168, 85, 247, 0.08)", border: "rgba(168, 85, 247, 0.35)" },
+  { fill: "rgba(249, 115, 22, 0.08)", border: "rgba(249, 115, 22, 0.35)" },
+  { fill: "rgba(236, 72, 153, 0.08)", border: "rgba(236, 72, 153, 0.35)" },
+  { fill: "rgba(14, 165, 233, 0.08)", border: "rgba(14, 165, 233, 0.35)" },
+];
+function domainRegionColors(domain: string): { fill: string; border: string } {
+  let h = 0;
+  for (let i = 0; i < domain.length; i++) h = (h * 31 + domain.charCodeAt(i)) >>> 0;
+  return DOMAIN_REGION_COLORS[h % DOMAIN_REGION_COLORS.length];
+}
 
 // Tech family colors (data / edge / compute / external / ui)
 const TECH_COLOR: Record<string, string> = {
@@ -123,7 +146,17 @@ const TECH_COLOR: Record<string, string> = {
 // ── Custom Node ───────────────────────────────────────────────────────────────
 function ArchNodeComponent({
   data,
-}: NodeProps<ArchNode & { isSelected: boolean; canvasZoom?: number; density?: CanvasDensity; theme?: CanvasThemeName }>) {
+}: NodeProps<
+  ArchNode & {
+    isSelected: boolean;
+    isHighlighted?: boolean;
+    searchScore?: number;
+    canvasZoom?: number;
+    density?: CanvasDensity;
+    theme?: CanvasThemeName;
+    runtimeMetrics?: { errorRate?: number };
+  }
+>) {
   const node = data;
   const densityKey: CanvasDensity = (data as any).density ?? "standard";
   const th: CanvasThemeName = (data as any).theme ?? "dark";
@@ -182,18 +215,29 @@ function ArchNodeComponent({
   const hasRag = !!node.hasRAG;
   const vsSummary = vs?.highestSeverity ?? null;
   const hasTraces = node.hasTraces === true;
+  const runtimeMetrics = (node as any).runtimeMetrics as { errorRate?: number } | undefined;
+  const hasHighErrorRate = (runtimeMetrics?.errorRate ?? 0) > 0.05;
+  const hasDependencyRisk = (node as any).hasDependencyRisk === true;
+  const fanOut = (node as any).fanOut as number | undefined;
+  const hasHighFanOut = (fanOut ?? 0) >= 10;
+  const miniRoles = (node as any).miniRoles as string[] | undefined;
+  const domain = (node as any).domain as string | undefined;
+  const domainColor = domain
+    ? `hsl(${(domain.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % 360)}, 55%, 50%)`
+    : undefined;
   const densityFactor = densityScale[densityKey];
   const zoomFactor = zoom < 0.5 ? 0.85 : zoom > 1.3 ? 1.15 : 1;
   const sizeFactor = densityFactor * zoomFactor;
   const iconSize = 18 * sizeFactor;
   const labelSize = 11 * sizeFactor;
+  const iconMode = zoom < 0.8;
   const showLayer = zoom >= 0.55;
-  const showKindTech = zoom >= 0.65;
-  const showDescription = zoom >= 0.85 && densityKey === "standard";
-  const showProviderModel = zoom >= 0.8;
+  const showKindTech = !iconMode && zoom >= 0.85;
+  const showDescription = !iconMode && zoom >= 0.95 && densityKey === "standard";
+  const showProviderModel = !iconMode && zoom >= 0.9;
   const showFileCount = zoom >= 0.75;
-  const showHealth = zoom >= 0.8;
-  const showTags = zoom >= 0.85;
+  const showHealth = !iconMode && zoom >= 0.9;
+  const showTags = !iconMode && zoom >= 0.9;
   const fileCount =
     (node.semanticSignals?.fileCount as number | undefined) ??
     (Array.isArray(node.files) ? node.files.length : 0);
@@ -220,6 +264,67 @@ function ArchNodeComponent({
             pointerEvents: "none",
             zIndex: 0,
             filter: "blur(8px)",
+          }}
+        />
+      )}
+
+      {data.isHighlighted && (
+        <div
+          style={{
+            position: "absolute",
+            inset: -8,
+            borderRadius: 14,
+            border:
+              (data.searchScore ?? 1) <= 0.1
+                ? "2px solid rgba(212,165,116,0.9)"
+                : (data.searchScore ?? 1) <= 0.3
+                ? "2px solid rgba(212,165,116,0.7)"
+                : "1px solid rgba(212,165,116,0.45)",
+            boxShadow:
+              (data.searchScore ?? 1) <= 0.1
+                ? "0 0 18px rgba(212,165,116,0.45)"
+                : (data.searchScore ?? 1) <= 0.3
+                ? "0 0 12px rgba(212,165,116,0.35)"
+                : "0 0 8px rgba(212,165,116,0.22)",
+            pointerEvents: "none",
+            zIndex: 2,
+          }}
+          title="Search match"
+        />
+      )}
+
+      {/* Domain halo (domains view) */}
+      {domain && domainColor && (
+        <div
+          style={{
+            position: "absolute",
+            left: -4,
+            top: 2,
+            bottom: 2,
+            width: 4,
+            background: domainColor,
+            borderRadius: 2,
+            opacity: 0.8,
+            pointerEvents: "none",
+          }}
+          title={`Domain: ${domain}`}
+        />
+      )}
+      {/* Risk indicator: critical / high fan-out / dependency risk */}
+      {(hasCritical || hasHighFanOut || hasDependencyRisk) && (
+        <div
+          style={{
+            position: "absolute",
+            inset: -2,
+            borderRadius: 12,
+            border: `2px solid ${
+              hasCritical ? "#ef4444" : hasHighFanOut ? "#f59e0b" : "#a78bfa"
+            }`,
+            pointerEvents: "none",
+            zIndex: 1,
+            boxShadow: `0 0 12px ${
+              hasCritical ? "rgba(239,68,68,0.5)" : hasHighFanOut ? "rgba(245,158,11,0.4)" : "rgba(167,139,250,0.4)"
+            }`,
           }}
         />
       )}
@@ -301,7 +406,11 @@ function ArchNodeComponent({
             ? isVirtualError
               ? "2px dashed #f85149"
               : "2px dashed #a78bfa88"
-            : hasCritical
+            : hasHighErrorRate
+              ? "2px solid #ef4444"
+              : hasDependencyRisk
+              ? "2px solid #f59e0b"
+              : hasCritical
               ? "2px solid #f85149"
               : hasHigh
                 ? "2px solid #f97316"
@@ -318,7 +427,11 @@ function ArchNodeComponent({
             ? isVirtualError
               ? "2px dashed #f85149"
               : "2px dashed #a78bfa88"
-            : hasCritical
+            : hasHighErrorRate
+              ? "2px solid #ef4444"
+              : hasDependencyRisk
+              ? "2px solid #f59e0b"
+              : hasCritical
               ? "2px solid #f85149"
               : hasHigh
                 ? "2px solid #f97316"
@@ -335,7 +448,11 @@ function ArchNodeComponent({
             ? isVirtualError
               ? "2px dashed #f85149"
               : "2px dashed #a78bfa88"
-            : hasCritical
+            : hasHighErrorRate
+              ? "2px solid #ef4444"
+              : hasDependencyRisk
+              ? "2px solid #f59e0b"
+              : hasCritical
               ? "2px solid #f85149"
               : hasHigh
                 ? "2px solid #f97316"
@@ -467,6 +584,50 @@ function ArchNodeComponent({
             title={`${node.llmProvider ?? ""} ${node.modelVersion ?? ""}`.trim()}
           >
             {[node.llmProvider, node.modelVersion].filter(Boolean).join(" · ")}
+          </div>
+        )}
+
+        {showTags && tags.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 4,
+              marginBottom: 4,
+              maxWidth: NODE_W - 40,
+            }}
+            title={tags.join(", ")}
+          >
+            {tags.slice(0, 3).map((tag) => (
+              <span
+                key={tag}
+                style={{
+                  fontSize: 7 * sizeFactor,
+                  padding: "2px 4px",
+                  borderRadius: 999,
+                  fontFamily: "monospace",
+                  textTransform: "lowercase",
+                  background: "rgba(15,23,42,0.9)",
+                  color: "#94a3b8",
+                }}
+              >
+                {tag}
+              </span>
+            ))}
+            {tags.length > 3 && (
+              <span
+                style={{
+                  fontSize: 7 * sizeFactor,
+                  padding: "2px 4px",
+                  borderRadius: 999,
+                  fontFamily: "monospace",
+                  background: "rgba(15,23,42,0.6)",
+                  color: "#64748b",
+                }}
+              >
+                +{tags.length - 3}
+              </span>
+            )}
           </div>
         )}
 
@@ -639,6 +800,34 @@ function ArchNodeComponent({
         </div>
         )}
 
+        {showKindTech && miniRoles && miniRoles.length > 0 && (
+          <div
+            style={{
+              marginTop: 4,
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 3,
+            }}
+          >
+            {miniRoles.slice(0, 4).map((r) => (
+              <span
+                key={r}
+                style={{
+                  fontSize: 7,
+                  color: cfg.accent,
+                  background: `${cfg.accent}22`,
+                  padding: "1px 4px",
+                  borderRadius: 3,
+                  fontFamily: "monospace",
+                  textTransform: " capitalize",
+                }}
+                title={`Role: ${r}`}
+              >
+                {r}
+              </span>
+            ))}
+          </div>
+        )}
         {showTags && tags.length > 0 && (
           <div
             style={{
@@ -810,20 +999,33 @@ function ArchEdgeComponent({
   const isDrift = data?.isDrift;
   const isLayerViolation = data?.isLayerViolation && !isDrift;
   const inTrace = (data as any)?.inTrace as boolean | undefined;
+  const runtimeLatencyMs = (data as any)?.runtimeLatencyMs as number | undefined;
+  const runtimeErrorRate = (data as any)?.runtimeErrorRate as number | undefined;
   const importance = data?.importance as "architectural" | "utility" | "config" | undefined;
   const sourceLayer = (data as any)?.sourceLayer as string | undefined;
   const layerCfg = sourceLayer && LAYER_CFG[sourceLayer] ? LAYER_CFG[sourceLayer] : null;
   const isArchitectural = importance === "architectural" || isDrift || isLayerViolation;
 
+  let runtimeStroke: string | null = null;
+  const hasHighEdgeErrorRate = (runtimeErrorRate ?? 0) > 0.1;
+  if (hasHighEdgeErrorRate) {
+    runtimeStroke = "#ef4444";
+  } else if (typeof runtimeLatencyMs === "number") {
+    if (runtimeLatencyMs < 100) runtimeStroke = "#22c55e";
+    else if (runtimeLatencyMs < 300) runtimeStroke = "#eab308";
+    else runtimeStroke = "#ef4444";
+  }
   const stroke = isDrift
     ? EDGE_PALETTE.drift.stroke
     : isLayerViolation
       ? EDGE_PALETTE.violation.stroke
       : inTrace
         ? EDGE_PALETTE.trace.stroke
-        : isArchitectural
-          ? layerCfg?.accent ?? EDGE_PALETTE.architectural.stroke
-          : EDGE_PALETTE.utility.stroke;
+        : runtimeStroke
+          ? runtimeStroke
+          : isArchitectural
+            ? layerCfg?.accent ?? EDGE_PALETTE.architectural.stroke
+            : EDGE_PALETTE.utility.stroke;
   const glow = isDrift
     ? EDGE_PALETTE.drift.glow
     : isLayerViolation
@@ -833,13 +1035,13 @@ function ArchEdgeComponent({
         : isArchitectural
           ? layerCfg ? `${layerCfg.color}33` : EDGE_PALETTE.architectural.glow
           : EDGE_PALETTE.utility.glow;
-  const strokeOpacity = isArchitectural || inTrace ? 1 : 0.55;
+  const strokeOpacity = isArchitectural || inTrace || runtimeStroke ? 1 : 0.55;
 
   const violationStrokeDash = "2 4";
   const driftStrokeDash = "6 3";
 
   return (
-    <g className={isDrift ? "arch-edge-drift" : undefined}>
+    <g className={isDrift ? "arch-edge-drift" : inTrace ? "arch-edge-trace" : undefined}>
       <path
         d={path}
         fill="none"
@@ -859,7 +1061,17 @@ function ArchEdgeComponent({
         }
         strokeLinecap={isLayerViolation ? "round" : "butt"}
         markerEnd={`url(#arrowhead-${isDrift ? "drift" : isLayerViolation ? "violation" : "normal"})`}
-      />
+      >
+        <title>
+          {isDrift
+            ? (data as any)?.driftReason ?? "Architecture drift"
+            : isLayerViolation
+              ? "Layer violation"
+              : importance === "architectural"
+                ? "Architectural import edge"
+                : "Import edge"}
+        </title>
+      </path>
       {isDrift && (
         <circle r={3.5} fill="#ef4444" className="arch-edge-drift-dot">
           <animateMotion dur="1.8s" repeatCount="indefinite" path={path} />
@@ -875,12 +1087,54 @@ function ArchEdgeComponent({
           <animateMotion dur="1.5s" repeatCount="indefinite" path={path} />
         </circle>
       )}
-      {!isDrift && !isLayerViolation && !inTrace && (
-        <circle r={1.5} fill="#60a5fa" opacity={0.5}>
-          <animateMotion dur="4s" repeatCount="indefinite" path={path} />
+      {!isDrift && !isLayerViolation && !inTrace && (runtimeStroke || (data as any)?.runtimeLive) && (
+        <circle
+          r={2}
+          fill={runtimeStroke ?? "#60a5fa"}
+          opacity={0.8}
+        >
+          <animateMotion dur="2s" repeatCount="indefinite" path={path} />
         </circle>
       )}
     </g>
+  );
+}
+
+function DomainRegionComponent({
+  data,
+}: NodeProps<{ domain: string; colors: { fill: string; border: string } }>) {
+  const { domain, colors } = data;
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: colors.fill,
+        border: `1px solid ${colors.border}`,
+        borderRadius: 12,
+        pointerEvents: "none",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.03)",
+      }}
+      title={`Domain: ${domain}`}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: 8,
+          left: 12,
+          fontSize: 10,
+          fontWeight: 600,
+          color: colors.border,
+          opacity: 0.5,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          fontFamily: "monospace",
+        }}
+      >
+        {domain}
+      </div>
+    </div>
   );
 }
 
@@ -948,7 +1202,10 @@ function LayerBandComponent({
 
 // ── Annotation sticky note (2D) ────────────────────────────────────────────────
 function AnnotationStickyComponent({ data }: NodeProps) {
-  const ann = data as unknown as WorkspaceAnnotation & { onDelete?: (id: string) => void };
+  const ann = data as unknown as WorkspaceAnnotation & {
+    onDelete?: (id: string) => void;
+    onOpenComments?: (id: string) => void;
+  };
   const typeColor =
     ann.type === "note"
       ? "#fef08a"
@@ -974,27 +1231,50 @@ function AnnotationStickyComponent({ data }: NodeProps) {
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 4 }}>
         <span style={{ fontWeight: 600, textTransform: "uppercase", fontSize: 9 }}>{ann.type}</span>
-        {ann.onDelete && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              ann.onDelete?.(ann.id);
-            }}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: 0,
-              fontSize: 12,
-              lineHeight: 1,
-              opacity: 0.6,
-            }}
-            title="Delete"
-          >
-            ×
-          </button>
-        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {ann.onOpenComments && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                ann.onOpenComments?.(ann.id);
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: 11,
+                lineHeight: 1,
+                opacity: 0.7,
+              }}
+              title="Comments"
+            >
+              💬
+            </button>
+          )}
+          {ann.onDelete && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                ann.onDelete?.(ann.id);
+              }}
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                fontSize: 12,
+                lineHeight: 1,
+                opacity: 0.6,
+              }}
+              title="Delete"
+            >
+              ×
+            </button>
+          )}
+        </div>
       </div>
       <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", marginTop: 2 }}>
         {ann.content || "(empty)"}
@@ -1003,8 +1283,52 @@ function AnnotationStickyComponent({ data }: NodeProps) {
   );
 }
 
-const nodeTypes = { arch: ArchNodeComponent, band: LayerBandComponent, annotation: AnnotationStickyComponent };
-const edgeTypes = { arch: ArchEdgeComponent };
+const NODE_TYPES = {
+  arch: ArchNodeComponent,
+  band: LayerBandComponent,
+  domainRegion: DomainRegionComponent,
+  annotation: AnnotationStickyComponent,
+} as const;
+const EDGE_TYPES = { arch: ArchEdgeComponent } as const;
+
+function BlastRadiusOverlay({ graph, sourceId }: { graph: ArchGraph; sourceId: string }) {
+  const radius = computeBlastRadius(graph, sourceId);
+  const withSev = computeBlastRadiusWithSeverity(graph, sourceId);
+  const critical = [...withSev].filter(([, s]) => s === "critical").length;
+  const high = [...withSev].filter(([, s]) => s === "high").length;
+  const medium = [...withSev].filter(([, s]) => s === "medium").length;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: 16,
+        left: 16,
+        zIndex: 20,
+        background: "linear-gradient(150deg, rgba(15,23,42,0.95), rgba(7,13,26,0.98))",
+        border: "1px solid rgba(239,68,68,0.5)",
+        borderRadius: 10,
+        padding: "12px 16px",
+        color: "#f1f5f9",
+        fontSize: 12,
+        fontFamily: "monospace",
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 4px 16px rgba(0,0,0,0.5), 0 0 0 1px rgba(239,68,68,0.2)",
+      }}
+    >
+      <div style={{ fontWeight: 600, marginBottom: 6, color: "#ef4444" }}>Blast radius</div>
+      <div style={{ fontSize: 14, marginBottom: 4 }}>
+        {radius.size} downstream node{radius.size !== 1 ? "s" : ""} impacted
+      </div>
+      {(critical > 0 || high > 0 || medium > 0) && (
+        <div style={{ fontSize: 10, color: "#94a3b8", display: "flex", gap: 10 }}>
+          {critical > 0 && <span style={{ color: "#dc2626" }}>Critical: {critical}</span>}
+          {high > 0 && <span style={{ color: "#ea580c" }}>High: {high}</span>}
+          {medium > 0 && <span style={{ color: "#ca8a04" }}>Medium: {medium}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── ArchCanvas ────────────────────────────────────────────────────────────────
 
@@ -1015,6 +1339,21 @@ interface Props {
   repoUrl?: string;
   onNodeSelect: (id: string | null) => void;
   edgeFilter?: EdgeFilter | Set<EdgeFilter>;
+  /** Filter which node subsets to show (core, databases, queues, utilities, external). */
+  nodeFilter?: NodeFilter | Set<NodeFilter>;
+  /** Persona preset: overview/learn/deep_dive */
+  persona?: Persona;
+  /** Search results for highlighting nodes by score (lower is better). */
+  searchResults?: Array<{ nodeId: string; score: number }>;
+  /** 2D/3D view mode (controlled by App top bar). */
+  viewMode?: "2d" | "3d";
+  onViewModeChange?: (mode: "2d" | "3d") => void;
+  /** Canvas overlay mode (controlled by App top bar). */
+  canvasViewMode?: "architecture" | "domains" | "runtime" | "failure";
+  onCanvasViewModeChange?: (mode: "architecture" | "domains" | "runtime" | "failure") => void;
+  /** Layout mode (controlled by App top bar). */
+  layoutMode?: LayoutMode;
+  onLayoutModeChange?: (mode: LayoutMode) => void;
   /** When the agent returns a graphCommand, apply it to highlight/filter the canvas. */
   agentGraphCommand?: GraphCommand | null;
   /** Proposed virtual nodes from the agent (ghost nodes). */
@@ -1044,11 +1383,33 @@ interface Props {
   annotations?: WorkspaceAnnotation[];
   /** Called after annotation create/update/delete to refetch. */
   onAnnotationsChange?: () => Promise<void>;
+  /** Called when user opens comments for an annotation. */
+  onOpenComments?: (annotationId: string) => void;
   /** When user clicks "Explain this area" in focus mode, called with prompt to pre-fill chat. */
   onExplainArea?: (prompt: string) => void;
   /** Presentation mode: hide most controls, step through scenes. */
   presentationMode?: boolean;
   onPresentationModeChange?: (value: boolean) => void;
+  /** Authored scene document (separate from scanned graph) */
+  scene?: WorkspaceSceneDoc | null;
+  /** Enable scene editing affordances (snap/grid/undo + 3D gizmo + import). */
+  sceneEditMode?: boolean;
+  /** Persist scene as a new version for this workspace. */
+  onSaveScene?: (scene: WorkspaceSceneDoc) => Promise<void>;
+  /** Called when editor mutates the scene draft (e.g. moving nodes/importing assets). */
+  onSceneChange?: (scene: WorkspaceSceneDoc) => void;
+  /** Active scene state id (slides). */
+  activeSceneStateId?: string | null;
+  /** Optional runtime metrics overlay for nodes/edges. */
+  runtimeSnapshot?: WorkspaceRuntimeSnapshot | null;
+  /** When true, animates flow on edges with runtime data (live mode). */
+  runtimeLive?: boolean;
+  /** Node IDs that use vulnerable dependencies (supply-chain risk overlay). */
+  vulnerableNodeIds?: Set<string>;
+  /** Ref to register capture-view function (viewport2D / camera3D). */
+  captureViewRef?: React.MutableRefObject<(() => { viewport2D?: { x: number; y: number; zoom: number }; camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } }) | null>;
+  /** When set, apply this viewport to 2D canvas (from active scene state). */
+  viewportToApply?: { x: number; y: number; zoom: number } | null;
 }
 
 type LegendHighlight =
@@ -1065,6 +1426,15 @@ export function ArchCanvas({
   repoUrl,
   onNodeSelect,
   edgeFilter = DEFAULT_EDGE_FILTER,
+  nodeFilter,
+  persona,
+  searchResults = [],
+  viewMode: viewModeProp,
+  onViewModeChange,
+  canvasViewMode: canvasViewModeProp,
+  onCanvasViewModeChange,
+  layoutMode: layoutModeProp,
+  onLayoutModeChange,
   agentGraphCommand,
   proposedNodes,
   proposedEdges,
@@ -1077,23 +1447,130 @@ export function ArchCanvas({
   density = "standard",
   annotations = [],
   onAnnotationsChange,
+  onOpenComments,
   onExplainArea,
   presentationMode = false,
   onPresentationModeChange,
+  scene = null,
+  sceneEditMode = false,
+  onSaveScene,
+  onSceneChange,
+  activeSceneStateId = null,
+  runtimeSnapshot = null,
+  runtimeLive = false,
+  vulnerableNodeIds,
+  captureViewRef,
+  viewportToApply,
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [building, setBuilding] = useState(true);
   const [legendHighlight, setLegendHighlight] = useState<LegendHighlight>(null);
   const [tracePathNodeIds, setTracePathNodeIds] = useState<string[] | null>(null);
-  const reactFlowInstanceRef = useRef<{ fitView: (opts?: { padding?: number }) => void } | null>(null);
+  const [sceneNodeOverrides2D, setSceneNodeOverrides2D] = useState<Record<string, { x: number; y: number }>>({});
+  const [undoStack, setUndoStack] = useState<Array<Record<string, { x: number; y: number }>>>([]);
+  const [redoStack, setRedoStack] = useState<Array<Record<string, { x: number; y: number }>>>([]);
+  const reactFlowInstanceRef = useRef<
+    { fitView: (opts?: { padding?: number }) => void; getViewport?: () => { x: number; y: number; zoom: number }; setViewport?: (v: { x: number; y: number; zoom: number }) => void } | null
+  >(null);
+  const flowContainerRef = useRef<HTMLDivElement | null>(null);
+  const flowParentRef = useRef<HTMLDivElement | null>(null);
+  // Start at 0: ReactFlow must not mount until ResizeObserver measures real size.
+  const [flowDimensions, setFlowDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [canvasDebug, setCanvasDebug] = useState<{
+    graphNodes: number;
+    filteredNodes: number;
+    personaFilteredNodes: number;
+    effectiveNodes: number;
+    rfNodes: number;
+    canvasViewMode: "architecture" | "domains" | "runtime" | "failure";
+    persona: Persona | null | undefined;
+    focusMode: boolean;
+    legendHighlightType: string;
+  } | null>(null);
   const prevGraphKeyRef = useRef<string>("");
+  const lastNodePositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const legendHighlightRef = useRef<LegendHighlight>(null);
   legendHighlightRef.current = legendHighlight;
-  const [viewMode, setViewMode] = useState<"2d" | "3d">("2d");
+  const [viewModeInternal, setViewModeInternal] = useState<"2d" | "3d">("2d");
+  const [canvasViewModeInternal, setCanvasViewModeInternal] =
+    useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
+  const [showFullNodePopup, setShowFullNodePopup] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [fps2d, setFps2d] = useState(0);
+  const layoutMode: LayoutMode =
+    layoutModeProp ?? ((scene?.settings?.layoutMode as LayoutMode) ?? "depth");
+  const viewMode = viewModeProp ?? viewModeInternal;
+  const canvasViewMode = canvasViewModeProp ?? canvasViewModeInternal;
+  const effectiveLayoutMode: LayoutMode =
+    canvasViewMode === "domains" ? "domain" : layoutMode;
+  const [elkPositions, setElkPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
+
+  useEffect(() => {
+    if (!captureViewRef) return;
+    if (viewMode !== "2d") {
+      captureViewRef.current = null;
+      return;
+    }
+    captureViewRef.current = () => {
+      const rf = reactFlowInstanceRef.current;
+      const vp = (rf as any)?.getViewport?.();
+      if (!vp || typeof vp.zoom !== "number") return {};
+      return { viewport2D: { x: vp.x, y: vp.y, zoom: vp.zoom } };
+    };
+    return () => { captureViewRef.current = null; };
+  }, [captureViewRef, viewMode]);
+
+  useEffect(() => {
+    if (!viewportToApply || viewMode !== "2d") return;
+    const rf = reactFlowInstanceRef.current;
+    (rf as any)?.setViewport?.({ x: viewportToApply.x, y: viewportToApply.y, zoom: viewportToApply.zoom });
+  }, [viewportToApply, viewMode]);
+
+  useEffect(() => {
+    const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
+    if (effectiveLayoutMode !== "elk" || graph.nodes.length === 0 || isGreenfieldOnly) {
+      setElkPositions(null);
+      return;
+    }
+    let cancelled = false;
+    computeElkLayout(graph).then((r) => {
+      if (!cancelled) setElkPositions(r.nodePositions);
+    });
+    return () => { cancelled = true; };
+  }, [effectiveLayoutMode, graph, proposedNodes?.length]);
+
+  useEffect(() => {
+    if (!scene) return;
+    const next: Record<string, { x: number; y: number }> = {};
+    for (const obj of scene.objects ?? []) {
+      if (obj.kind !== "node") continue;
+      const nodeId = (obj.props as any)?.nodeId as string | undefined;
+      const p = obj.transform?.position as any;
+      if (!nodeId || !p) continue;
+      if (typeof p.x === "number" && typeof p.y === "number") next[nodeId] = { x: p.x, y: p.y };
+    }
+    setSceneNodeOverrides2D(next);
+    setUndoStack([]);
+    setRedoStack([]);
+  }, [scene]);
+
+  // ResizeObserver: ensure React Flow parent has explicit dimensions (fixes error 004)
+  useEffect(() => {
+    const el = flowParentRef.current;
+    if (!el || viewMode !== "2d") return;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      if (!e) return;
+      const { width, height } = e.contentRect;
+      if (width > 0 && height > 0) setFlowDimensions({ width, height });
+    });
+    ro.observe(el);
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) setFlowDimensions({ width: rect.width, height: rect.height });
+    return () => ro.disconnect();
+  }, [viewMode]);
 
   useEffect(() => {
     if (!isFlagEnabled("perf_hud")) return;
@@ -1158,20 +1635,47 @@ export function ArchCanvas({
 
   useEffect(() => {
     const total = graph.nodes.length + (proposedNodes?.length ?? 0);
-    if (total > 0 && reactFlowInstanceRef.current) {
-      reactFlowInstanceRef.current.fitView({ padding: 0.12 });
-    }
-  }, [graph.nodes.length, graph.generatedAt, proposedNodes?.length]);
+    const rf = reactFlowInstanceRef.current;
+    if (!rf || total === 0) return;
+    const padding = flowDimensions.width > flowDimensions.height ? 0.05 : 0.12;
+    rf.fitView({ padding });
+  }, [graph.nodes.length, graph.generatedAt, proposedNodes?.length, flowDimensions.width, flowDimensions.height]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onNodeSelect(null);
       }
+      if (!sceneEditMode) return;
+      const isUndo = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey;
+      const isRedo = (e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey));
+      if (isUndo) {
+        e.preventDefault();
+        setUndoStack((prev) => {
+          if (prev.length === 0) return prev;
+          const nextPrev = [...prev];
+          const last = nextPrev.pop()!;
+          setRedoStack((r) => [...r, { ...sceneNodeOverrides2D }]);
+          setSceneNodeOverrides2D(last);
+          if (onSceneChange && scene) onSceneChange({ ...scene, objects: (scene.objects ?? []).map((o) => o) });
+          return nextPrev;
+        });
+      } else if (isRedo) {
+        e.preventDefault();
+        setRedoStack((prev) => {
+          if (prev.length === 0) return prev;
+          const nextPrev = [...prev];
+          const last = nextPrev.pop()!;
+          setUndoStack((u) => [...u, { ...sceneNodeOverrides2D }]);
+          setSceneNodeOverrides2D(last);
+          if (onSceneChange && scene) onSceneChange({ ...scene, objects: (scene.objects ?? []).map((o) => o) });
+          return nextPrev;
+        });
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onNodeSelect]);
+  }, [onNodeSelect, sceneEditMode, sceneNodeOverrides2D, onSceneChange, scene]);
 
   // Apply agent graph command to canvas highlight (layer or node set).
   useEffect(() => {
@@ -1180,6 +1684,15 @@ export function ArchCanvas({
       setLegendHighlight({ type: "nodes", nodeIds: agentGraphCommand.nodeIds });
     } else if (agentGraphCommand.action === "filter_layer") {
       setLegendHighlight({ type: "layer", layer: agentGraphCommand.layer });
+    } else if (agentGraphCommand.action === "focus_node") {
+      setLegendHighlight({ type: "nodes", nodeIds: [agentGraphCommand.nodeId] });
+      const rf = reactFlowInstanceRef.current;
+      const pos = lastNodePositionsRef.current.get(agentGraphCommand.nodeId);
+      if (rf && pos && typeof (rf as any).setViewport === "function") {
+        const vp = (rf as any).getViewport?.() ?? { x: 0, y: 0, zoom: 1 };
+        const zoom = Math.max(0.75, Math.min(1.25, vp.zoom ?? 1));
+        (rf as any).setViewport({ x: -pos.x + 240, y: -pos.y + 200, zoom });
+      }
     } else if (agentGraphCommand.action === "trace_path") {
       setLegendHighlight({ type: "nodes", nodeIds: agentGraphCommand.nodeIds });
       setTracePathNodeIds(agentGraphCommand.nodeIds);
@@ -1189,6 +1702,16 @@ export function ArchCanvas({
     }
   }, [agentGraphCommand]);
 
+  // Failure view: when node selected, highlight blast radius (downstream nodes).
+  useEffect(() => {
+    if (canvasViewMode === "failure" && selectedNode) {
+      const radius = computeBlastRadius(graph, selectedNode);
+      setLegendHighlight({ type: "nodes", nodeIds: [selectedNode, ...Array.from(radius)] });
+    } else if (canvasViewMode === "failure" && !selectedNode) {
+      setLegendHighlight(null);
+    }
+  }, [canvasViewMode, selectedNode, graph]);
+
   function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
     let t: number | undefined;
     return ((...args: any[]) => {
@@ -1197,6 +1720,11 @@ export function ArchCanvas({
     }) as T;
   }
 
+  const activeSceneState = useMemo(() => {
+    const s = scene?.states ?? [];
+    return activeSceneStateId ? s.find((x) => x.id === activeSceneStateId) ?? null : null;
+  }, [scene, activeSceneStateId]);
+
   const rawBuild = useCallback(() => {
     const nodeIds = graph.nodes.map((n) => n.id).sort().join(",");
     const proposedIds = (proposedNodes ?? []).map((p) => p.id).sort().join(",");
@@ -1204,11 +1732,83 @@ export function ArchCanvas({
     const isGraphChange = prevGraphKeyRef.current !== graphKey;
     prevGraphKeyRef.current = graphKey;
     if (isGraphChange) setBuilding(true);
-    const filtered = filterEdges(graph, edgeFilter);
+    const nodeFilters = nodeFilter instanceof Set ? nodeFilter : nodeFilter ? new Set<NodeFilter>([nodeFilter]) : DEFAULT_NODE_FILTER;
+    const graphAfterNodeFilter =
+      nodeFilters.has("all") || nodeFilters.size === 0 ? graph : filterNodes(graph, nodeFilters);
+    const filtered = filterEdges(graphAfterNodeFilter, edgeFilter);
+
+    const personaFiltered = (() => {
+      if (!persona || persona === "deep_dive") return filtered;
+      if (persona === "learn") return filtered;
+      const keep = new Set<string>();
+      for (const n of filtered.nodes) {
+        const layer = (n.layer ?? "Uncategorized") as string;
+        const isUtility = layer === "Utilities" || layer === "Configuration";
+        const isExternal = layer === "External Services";
+        const fileCount =
+          (n.semanticSignals?.fileCount as number | undefined) ?? (n.files?.length ?? 0);
+        const looksHighLevel = (n.kind ?? "unknown") === "module" || fileCount >= 3;
+        if (!isUtility && !isExternal && looksHighLevel) keep.add(n.id);
+      }
+      return {
+        ...filtered,
+        nodes: filtered.nodes.filter((n) => keep.has(n.id)),
+        edges: filtered.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+      };
+    })();
+
+    // Safety: if filters would hide everything but the underlying graph has nodes,
+    // fall back to the unfiltered graph so the canvas is never completely blank.
+    const effectiveGraphForRender =
+      personaFiltered.nodes.length > 0 ? personaFiltered : filtered;
     const isGreenfieldOnly = graph.nodes.length === 0 && (proposedNodes?.length ?? 0) > 0;
-    const { nodePositions, layerBands } = isGreenfieldOnly
-      ? computeLayerLayout(proposedNodes ?? [])
-      : computeDepthLayout(graph);
+    let nodePositions: Map<string, { x: number; y: number }>;
+    let layerBands: Array<{ id: string; layer: string; x: number; y: number; width: number; height: number }>;
+    let domainRegions: DomainRegion[] = [];
+    if (isGreenfieldOnly) {
+      const r = computeLayerLayout(proposedNodes ?? []);
+      nodePositions = r.nodePositions;
+      layerBands = r.layerBands;
+    } else if (effectiveLayoutMode === "domain") {
+      const r = computeDomainLayout(personaFiltered);
+      nodePositions = r.nodePositions;
+      layerBands = r.layerBands;
+      domainRegions = r.domainRegions ?? [];
+    } else if (effectiveLayoutMode === "elk" && elkPositions && elkPositions.size > 0) {
+      nodePositions = elkPositions;
+      layerBands = [];
+    } else {
+      const r = computeDepthLayout(personaFiltered);
+      nodePositions = r.nodePositions;
+      layerBands = r.layerBands;
+    }
+
+    // Widen layout horizontally so layers use more of the canvas.
+    // The core layout functions tend to produce a tall, narrow bounding box;
+    // here we stretch X coordinates based on the current viewport aspect ratio
+    // so the graph visually occupies more horizontal space.
+    if (nodePositions.size > 0 && flowDimensions.width > 0 && flowDimensions.height > 0) {
+      const entries = Array.from(nodePositions.entries());
+      const xs = entries.map(([, p]) => p.x);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const currentWidth = maxX - minX || 1;
+      const aspect = flowDimensions.width / flowDimensions.height;
+      const MIN_TARGET_WIDTH = 800;
+      if (aspect > 1.1 && currentWidth > 0) {
+        const targetWidth = Math.max(currentWidth * Math.min(aspect * 1.4, 2.6), MIN_TARGET_WIDTH);
+        const scale = targetWidth / currentWidth;
+        const centerX = (minX + maxX) / 2;
+        const widened = new Map<string, { x: number; y: number }>();
+        for (const [id, pos] of entries) {
+          const dx = pos.x - centerX;
+          widened.set(id, { x: centerX + dx * scale, y: pos.y });
+        }
+        nodePositions = widened;
+      }
+    }
+
+    lastNodePositionsRef.current = nodePositions;
     const hl = legendHighlightRef.current;
 
     const nodeMatches = (node: ArchNode): boolean => {
@@ -1231,7 +1831,7 @@ export function ArchCanvas({
         return node.isDrift || (node.status ?? "unknown") === "error";
       }
       if (hl.type === "edge") {
-        const hasMatchingEdge = filtered.edges.some((e) => {
+        const hasMatchingEdge = personaFiltered.edges.some((e) => {
           if (e.source !== node.id && e.target !== node.id) return false;
           if (hl.kind === "import") return !e.isDrift && !e.isLayerViolation;
           if (hl.kind === "violation") return e.isLayerViolation && !e.isDrift;
@@ -1266,7 +1866,7 @@ export function ArchCanvas({
         return srcOk || tgtOk;
       }
       if (hl.type === "edge") {
-        const e = filtered.edges.find((x) => x.source === edge.source && x.target === edge.target);
+        const e = personaFiltered.edges.find((x) => x.source === edge.source && x.target === edge.target);
         if (!e) return false;
         if (hl.kind === "import") return !e.isDrift && !e.isLayerViolation;
         if (hl.kind === "violation") return !!e.isLayerViolation && !e.isDrift;
@@ -1274,6 +1874,9 @@ export function ArchCanvas({
       }
       return true;
     };
+
+    const metricsNodes = (runtimeSnapshot?.nodes ?? {}) as Record<string, { errorRate?: number }>;
+    const metricsEdges = (runtimeSnapshot?.edges ?? {}) as Record<string, { latencyMs?: number; errorRate?: number }>;
 
     // External dependencies lane: shift External Services band and nodes to the far right.
     const externalLayer = "External Services";
@@ -1305,10 +1908,32 @@ export function ArchCanvas({
       }
     }
 
-    const bandNodes: Node[] = layerBands.map((band) => {
+    const domainRegionNodes: Node[] = domainRegions.map((dr) => {
+      const colors = domainRegionColors(dr.domain);
+      return {
+        id: dr.id,
+        type: "domainRegion",
+        position: { x: dr.x, y: dr.y },
+        data: { domain: dr.domain, colors },
+        style: {
+          width: dr.width,
+          height: dr.height,
+          zIndex: -2,
+          pointerEvents: "none",
+        },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+      };
+    });
+
+    const bandNodes: Node[] = !showLayerBands
+      ? []
+      : layerBands.map((band) => {
+      const layerKey = (band as { layerKey?: string }).layerKey ?? band.layer;
       const colors =
-        LAYER_COLORS[band.layer] ?? LAYER_COLORS["Uncategorized"];
-      const nodeCount = graph.nodes.filter(
+        LAYER_COLORS[layerKey] ?? LAYER_COLORS["Uncategorized"];
+      const nodeCount = (band as { nodeCount?: number }).nodeCount ?? graph.nodes.filter(
         (n) => (n.layer ?? "Uncategorized") === band.layer
       ).length;
       return {
@@ -1333,9 +1958,14 @@ export function ArchCanvas({
       .filter((v) => !baseNodeIds.has(v.id))
       .sort((a, b) => a.id.localeCompare(b.id));
 
+    const allowedAnnIds = activeSceneState?.annotationIds
+      ? new Set(activeSceneState.annotationIds)
+      : null;
     const annotationNodes: Node[] = !isFlagEnabled("annotations")
       ? []
-      : (annotations ?? []).map((ann) => {
+      : (annotations ?? [])
+          .filter((ann) => (allowedAnnIds ? allowedAnnIds.has(ann.id) : true))
+          .map((ann) => {
       let position = { x: 0, y: 0 };
       if (ann.node_id) {
         const pos = nodePositions.get(ann.node_id);
@@ -1350,28 +1980,77 @@ export function ArchCanvas({
         id: `annotation-${ann.id}`,
         type: "annotation",
         position,
-        data: { ...ann, onDelete: workspaceId && accessToken ? handleDeleteAnnotation : undefined },
+        data: {
+          ...ann,
+          onDelete: workspaceId && accessToken ? handleDeleteAnnotation : undefined,
+          onOpenComments: workspaceId && accessToken ? onOpenComments : undefined,
+        },
         draggable: false,
         selectable: false,
         connectable: false,
       };
       });
 
+    const fanOutByNode = new Map<string, number>();
+    for (const e of graph.edges) fanOutByNode.set(e.source, (fanOutByNode.get(e.source) ?? 0) + 1);
+
+    const deriveMiniRoles = (n: ArchNode): string[] => {
+      const roles: string[] = [];
+      if (n.role && typeof n.role === "string") roles.push(n.role.toLowerCase());
+      const label = (n.suggestedLabel ?? n.label ?? "").toLowerCase();
+      const tags = (Array.isArray(n.tags) ? n.tags : []).map((t) => String(t).toLowerCase());
+      const layer = (n.layer ?? "").toLowerCase();
+      const combined = `${label} ${tags.join(" ")} ${layer}`;
+      const keywords = ["controller", "service", "repository", "gateway", "handler", "client", "orchestrator"];
+      for (const kw of keywords) {
+        if (combined.includes(kw) && !roles.includes(kw)) roles.push(kw);
+      }
+      if (layer.includes("data") && !roles.includes("repository")) roles.push("repository");
+      if (layer.includes("orchestration") && !roles.includes("orchestrator")) roles.push("orchestrator");
+      return roles.slice(0, 4);
+    };
+
+    const hasRuntimeData = Object.keys(metricsNodes).length > 0 || Object.keys(metricsEdges).length > 0;
+    const runtimeViewMode = canvasViewMode === "runtime" && hasRuntimeData;
+
+    const searchScoreById = new Map<string, number>(searchResults.map((r: { nodeId: string; score: number }) => [r.nodeId, r.score]));
     const rfNodes: Node[] = [
+      ...domainRegionNodes,
       ...bandNodes,
-      ...graph.nodes.map((node) => {
+      ...effectiveGraphForRender.nodes.map((node) => {
         const matches = nodeMatches(node);
+        const override = sceneNodeOverrides2D[node.id];
+        const visible = activeSceneState?.visibility?.[node.id];
+        const domain =
+          effectiveLayoutMode === "domain"
+            ? (node.domain ?? domainFromPath(node.path ?? node.id, node.id))
+            : undefined;
+        const miniRoles =
+          (node.runtimeRoles?.length ? node.runtimeRoles : undefined) ?? deriveMiniRoles(node);
+        let opacity = 1;
+        if (runtimeViewMode) opacity = metricsNodes[node.id] ? 1 : 0.25;
+        else if (hl) opacity = matches ? 1 : 0.2;
+        const searchScore = searchScoreById.get(node.id);
+        const isHighlighted = typeof searchScore === "number";
         return {
           id: node.id,
           type: "arch",
-          position: nodePositions.get(node.id) ?? { x: 0, y: 0 },
+          position: override ?? nodePositions.get(node.id) ?? { x: 0, y: 0 },
+          hidden: visible === false,
           data: {
             ...node,
+            domain,
+            fanOut: fanOutByNode.get(node.id),
+            miniRoles,
             isSelected: selectedNode === node.id,
+            isHighlighted,
+            searchScore,
             canvasZoom,
             density,
             theme,
+            runtimeMetrics: metricsNodes[node.id],
             violationBeingFixedKey: violationBeingFixedKey ?? undefined,
+            hasDependencyRisk: vulnerableNodeIds?.has(node.id),
             linkedJiraIssues:
               issuesByNodeId[node.id] ??
               issuesByNodeId[node.path] ??
@@ -1383,8 +2062,9 @@ export function ArchCanvas({
             border: "none",
             padding: 0,
             width: NODE_W,
-            opacity: hl ? (matches ? 1 : 0.2) : 1,
+            opacity,
             transition: "opacity 0.2s ease",
+            pointerEvents: visible === false ? "none" : "auto",
           },
         };
       }),
@@ -1433,15 +2113,15 @@ export function ArchCanvas({
       }),
     ];
 
-    const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+    const nodeById = new Map(effectiveGraphForRender.nodes.map((n) => [n.id, n]));
 
     // Basic edge bundling: collapse multiple edges with same source/target into one
     // and store a bundleCount used to subtly increase stroke width.
     const bundleMap = new Map<
       string,
-      { edge: (typeof filtered.edges)[0]; count: number }
+      { edge: (typeof personaFiltered.edges)[0]; count: number }
     >();
-    for (const e of filtered.edges) {
+    for (const e of personaFiltered.edges) {
       const key = `${e.source}->${e.target}`;
       const existing = bundleMap.get(key);
       if (existing) {
@@ -1464,6 +2144,10 @@ export function ArchCanvas({
         tracePathNodeIds.includes(edge.target);
       const sourceLayer =
         (nodeById.get(edge.source)?.layer ?? "Uncategorized") as string;
+      const m = metricsEdges[edge.id];
+      let edgeOpacity = 1;
+      if (runtimeViewMode) edgeOpacity = m ? 1 : 0.25;
+      else if (hl) edgeOpacity = matches ? 1 : 0.2;
       return {
         id: edge.id,
         source: edge.source,
@@ -1477,9 +2161,12 @@ export function ArchCanvas({
           inTrace: !!inTrace,
           sourceLayer,
           bundleCount: count,
+          runtimeLatencyMs: m?.latencyMs,
+          runtimeErrorRate: m?.errorRate,
+          runtimeLive: runtimeLive && typeof m?.latencyMs === "number",
         },
         style: {
-          opacity: hl ? (matches ? 1 : 0.2) : 1,
+          opacity: edgeOpacity,
           strokeWidth: inTrace ? 3 : count > 3 ? 2.4 : count > 1 ? 1.8 : 1,
           transition: "opacity 0.2s ease, stroke-width 0.2s ease",
         },
@@ -1487,7 +2174,7 @@ export function ArchCanvas({
     });
 
     const allNodeIds = new Set([
-      ...graph.nodes.map((n) => n.id),
+      ...personaFiltered.nodes.map((n) => n.id),
       ...virtualNodesList.map((v) => v.id),
     ]);
 
@@ -1511,6 +2198,17 @@ export function ArchCanvas({
         },
       }));
 
+    setCanvasDebug({
+      graphNodes: graph.nodes.length,
+      filteredNodes: filtered.nodes.length,
+      personaFilteredNodes: personaFiltered.nodes.length,
+      effectiveNodes: effectiveGraphForRender.nodes.length,
+      rfNodes: rfNodes.length,
+      canvasViewMode,
+      persona,
+      focusMode,
+      legendHighlightType: legendHighlight ? legendHighlight.type : "none",
+    });
     setNodes(rfNodes);
     setEdges([...baseEdges, ...virtualEdges]);
     setBuilding(false);
@@ -1530,8 +2228,23 @@ export function ArchCanvas({
     handleDeleteAnnotation,
     workspaceId,
     accessToken,
+    runtimeSnapshot,
+    runtimeLive,
+    vulnerableNodeIds,
     setNodes,
     setEdges,
+    layoutMode,
+    canvasViewMode,
+    effectiveLayoutMode,
+    elkPositions,
+    legendHighlight,
+    focusMode,
+    nodeFilter,
+    sceneNodeOverrides2D,
+    activeSceneStateId,
+    scene,
+    onOpenComments,
+    setCanvasDebug,
   ]);
 
   const build = useMemo(() => debounce(rawBuild, 50), [rawBuild]);
@@ -1630,6 +2343,8 @@ export function ArchCanvas({
     );
   }, [legendHighlight, graph, edgeFilter, setNodes, setEdges, focusMode, selectedNode]);
 
+  const [showLayerBands, setShowLayerBands] = useState(true);
+
   const legendLayers = useMemo(() => {
     const seen = new Map<string, number>();
     for (const n of graph.nodes) {
@@ -1678,6 +2393,9 @@ export function ArchCanvas({
   return (
     <div
       style={{
+        flex: 1,
+        minHeight: 0,
+        minWidth: 0,
         width: "100%",
         height: "100%",
         position: "relative",
@@ -1746,6 +2464,46 @@ export function ArchCanvas({
         </div>
       )}
 
+      {graph.nodes.length > 0 &&
+        (flowDimensions.width === 0 ||
+          flowDimensions.height === 0 ||
+          (canvasDebug?.rfNodes ?? 0) === 0) && (
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              left: 10,
+              zIndex: 999,
+              pointerEvents: "none",
+              padding: "10px 12px",
+              background: "rgba(2,6,23,0.9)",
+              border: "1px solid rgba(96,165,250,0.35)",
+              borderRadius: 10,
+              width: 280,
+              color: "#cfe8ff",
+              fontFamily: "monospace",
+              fontSize: 11,
+              lineHeight: 1.35,
+              boxShadow: "0 10px 30px rgba(0,0,0,0.4)",
+            }}
+          >
+            <div style={{ fontWeight: 800, marginBottom: 6, color: "#60a5fa" }}>Canvas Debug</div>
+            <div>
+              flow: {Math.round(flowDimensions.width)}x{Math.round(flowDimensions.height)}
+            </div>
+            <div>graph nodes: {canvasDebug?.graphNodes ?? graph.nodes.length}</div>
+            <div>filtered nodes: {canvasDebug?.filteredNodes ?? "?"}</div>
+            <div>persona nodes: {canvasDebug?.personaFilteredNodes ?? "?"}</div>
+            <div>effective nodes: {canvasDebug?.effectiveNodes ?? "?"}</div>
+            <div>rf nodes: {canvasDebug?.rfNodes ?? "?"}</div>
+            <div style={{ marginTop: 6 }}>
+              persona: {typeof persona === "string" ? persona : "none"} | view: {canvasViewMode}
+            </div>
+            <div>focus: {focusMode ? "on" : "off"}</div>
+            <div>highlight: {canvasDebug?.legendHighlightType ?? "none"}</div>
+          </div>
+        )}
+
       <style>{`
         @keyframes nodePulse  { 0%,100%{transform:translateX(-50%) rotate(45deg) scale(1);opacity:1} 50%{transform:translateX(-50%) rotate(45deg) scale(1.35);opacity:0.6} }
         @keyframes pip        { 0%,100%{transform:translateX(-50%) rotate(45deg) scale(1);opacity:1} 50%{transform:translateX(-50%) rotate(45deg) scale(1.2);opacity:0.75} }
@@ -1754,10 +2512,12 @@ export function ArchCanvas({
         @keyframes edgeDriftDot { 0%,100%{opacity:1;filter:drop-shadow(0 0 3px rgba(239,68,68,0.8))} 50%{opacity:0.7;filter:drop-shadow(0 0 6px rgba(239,68,68,0.9))} }
         @keyframes edgeViolationDot { 0%,100%{opacity:0.95} 50%{opacity:0.6} }
         @keyframes edgeTracePulse { 0%,100%{opacity:0.95} 50%{opacity:0.7} }
+        @keyframes edgeTraceStroke { 0%,100%{stroke-opacity:1;filter:drop-shadow(0 0 4px rgba(192,132,252,0.5))} 50%{stroke-opacity:0.75;filter:drop-shadow(0 0 8px rgba(192,132,252,0.7))} }
         .react-flow__edge path { pointer-events: visibleStroke !important; }
         .arch-edge-drift-dot { animation: edgeDriftDot 2s ease-in-out infinite; filter: drop-shadow(0 0 3px rgba(239,68,68,0.8)); }
         .arch-edge-violation-dot { animation: edgeViolationDot 2.5s ease-in-out infinite; }
         .arch-edge-trace-dot { animation: edgeTracePulse 1.5s ease-in-out infinite; }
+        .arch-edge-trace path:nth-of-type(2) { animation: edgeTraceStroke 1.2s ease-in-out infinite; }
       `}</style>
 
       <svg style={{ position: "absolute", width: 0, height: 0 }}>
@@ -1821,12 +2581,16 @@ export function ArchCanvas({
         </div>
       )}
 
-      {selectedNodeData && (
+      {canvasViewMode === "failure" && selectedNode && (
+        <BlastRadiusOverlay graph={graph} sourceId={selectedNode} />
+      )}
+
+      {selectedNodeData && showFullNodePopup && (
         <NodePopup
           node={selectedNodeData}
           graph={graph}
           repoUrl={repoUrl}
-          onClose={() => onNodeSelect(null)}
+          onClose={() => setShowFullNodePopup(false)}
           workspaceId={workspaceId}
           accessToken={accessToken}
         />
@@ -1843,16 +2607,70 @@ export function ArchCanvas({
           workspaceId={workspaceId}
           accessToken={accessToken}
           annotations={annotations}
+          scene={scene}
+          sceneEditMode={sceneEditMode}
+          onSceneChange={onSceneChange}
+          activeSceneStateId={activeSceneStateId}
+          runtimeSnapshot={runtimeSnapshot}
+          captureViewRef={viewMode === "3d" ? captureViewRef : undefined}
         />
       ) : (
+      <div
+        ref={flowParentRef}
+        style={{
+          display: "flex",
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+          position: "relative",
+        }}
+      >
+        <div
+          ref={flowContainerRef}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+          }}
+        >
+      {flowDimensions.width > 0 && flowDimensions.height > 0 && (
       <ReactFlow
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        snapToGrid={sceneEditMode}
+        snapGrid={[24, 24]}
+        selectionOnDrag={sceneEditMode}
         onNodeClick={(_, n) => {
           if (n.type === "band") return;
           onNodeSelect(n.id);
+        }}
+        onNodeDragStop={(_, n) => {
+          if (!sceneEditMode) return;
+          if (n.type === "band" || n.type === "annotation") return;
+          setRedoStack([]);
+          setUndoStack((prev) => [...prev.slice(-49), { ...sceneNodeOverrides2D }]);
+          setSceneNodeOverrides2D((prev) => ({ ...prev, [n.id]: { x: n.position.x, y: n.position.y } }));
+          if (onSceneChange) {
+            const base: WorkspaceSceneDoc =
+              scene && typeof scene === "object"
+                ? scene
+                : { schemaVersion: 1, objects: [], states: [], cameraPresets: [] };
+            const objects = Array.isArray(base.objects) ? [...base.objects] : [];
+            const idx = objects.findIndex((o) => o.kind === "node" && ((o.props as any)?.nodeId as string) === n.id);
+            const nextObj = {
+              id: idx >= 0 ? objects[idx]!.id : `node-${n.id}`,
+              kind: "node" as const,
+              archNodeId: (n.data as any)?.archNodeId ?? undefined,
+              props: { ...(idx >= 0 ? (objects[idx]!.props ?? {}) : {}), nodeId: n.id },
+              transform: { ...(idx >= 0 ? (objects[idx]!.transform ?? {}) : {}), position: { x: n.position.x, y: n.position.y } },
+            };
+            if (idx >= 0) objects[idx] = nextObj as any;
+            else objects.push(nextObj as any);
+            onSceneChange({ ...base, objects });
+          }
         }}
         onNodeMouseEnter={(e, n) => {
           if (n.type === "band") return;
@@ -1886,13 +2704,16 @@ export function ArchCanvas({
             setHoveredEdgePos(null);
           }
         }}
-        onPaneClick={() => onNodeSelect(null)}
+        onPaneClick={() => {
+          onNodeSelect(null);
+          setShowFullNodePopup(false);
+        }}
         onMove={(_, viewport) => {
           if (typeof viewport.zoom === "number") setCanvasZoom(viewport.zoom);
         }}
         onInit={(instance) => { reactFlowInstanceRef.current = instance; }}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
+        nodeTypes={NODE_TYPES}
+        edgeTypes={EDGE_TYPES}
         fitView
         fitViewOptions={{ padding: 0.12 }}
         minZoom={0.1}
@@ -1907,32 +2728,94 @@ export function ArchCanvas({
           size={1}
         />
 
-        <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view, lock">
-          <Controls
+        <div
+          style={{
+            position: "absolute",
+            bottom: 16,
+            right: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            zIndex: 10,
+          }}
+        >
+          <MiniMap
             style={{
-              background: "#0a111f",
+              background: "#070d1a",
               border: "1px solid #1e2d45",
               borderRadius: 8,
+              width: 140,
+              height: 90,
             }}
+            nodeColor={(n) => {
+              const d = n.data as { layer?: string; isDrift?: boolean };
+              if (d.isDrift) return "#ef4444";
+              return (
+                LAYER_COLORS[d.layer ?? "Uncategorized"]?.top ?? "#374151"
+              );
+            }}
+            maskColor="rgba(6,12,26,0.75)"
           />
+          <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view, lock">
+            <Controls
+              style={{
+                background: "#0a111f",
+                border: "1px solid #1e2d45",
+                borderRadius: 8,
+              }}
+            />
+          </div>
         </div>
-
-        <MiniMap
-          style={{
-            background: "#070d1a",
-            border: "1px solid #1e2d45",
-            borderRadius: 8,
-          }}
-          nodeColor={(n) => {
-            const d = n.data as { layer?: string; isDrift?: boolean };
-            if (d.isDrift) return "#ef4444";
-            return (
-              LAYER_COLORS[d.layer ?? "Uncategorized"]?.top ?? "#374151"
-            );
-          }}
-          maskColor="rgba(6,12,26,0.75)"
-        />
+        {workspaceId && isFlagEnabled("presence") && (
+          <PresenceCursorsOverlay workspaceId={workspaceId} containerRef={flowContainerRef} />
+        )}
+        {canvasViewMode === "domains" && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: 12,
+              left: 12,
+              zIndex: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              background: "rgba(15,23,42,0.9)",
+              border: "1px solid #334155",
+              borderRadius: 8,
+              padding: "8px 12px",
+            }}
+          >
+            <span style={{ fontSize: 9, color: "#64748b", textTransform: "uppercase", letterSpacing: 1 }}>Domains</span>
+            {[...new Set(graph.nodes.map((n) => domainFromPath(n.path ?? n.id, n.id)))].sort().slice(0, 8).map((d) => (
+              <div key={d} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: 2,
+                    background: `hsl(${(d.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % 360)}, 55%, 50%)`,
+                  }}
+                />
+                <span style={{ fontSize: 10, color: "#e2e8f0", fontFamily: "monospace" }}>{d}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </ReactFlow>
+      )}
+        </div>
+        {selectedNodeData && !showFullNodePopup && (
+          <NodeIntelPanel
+            node={selectedNodeData}
+            graph={graph}
+            onClose={() => {
+              setShowFullNodePopup(false);
+              onNodeSelect(null);
+            }}
+            onOpenFull={workspaceId && accessToken ? () => setShowFullNodePopup(true) : undefined}
+          />
+        )}
+      </div>
       )}
 
       {viewMode === "2d" && hoveredNodeData && hoverPos && (
@@ -2146,61 +3029,29 @@ export function ArchCanvas({
               2D · {graph.nodes.length} nodes · {edges.length} edges · {fps2d} fps
             </div>
           )}
+          {isFlagEnabled("ux_review_mode") && (
+            <a
+              href="/UX_REVIEW_CHECKLIST.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                fontSize: 10,
+                padding: "4px 8px",
+                background: "rgba(30,64,175,0.3)",
+                borderRadius: 4,
+                border: "1px solid #3b82f6",
+                fontFamily: "monospace",
+                color: "#93c5fd",
+                textDecoration: "none",
+              }}
+            >
+              UX checklist ↗
+            </a>
+          )}
         </div>
       )}
 
-      {!presentationMode && (
-      <div
-        style={{
-          position: "absolute",
-          top: 16,
-          right: 16,
-          zIndex: 20,
-          display: "flex",
-          gap: 4,
-          background: "rgba(6,12,26,0.92)",
-          border: "1px solid #1e2d45",
-          borderRadius: 8,
-          padding: 4,
-          backdropFilter: "blur(12px)",
-        }}
-      >
-        <button
-          type="button"
-          title="2D view"
-          onClick={() => setViewMode("2d")}
-          style={{
-            padding: "6px 12px",
-            fontSize: 11,
-            fontFamily: "monospace",
-            border: viewMode === "2d" ? "1px solid #60a5fa" : "1px solid transparent",
-            borderRadius: 6,
-            background: viewMode === "2d" ? "#1d4ed833" : "transparent",
-            color: viewMode === "2d" ? "#60a5fa" : "#94a3b8",
-            cursor: "pointer",
-          }}
-        >
-          2D
-        </button>
-        <button
-          type="button"
-          title="3D view"
-          onClick={() => setViewMode("3d")}
-          style={{
-            padding: "6px 12px",
-            fontSize: 11,
-            fontFamily: "monospace",
-            border: viewMode === "3d" ? "1px solid #60a5fa" : "1px solid transparent",
-            borderRadius: 6,
-            background: viewMode === "3d" ? "#1d4ed833" : "transparent",
-            color: viewMode === "3d" ? "#60a5fa" : "#94a3b8",
-            cursor: "pointer",
-          }}
-        >
-          3D
-        </button>
-      </div>
-      )}
+      {/* Mode controls moved to App top bar */}
 
       {!presentationMode && (
       <div
@@ -2238,16 +3089,52 @@ export function ArchCanvas({
         <div style={{ marginBottom: 10 }}>
           <div
             style={{
-              fontSize: 8,
-              color: canvasTheme[theme].legendSectionTitleText,
-              letterSpacing: "0.1em",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
               marginBottom: 6,
-              textTransform: "uppercase",
-              fontFamily: "monospace",
             }}
           >
-            Layers
+            <div
+              style={{
+                fontSize: 10,
+                color: canvasTheme[theme].legendSectionTitleText,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                fontFamily: "monospace",
+              }}
+            >
+              Layers
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLayerBands((v) => !v)}
+              style={{
+                fontSize: 9,
+                padding: "2px 6px",
+                borderRadius: 999,
+                border: `1px solid ${canvasTheme[theme].legendDivider}`,
+                background: showLayerBands ? "#1e293b" : "transparent",
+                color: showLayerBands ? "#e5e7eb" : canvasTheme[theme].subtleText,
+                cursor: "pointer",
+                fontFamily: "monospace",
+              }}
+              title={showLayerBands ? "Hide layer grouping bands" : "Show layer grouping bands"}
+            >
+              Layers {showLayerBands ? "ON" : "OFF"}
+            </button>
           </div>
+          {legendLayers.length === 0 && (
+            <div
+              style={{
+                fontSize: 11,
+                color: canvasTheme[theme].subtleText,
+                fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              }}
+            >
+              No layers present in this graph.
+            </div>
+          )}
           {legendLayers.map(([name, count]) => {
             const cfg = LAYER_CFG[name] ?? LAYER_CFG["Uncategorized"];
             const active = legendHighlight?.type === "layer" && legendHighlight.layer === name;
@@ -2347,8 +3234,34 @@ export function ArchCanvas({
               { key: "kubernetes", label: "K8s" },
               { key: "external-saas", label: "SaaS" },
             ].map(({ key, label }) => (
-              <span key={key} style={{ display: "flex", alignItems: "center", gap: 3 }} title={key}>
-                <span style={{ fontSize: 12, lineHeight: 1 }}>{TECH_ICON[key] ?? "◻"}</span>
+              <span
+                key={key}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 6px",
+                  borderRadius: 999,
+                  border: `1px solid ${canvasTheme[theme].legendDivider}`,
+                  background: "#020617",
+                }}
+                title={key}
+              >
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 14,
+                    height: 14,
+                    borderRadius: 4,
+                    background: "#0f172a",
+                    fontSize: 9,
+                    fontWeight: 600,
+                  }}
+                >
+                  {TECH_ICON[key] ?? "•"}
+                </span>
                 <span>{label}</span>
               </span>
             ))}
@@ -2389,6 +3302,71 @@ export function ArchCanvas({
             <span style={{ color: canvasTheme[theme].badgeJira }} title="Jira linked">J</span>
             <span style={{ color: canvasTheme[theme].badgeDrift }} title="Drift">D</span>
             <span title="Depth from entry">d</span>
+          </div>
+        </div>
+
+        <div
+          style={{
+            borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+            marginTop: 8,
+            paddingTop: 8,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 8,
+              color: canvasTheme[theme].legendSectionTitleText,
+              letterSpacing: "0.1em",
+              marginBottom: 6,
+              textTransform: "uppercase",
+              fontFamily: "monospace",
+            }}
+          >
+            Runtime heatmap
+          </div>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              fontSize: 9,
+              color: canvasTheme[theme].subtleText,
+              fontFamily: "monospace",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  width: 20,
+                  height: 2,
+                  background: "#22c55e",
+                  borderRadius: 1,
+                }}
+              />
+              <span>{"< 100ms latency"}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  width: 20,
+                  height: 2,
+                  background: "#eab308",
+                  borderRadius: 1,
+                }}
+              />
+              <span>{"100–300ms latency"}</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  width: 20,
+                  height: 2,
+                  background: "#ef4444",
+                  borderRadius: 1,
+                }}
+              />
+              <span>{"> 300ms latency"}</span>
+            </div>
           </div>
         </div>
 
@@ -2475,6 +3453,49 @@ export function ArchCanvas({
             );
           })}
         </div>
+        {runtimeSnapshot && (Object.keys(runtimeSnapshot.edges).length > 0 || Object.keys(runtimeSnapshot.nodes).length > 0) && (
+          <div
+            style={{
+              borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,
+              marginTop: 8,
+              paddingTop: 8,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 8,
+                color: canvasTheme[theme].legendSectionTitleText,
+                letterSpacing: "0.1em",
+                marginBottom: 6,
+                textTransform: "uppercase",
+                fontFamily: "monospace",
+              }}
+            >
+              Runtime latency
+            </div>
+            {[
+              { label: "< 100ms", color: "#22c55e" },
+              { label: "< 300ms", color: "#eab308" },
+              { label: "≥ 300ms", color: "#ef4444" },
+            ].map(({ label, color }) => (
+              <div
+                key={label}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "4px 8px",
+                  marginBottom: 2,
+                }}
+              >
+                <div style={{ width: 20, height: 2, flexShrink: 0, background: color, borderRadius: 1 }} />
+                <span style={{ fontSize: 10, color: canvasTheme[theme].panelText, fontFamily: "monospace" }}>
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <div
           style={{
             borderTop: `1px solid ${canvasTheme[theme].legendDivider}`,

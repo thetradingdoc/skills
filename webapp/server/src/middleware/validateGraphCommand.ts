@@ -54,6 +54,9 @@ function validateGraphCommand(raw: unknown): ValidationResult {
         layer: o.layer,
         description: typeof o.description === "string" ? o.description : undefined,
         archNodeId: typeof o.archNodeId === "string" ? o.archNodeId : undefined,
+        skeletonCode: typeof o.skeletonCode === "string" ? o.skeletonCode : undefined,
+        layoutHint: typeof o.layoutHint === "string" ? o.layoutHint : undefined,
+        group: typeof o.group === "string" ? o.group : undefined,
       },
     };
   }

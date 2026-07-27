@@ -32,6 +32,11 @@ async function main() {
     workspaceIdIdx >= 0 && process.argv[workspaceIdIdx + 1]
       ? process.argv[workspaceIdIdx + 1].trim()
       : null;
+  const branchIdx = process.argv.indexOf("--branch");
+  const branch =
+    branchIdx >= 0 && process.argv[branchIdx + 1]
+      ? process.argv[branchIdx + 1].trim()
+      : null;
 
   let dir: string;
   if (workspaceId) {
@@ -45,6 +50,11 @@ async function main() {
 
   try {
     const absoluteCloneDir = dir;
+    const git = simpleGit(absoluteCloneDir);
+    if (branch) {
+      await git.fetch(["origin", branch]);
+      await git.checkout(branch);
+    }
 
     let graph = await scanProject(absoluteCloneDir);
     graph = detectDrift(graph);

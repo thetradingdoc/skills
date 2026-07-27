@@ -3,11 +3,13 @@
  *
  * Greenfield design mode: agent designs architecture from scratch (empty workspace).
  * Uses only the answer tool with graphCommand (create_node, connect); no retrieve_files, no scaffold.
+ * When Jira is configured, also offers create_jira_issue and jira_search_by_archNodeId.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { ArchitectureChatHistory, GraphCommand } from "../types";
 import { validateGraphCommand, VALID_LAYERS } from "./validateGraphCommand";
+import { executeJiraCreateTicket, executeJiraSearchByArchNodeId } from "./tools";
 
 export type { GraphCommandValidationResult } from "./validateGraphCommand";
 export { validateGraphCommand } from "./validateGraphCommand";
@@ -55,7 +57,38 @@ Rules:
 - Keep node IDs simple (e.g. "src/api", "services/auth", "ui/dashboard").
 - For connect, use fromId and toId that match node IDs you created.`;
 
-const GREENFIELD_TOOLS: Anthropic.Tool[] = [
+const JIRA_TOOLS: Anthropic.Tool[] = [
+  {
+    name: "create_jira_issue",
+    description:
+      "Create a Jira issue/epic for a module or design task. Use when the user wants to track design work in Jira.",
+    input_schema: {
+      type: "object",
+      properties: {
+        projectKey: { type: "string", description: "Jira project key" },
+        summary: { type: "string", description: "Short summary" },
+        description: { type: "string", description: "Longer description" },
+        archNodeId: { type: "string", description: "archNodeId for the module (used as label)" },
+        labels: { type: "array", items: { type: "string" } },
+      },
+      required: ["projectKey", "summary"],
+    },
+  },
+  {
+    name: "jira_search_by_archNodeId",
+    description: "Search Jira for issues tagged with archNodeId.",
+    input_schema: {
+      type: "object",
+      properties: {
+        archNodeId: { type: "string" },
+        maxResults: { type: "integer" },
+      },
+      required: ["archNodeId"],
+    },
+  },
+];
+
+const GREENFIELD_TOOLS_BASE: Anthropic.Tool[] = [
   {
     name: "answer",
     description:
@@ -88,6 +121,20 @@ const GREENFIELD_TOOLS: Anthropic.Tool[] = [
               fromId: { type: "string" },
               toId: { type: "string" },
               edgeType: { type: "string", enum: ["import", "reexport", "dynamic"] },
+              skeletonCode: {
+                type: "string",
+                description:
+                  "Optional minimal skeleton or stub code for this module. Use sparingly; actual implementation comes from implement/materialize.",
+              },
+              layoutHint: {
+                type: "string",
+                description:
+                  "Optional layout hint for canvas (e.g. left, center, right) to influence auto-arrangement.",
+              },
+              group: {
+                type: "string",
+                description: "Optional group ID to cluster related nodes visually.",
+              },
             },
             required: ["action"],
           },
@@ -98,12 +145,24 @@ const GREENFIELD_TOOLS: Anthropic.Tool[] = [
   },
 ];
 
+function buildGreenfieldTools(jiraConfig?: { baseUrl: string; email: string; apiToken: string } | null, jiraProjectKey?: string | null): Anthropic.Tool[] {
+  if (jiraConfig && (jiraConfig.baseUrl || jiraConfig.apiToken)) {
+    return [...GREENFIELD_TOOLS_BASE, ...JIRA_TOOLS];
+  }
+  return GREENFIELD_TOOLS_BASE;
+}
+
 export async function askGreenfield(params: {
   question: string;
   history?: ArchitectureChatHistory;
   apiKeyClaude?: string;
+  pdfBase64?: string;
+  pdfFileName?: string;
+  contextBlock?: string;
+  jiraConfig?: { baseUrl: string; email: string; apiToken: string } | null;
+  jiraProjectKey?: string | null;
 }): Promise<GreenfieldAskResult> {
-  const { question, history = [], apiKeyClaude } = params;
+  const { question, history = [], apiKeyClaude, pdfBase64, pdfFileName, contextBlock, jiraConfig, jiraProjectKey } = params;
 
   const client = apiKeyClaude
     ? new Anthropic({ apiKey: apiKeyClaude })
@@ -112,27 +171,169 @@ export async function askGreenfield(params: {
   const historyMessages = (history ?? [])
     .filter((h): h is { role: "user" | "assistant"; content: string } => h.role === "user" || h.role === "assistant")
     .map((h) => ({ role: h.role as "user" | "assistant", content: h.content })) as Anthropic.MessageParam[];
+  const questionWithContext = contextBlock ? `${contextBlock}\n\n## Question\n${question}` : question;
+  const lastUserContent: Anthropic.MessageParam["content"] =
+    pdfBase64 && pdfBase64.length > 0
+      ? [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf" as const,
+              data: pdfBase64,
+            },
+          },
+          { type: "text", text: questionWithContext },
+        ]
+      : questionWithContext;
   const messages: Anthropic.MessageParam[] =
     historyMessages.length > 0
-      ? [...historyMessages, { role: "user" as const, content: question }]
-      : [{ role: "user" as const, content: question }];
+      ? [...historyMessages, { role: "user" as const, content: lastUserContent }]
+      : [{ role: "user" as const, content: lastUserContent }];
 
+  const tools = buildGreenfieldTools(jiraConfig, jiraProjectKey);
+  const hasJira = tools.length > GREENFIELD_TOOLS_BASE.length;
+  const jiraContext = hasJira && jiraConfig
+    ? { config: jiraConfig, projectKey: jiraProjectKey ?? undefined }
+    : undefined;
+  const basePath = process.cwd();
+
+  const MAX_STEPS = hasJira ? 3 : 1;
+  let currentMessages: Anthropic.MessageParam[] = messages;
+  let answer = "";
+  let graphCommands: GraphCommand[] = [];
+
+  for (let step = 0; step < MAX_STEPS; step++) {
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
     max_tokens: 4096,
-    system: GREENFIELD_SYSTEM_PROMPT,
-    messages,
-    tools: GREENFIELD_TOOLS,
-    tool_choice: { type: "tool", name: "answer" },
+    system: GREENFIELD_SYSTEM_PROMPT + (hasJira ? "\n\nWhen Jira is available, you may create issues or epics for modules before providing your final answer." : ""),
+    messages: currentMessages,
+    tools,
+    tool_choice: step === 0 && hasJira ? "auto" : { type: "tool", name: "answer" },
   });
 
-  let answer = "";
-  const graphCommands: GraphCommand[] = [];
+  let toolUseBlocks: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
 
   for (const block of response.content) {
     if (block.type === "text") {
       answer = block.text;
     }
+    if (block.type === "tool_use") {
+      if (block.name === "answer") {
+        const input = block.input as Record<string, unknown>;
+        const content = typeof input.content === "string" ? input.content : "";
+        if (content) answer = content;
+        const raw = input.graphCommands ?? input.graphCommand;
+        if (Array.isArray(raw)) {
+          for (const item of raw) {
+            const result = validateGraphCommand(item);
+            if (result.valid && result.command.action !== "reset") {
+              graphCommands.push(result.command);
+            } else if (result.valid === false && item) {
+              answer = `${answer}\n\n**Validation note:** One command could not be applied: ${result.error}.`;
+            }
+          }
+        } else if (raw && typeof raw === "object") {
+          const result = validateGraphCommand(raw);
+          if (result.valid && result.command.action !== "reset") {
+            graphCommands.push(result.command);
+          } else if (result.valid === false) {
+            answer = `${answer}\n\n**Validation note:** The proposed graph command could not be applied: ${result.error}. Please try rephrasing your design.`;
+          }
+        }
+      } else {
+        toolUseBlocks.push({ id: block.id, name: block.name, input: block.input as Record<string, unknown> });
+      }
+    }
+  }
+
+  if (toolUseBlocks.length === 0) break;
+
+  const assistantContent: Anthropic.MessageParam["content"] = response.content as Anthropic.TextBlock[];
+  const toolResults: Anthropic.ToolResultBlockParam[] = [];
+  for (const tu of toolUseBlocks) {
+    let result = "";
+    if (tu.name === "create_jira_issue") {
+      const r = await executeJiraCreateTicket(basePath, {
+        projectKey: String(tu.input.projectKey ?? jiraProjectKey ?? ""),
+        summary: String(tu.input.summary ?? ""),
+        description: typeof tu.input.description === "string" ? tu.input.description : undefined,
+        archNodeId: typeof tu.input.archNodeId === "string" ? tu.input.archNodeId : undefined,
+        labels: Array.isArray(tu.input.labels) ? (tu.input.labels as string[]) : undefined,
+      }, jiraContext);
+      result = r.result ?? r.error ?? "Jira create failed.";
+    } else if (tu.name === "jira_search_by_archNodeId") {
+      const r = await executeJiraSearchByArchNodeId(
+        basePath,
+        String(tu.input.archNodeId ?? ""),
+        typeof tu.input.maxResults === "number" ? tu.input.maxResults : 10,
+        jiraContext
+      );
+      result = r.result ?? r.error ?? "Jira search failed.";
+    }
+    toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: result });
+  }
+  currentMessages = [
+    ...currentMessages,
+    { role: "assistant", content: assistantContent },
+    { role: "user", content: toolResults },
+  ];
+  }
+
+  return {
+    answer: answer || "I've designed the architecture. Check the canvas for the proposed modules and connections.",
+    graphCommands: graphCommands.length > 0 ? graphCommands : undefined,
+  };
+}
+
+/** Streaming variant: yields text chunks via onTextChunk. Use when no Jira tools (single-turn only). */
+export async function askGreenfieldStream(params: {
+  question: string;
+  history?: ArchitectureChatHistory;
+  apiKeyClaude?: string;
+  pdfBase64?: string;
+  pdfFileName?: string;
+  contextBlock?: string;
+  jiraConfig?: { baseUrl: string; email: string; apiToken: string } | null;
+  onTextChunk?: (chunk: string) => void;
+}): Promise<GreenfieldAskResult> {
+  const { onTextChunk, jiraConfig, ...rest } = params;
+  if (!onTextChunk || (jiraConfig && jiraConfig.apiToken)) {
+    return askGreenfield({ ...rest, jiraConfig });
+  }
+  const client = rest.apiKeyClaude ? new Anthropic({ apiKey: rest.apiKeyClaude }) : new Anthropic();
+  const historyMessages = (rest.history ?? [])
+    .filter((h): h is { role: "user" | "assistant"; content: string } => h.role === "user" || h.role === "assistant")
+    .map((h) => ({ role: h.role as "user" | "assistant", content: h.content })) as Anthropic.MessageParam[];
+  const questionWithContext = rest.contextBlock ? `${rest.contextBlock}\n\n## Question\n${rest.question}` : rest.question;
+  const lastUserContent: Anthropic.MessageParam["content"] =
+    rest.pdfBase64 && rest.pdfBase64.length > 0
+      ? [
+          { type: "document", source: { type: "base64", media_type: "application/pdf" as const, data: rest.pdfBase64 } },
+          { type: "text", text: questionWithContext },
+        ]
+      : questionWithContext;
+  const messages: Anthropic.MessageParam[] =
+    historyMessages.length > 0
+      ? [...historyMessages, { role: "user" as const, content: lastUserContent }]
+      : [{ role: "user" as const, content: lastUserContent }];
+
+  const stream = client.messages.stream({
+    model: "claude-sonnet-4-6",
+    max_tokens: 4096,
+    system: GREENFIELD_SYSTEM_PROMPT,
+    messages,
+    tools: GREENFIELD_TOOLS_BASE,
+    tool_choice: { type: "tool" as const, name: "answer" as const },
+  });
+
+  stream.on("text", (delta: string) => onTextChunk(delta));
+  const message = await stream.finalMessage();
+  let answer = "";
+  const graphCommands: GraphCommand[] = [];
+  for (const block of message.content) {
+    if (block.type === "text") answer = block.text;
     if (block.type === "tool_use" && block.name === "answer") {
       const input = block.input as Record<string, unknown>;
       const content = typeof input.content === "string" ? input.content : "";
@@ -141,23 +342,14 @@ export async function askGreenfield(params: {
       if (Array.isArray(raw)) {
         for (const item of raw) {
           const result = validateGraphCommand(item);
-          if (result.valid && result.command.action !== "reset") {
-            graphCommands.push(result.command);
-          } else if (result.valid === false && item) {
-            answer = `${answer}\n\n**Validation note:** One command could not be applied: ${result.error}.`;
-          }
+          if (result.valid && result.command.action !== "reset") graphCommands.push(result.command);
         }
       } else if (raw && typeof raw === "object") {
         const result = validateGraphCommand(raw);
-        if (result.valid && result.command.action !== "reset") {
-          graphCommands.push(result.command);
-        } else if (result.valid === false) {
-          answer = `${answer}\n\n**Validation note:** The proposed graph command could not be applied: ${result.error}. Please try rephrasing your design.`;
-        }
+        if (result.valid && result.command.action !== "reset") graphCommands.push(result.command);
       }
     }
   }
-
   return {
     answer: answer || "I've designed the architecture. Check the canvas for the proposed modules and connections.",
     graphCommands: graphCommands.length > 0 ? graphCommands : undefined,

@@ -9,8 +9,10 @@ import { supabaseAdmin } from "./supabaseAdmin.js";
 import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
 import {
   getMemoriesForContext,
+  getGraphEvolutionForContext,
   getSnapshotsForContext,
   getUserMemoriesForContext,
+  getSystemModelForContext,
   buildMemoryContextBlock,
 } from "./memoryRetrieval.js";
 import {
@@ -28,7 +30,8 @@ import {
 } from "./tasks.js";
 import { getUserJiraConfig, JiraDecryptError } from "./jiraConfig.js";
 import { getWorkspaceProjectKey } from "./jira.js";
-import { saveDraft } from "./greenfieldDraft.js";
+import { createJiraTicketForViolation } from "./jiraViolation.js";
+import { saveDraft, type DraftNode } from "./greenfieldDraft.js";
 import type { Rail, RailTrigger, Task as RailTask } from "../../../src/agent/types.js";
 import { createRail } from "../../../src/agent/rail/manager.js";
 import { createTask as createRailTask } from "../../../src/agent/rail/manager.js";
@@ -36,8 +39,33 @@ import { ensureProjectRoot } from "./cloneRepo.js";
 import { runAutoRailsAndExecute } from "./todos.js";
 import { addRailsToSession, getSessionRails, parseRailIntent } from "./chatSessionRails.js";
 import { cancelRail, retryRail } from "./railActions.js";
+import { getRecentFeedbackForUser } from "./feedback.js";
+import { findPath } from "../../../src/analysis/pathSearch.js";
+import { matchNodeByLabel } from "../../../src/ai/graphCommandMatcher.js";
 
 const router = Router();
+
+/** Parse path intent: "path from X to Y", "how does X connect to Y", etc. */
+function parsePathIntent(q: string): { from: string; to: string } | null {
+  const trimmed = q.trim();
+  const patterns = [
+    /path\s+from\s+(.+?)\s+to\s+(.+)/i,
+    /path\s+(.+?)\s+to\s+(.+)/i,
+    /trace\s+(?:path\s+)?from\s+(.+?)\s+to\s+(.+)/i,
+    /how\s+does\s+(.+?)\s+connect\s+to\s+(.+)/i,
+    /find\s+path\s+between\s+(.+?)\s+and\s+(.+)/i,
+    /(.+?)\s+to\s+(.+?)\s+path/i,
+  ];
+  for (const re of patterns) {
+    const m = trimmed.match(re);
+    if (m) {
+      const from = m[1].replace(/\?$/, "").trim();
+      const to = m[2].replace(/\?$/, "").trim();
+      if (from.length >= 2 && to.length >= 2) return { from, to };
+    }
+  }
+  return null;
+}
 
 /** Returns created railId or null if no rail created. */
 function maybeCreateAnalysisRail(params: {
@@ -222,7 +250,7 @@ function maybeCreateAnalysisRail(params: {
 }
 
 router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } =
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations } =
     req.body as {
       question?: string;
       graph?: ArchGraph;
@@ -233,6 +261,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       threadId?: string | null;
       pdfBase64?: string | null;
       pdfFileName?: string | null;
+      pendingViolations?: CriticViolation[];
     };
 
   if (!question || typeof question !== "string") {
@@ -298,6 +327,75 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       } catch {
         // fall through to normal chat
       }
+    }
+  }
+
+  // Fix-or-Track: parse "Track" reply to create Jira tickets without LLM
+  const trackMatch = /^\s*(track|create\s+jira|track\s+in\s+jira)\s*$/i.test(question.trim());
+  if (trackMatch && Array.isArray(pendingViolations) && pendingViolations.length > 0) {
+    try {
+      const config = await getUserJiraConfig(req.user!.id);
+      if (!config) {
+        res.json({
+          answer: "Jira is not connected. Use the Governance panel to connect your Jira account.",
+          violations: pendingViolations,
+        });
+        return;
+      }
+      const projectKey = (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ?? config.project ?? null;
+      if (!projectKey) {
+        res.json({
+          answer: "Set a project key in the sidebar to track violations in Jira.",
+          violations: pendingViolations,
+        });
+        return;
+      }
+      const projectRoot = graph?.projectRoot ?? undefined;
+      const projectName = graph?.projectName ?? undefined;
+      const results: Array<{ key: string; url?: string; error?: string }> = [];
+      for (const v of pendingViolations.slice(0, 10)) {
+        const srcNode = graph?.nodes?.find((n) => n.id === v.sourceNodeId || n.path === v.sourceNodeId);
+        const archModulePath = srcNode?.path ?? v.sourceNodeId;
+        const archModuleFiles = srcNode?.files;
+        const r = await createJiraTicketForViolation({
+          config,
+          projectKey,
+          violation: v,
+          projectRoot,
+          projectName,
+          workspaceId: workspaceId ?? undefined,
+          archModulePath,
+          archModuleFiles,
+        });
+        if (r.error) {
+          results.push({ key: "", error: r.error });
+        } else {
+          results.push({ key: r.key, url: r.url });
+        }
+      }
+      const created = results.filter((x) => x.key);
+      const failed = results.filter((x) => x.error);
+      let answer = `Created ${created.length} Jira ticket(s) for violations.`;
+      if (created.length > 0) {
+        const keys = created.map((r) => `[${r.key}](${r.url ?? ""})`).join(", ");
+        answer += `\n\n${keys}`;
+      }
+      if (failed.length > 0) {
+        answer += `\n\n${failed.length} failed: ${failed.map((r) => r.error).join("; ")}`;
+      }
+      const updatedViolations = pendingViolations.map((v, i) => {
+        const r = results[i];
+        return r?.key ? { ...v, jiraKey: r.key, jiraStatus: "To Do" as const, trackedAt: Date.now() } : v;
+      });
+      res.json({ answer, violations: updatedViolations });
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.json({
+        answer: `Failed to create Jira tickets: ${msg}`,
+        violations: pendingViolations,
+      });
+      return;
     }
   }
 
@@ -374,12 +472,14 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       if (notice) {
         enrichedQuestion = `${question}${notice}`;
       }
-      const [memories, snapshots, userMemories] = await Promise.all([
+      const [memories, snapshots, userMemories, graphEvolution, systemModelSummary] = await Promise.all([
         getMemoriesForContext(supabaseAdmin, workspaceId, { nodeId: nodeId ?? null }),
         getSnapshotsForContext(supabaseAdmin, workspaceId, { nodeId: nodeId ?? null }),
         req.user?.id ? getUserMemoriesForContext(supabaseAdmin, req.user.id) : Promise.resolve([]),
+        getGraphEvolutionForContext(supabaseAdmin, workspaceId),
+        getSystemModelForContext(supabaseAdmin, workspaceId),
       ]);
-      const memoryBlock = buildMemoryContextBlock(memories, snapshots, userMemories);
+      const memoryBlock = buildMemoryContextBlock(memories, snapshots, userMemories, graphEvolution, systemModelSummary);
       if (memoryBlock) {
         enrichedQuestion = `${memoryBlock}\n## Current question\n${question}`;
       }
@@ -473,6 +573,66 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       }
     }
 
+    // Fast path: path search via chat (e.g. "path from auth to database")
+    const pathMatch =
+      /(?:path\s+from|path\s|trace\s+(?:path\s+)?from)\s+(.+?)\s+to\s+(.+)/i.exec(question) ||
+      /how\s+does\s+(.+?)\s+connect\s+to\s+(.+)/i.exec(question) ||
+      /find\s+path\s+between\s+(.+?)\s+and\s+(.+)/i.exec(question);
+    if (pathMatch && graph && graph.nodes.length > 0) {
+      const fromPart = pathMatch[1].trim();
+      const toPart = pathMatch[2].trim();
+      const sourceId = matchNodeByLabel(fromPart, graph);
+      const targetId = matchNodeByLabel(toPart, graph);
+      if (sourceId && targetId) {
+        const nodeIds = findPath(graph, sourceId, targetId);
+        res.json({
+          answer: nodeIds.length > 0
+            ? `Found path (${nodeIds.length} nodes): ${nodeIds.join(" → ")}.`
+            : `No path found between "${fromPart}" and "${toPart}".`,
+          graphCommands: nodeIds.length > 0
+            ? [{ action: "trace_path" as const, nodeIds }]
+            : [],
+        });
+        return;
+      }
+    }
+
+    // Fast path: insights via chat (e.g. "show insights", "hotspots")
+    const insightsMatch =
+      /\b(insights|hotspots|show\s+insights|graph\s+insights)\b/i.test(question) ||
+      /^insights$/i.test(question.trim());
+    if (insightsMatch && graph) {
+      res.json({
+        answer: "Here are the graph insights. Use the insights panel to explore hotspots and dependencies.",
+        showInsightsPanel: true,
+      });
+      return;
+    }
+
+    const useStream =
+      req.body?.stream === true &&
+      mode === "greenfield" &&
+      !jiraConfig &&
+      !jiraProjectKey;
+    if (useStream) {
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+    }
+    let feedbackContextSync: string | undefined;
+    if (req.user?.id) {
+      try {
+        const { downvoteCount } = await getRecentFeedbackForUser(req.user.id);
+        if (downvoteCount > 0) {
+          feedbackContextSync =
+            `Note: The user has downvoted ${downvoteCount} architecture answer(s) in the last 7 days. ` +
+            "Prefer concise, actionable responses and avoid overly long explanations.";
+        }
+      } catch {
+        // ignore
+      }
+    }
     const result = await runArchitectureTask({
       question: enrichedQuestion,
       graph,
@@ -485,8 +645,20 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       rootPath,
       jiraConfig,
       jiraProjectKey: jiraProjectKey ?? undefined,
+      feedbackContext: feedbackContextSync,
       ...(pdfBase64 && typeof pdfBase64 === "string"
         ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" }
+        : {}),
+      ...(useStream
+        ? {
+            onTextChunk: (chunk: string) => {
+              try {
+                res.write(`data: ${JSON.stringify({ type: "chunk", text: chunk })}\n\n`);
+              } catch {
+                // Client may have disconnected
+              }
+            },
+          }
         : {}),
     });
     const latencyMs = Date.now() - startMs;
@@ -709,7 +881,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       (result.graphCommands?.length || result.graphCommand)
     ) {
       const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
-      const nodes: Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }> = [];
+      const nodes: DraftNode[] = [];
       const edges: Array<{ source: string; target: string }> = [];
       for (const cmd of cmds) {
         if (cmd.action === "create_node" && "id" in cmd) {
@@ -719,6 +891,9 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
             layer: "layer" in cmd ? cmd.layer : undefined,
             description: "description" in cmd ? cmd.description : undefined,
             archNodeId: "archNodeId" in cmd ? cmd.archNodeId : undefined,
+            skeletonCode: "skeletonCode" in cmd && typeof cmd.skeletonCode === "string" ? cmd.skeletonCode : undefined,
+            layoutHint: "layoutHint" in cmd && typeof cmd.layoutHint === "string" ? cmd.layoutHint : undefined,
+            group: "group" in cmd && typeof cmd.group === "string" ? cmd.group : undefined,
           });
         }
         if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
@@ -728,6 +903,25 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       if (nodes.length > 0 || edges.length > 0) {
         try {
           saveDraft(greenfieldSessionId, { nodes, edges, workspaceId: workspaceId ?? undefined });
+          if (
+            supabaseAdmin &&
+            workspaceId &&
+            (result.criticScore ?? 0) >= 6 &&
+            (result.answer?.length ?? 0) > 30
+          ) {
+            const designSummary = `Greenfield design: ${nodes.length} nodes (${nodes.map((n) => n.label || n.id).join(", ")}), ${edges.length} edges. ${(result.answer ?? "").slice(0, 300).replace(/\n/g, " ")}`;
+            supabaseAdmin
+              .from("workspace_memories")
+              .insert({
+                workspace_id: workspaceId,
+                content: designSummary,
+                memory_type: "greenfield_design",
+                node_id: null,
+              })
+              .then(undefined, (e: unknown) =>
+                console.warn("[chat] greenfield memory insert:", e instanceof Error ? e.message : e)
+              );
+          }
         } catch {
           // Non-fatal
         }
@@ -771,6 +965,25 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
             .eq("workspace_id", workspaceId);
         })
         .then(undefined, (e: unknown) => console.warn("[chat] thread persist:", e instanceof Error ? e.message : e));
+    }
+
+    if (useStream) {
+      try {
+        res.write(
+          `data: ${JSON.stringify({
+            type: "done",
+            answer: result.answer,
+            graphCommands: result.graphCommands,
+            graphCommand: result.graphCommand,
+            criticReport: result.criticReport,
+            criticScore: result.criticScore,
+          })}\n\n`
+        );
+        res.end();
+      } catch {
+        res.end();
+      }
+      return;
     }
 
     const tokenUsage = (result as { tokenUsage?: { agentInput?: number; agentOutput?: number } }).tokenUsage;
@@ -823,7 +1036,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
 
 /** Async chat — returns 202 with taskId, client polls GET /api/tasks/:taskId */
 router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName } =
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations } =
     req.body as {
       question?: string;
       graph?: ArchGraph;
@@ -834,6 +1047,7 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
       threadId?: string | null;
       pdfBase64?: string | null;
       pdfFileName?: string | null;
+      pendingViolations?: CriticViolation[];
     };
 
   if (!question || typeof question !== "string") {
@@ -899,6 +1113,75 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
       } catch {
         // fall through to normal chat
       }
+    }
+  }
+
+  // Fix-or-Track: parse "Track" reply to create Jira tickets (sync response, no task)
+  const trackMatch = /^\s*(track|create\s+jira|track\s+in\s+jira)\s*$/i.test(question.trim());
+  if (trackMatch && Array.isArray(pendingViolations) && pendingViolations.length > 0) {
+    try {
+      const config = await getUserJiraConfig(req.user!.id);
+      if (!config) {
+        res.json({
+          answer: "Jira is not connected. Use the Governance panel to connect your Jira account.",
+          violations: pendingViolations,
+        });
+        return;
+      }
+      const projectKey = (workspaceId ? await getWorkspaceProjectKey(workspaceId) : null) ?? config.project ?? null;
+      if (!projectKey) {
+        res.json({
+          answer: "Set a project key in the sidebar to track violations in Jira.",
+          violations: pendingViolations,
+        });
+        return;
+      }
+      const projectRoot = graph?.projectRoot ?? undefined;
+      const projectName = graph?.projectName ?? undefined;
+      const results: Array<{ key: string; url?: string; error?: string }> = [];
+      for (const v of pendingViolations.slice(0, 10)) {
+        const srcNode = graph?.nodes?.find((n) => n.id === v.sourceNodeId || n.path === v.sourceNodeId);
+        const archModulePath = srcNode?.path ?? v.sourceNodeId;
+        const archModuleFiles = srcNode?.files;
+        const r = await createJiraTicketForViolation({
+          config,
+          projectKey,
+          violation: v,
+          projectRoot,
+          projectName,
+          workspaceId: workspaceId ?? undefined,
+          archModulePath,
+          archModuleFiles,
+        });
+        if (r.error) {
+          results.push({ key: "", error: r.error });
+        } else {
+          results.push({ key: r.key, url: r.url });
+        }
+      }
+      const created = results.filter((x) => x.key);
+      const failed = results.filter((x) => x.error);
+      let answer = `Created ${created.length} Jira ticket(s) for violations.`;
+      if (created.length > 0) {
+        const keys = created.map((r) => `[${r.key}](${r.url ?? ""})`).join(", ");
+        answer += `\n\n${keys}`;
+      }
+      if (failed.length > 0) {
+        answer += `\n\n${failed.length} failed: ${failed.map((r) => r.error).join("; ")}`;
+      }
+      const updatedViolations = pendingViolations.map((v, i) => {
+        const r = results[i];
+        return r?.key ? { ...v, jiraKey: r.key, jiraStatus: "To Do" as const, trackedAt: Date.now() } : v;
+      });
+      res.json({ answer, violations: updatedViolations });
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.json({
+        answer: `Failed to create Jira tickets: ${msg}`,
+        violations: pendingViolations,
+      });
+      return;
     }
   }
 
@@ -978,6 +1261,20 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
       }
     }
 
+  let feedbackContext: string | undefined;
+  if (req.user?.id) {
+    try {
+      const { downvoteCount } = await getRecentFeedbackForUser(req.user.id);
+      if (downvoteCount > 0) {
+        feedbackContext =
+          `Note: The user has downvoted ${downvoteCount} architecture answer(s) in the last 7 days. ` +
+          "Prefer concise, actionable responses and avoid overly long explanations.";
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   const sessionIdForDraft = greenfieldSessionId;
   runArchitectureTask({
     question,
@@ -991,6 +1288,7 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
     rootPath,
     jiraConfig,
     jiraProjectKey: jiraProjectKey ?? undefined,
+    feedbackContext,
     ...(pdfBase64 && typeof pdfBase64 === "string"
       ? { pdfBase64, pdfFileName: typeof pdfFileName === "string" ? pdfFileName : "document.pdf" }
       : {}),
@@ -1004,17 +1302,20 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         (result.graphCommands?.length || result.graphCommand)
       ) {
         const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
-        const nodes: Array<{ id: string; label: string; layer?: string; description?: string; archNodeId?: string }> = [];
-        const edges: Array<{ source: string; target: string }> = [];
-        for (const cmd of cmds) {
-          if (cmd.action === "create_node" && "id" in cmd) {
-            nodes.push({
-              id: cmd.id,
-              label: cmd.label ?? cmd.id,
-              layer: "layer" in cmd ? cmd.layer : undefined,
-              description: "description" in cmd ? cmd.description : undefined,
-              archNodeId: "archNodeId" in cmd ? cmd.archNodeId : undefined,
-            });
+      const nodes: DraftNode[] = [];
+      const edges: Array<{ source: string; target: string }> = [];
+      for (const cmd of cmds) {
+        if (cmd.action === "create_node" && "id" in cmd) {
+          nodes.push({
+            id: cmd.id,
+            label: cmd.label ?? cmd.id,
+            layer: "layer" in cmd ? cmd.layer : undefined,
+            description: "description" in cmd ? cmd.description : undefined,
+            archNodeId: "archNodeId" in cmd ? cmd.archNodeId : undefined,
+            skeletonCode: "skeletonCode" in cmd && typeof cmd.skeletonCode === "string" ? cmd.skeletonCode : undefined,
+            layoutHint: "layoutHint" in cmd && typeof cmd.layoutHint === "string" ? cmd.layoutHint : undefined,
+            group: "group" in cmd && typeof cmd.group === "string" ? cmd.group : undefined,
+          });
           }
           if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
             edges.push({ source: cmd.fromId, target: cmd.toId });
@@ -1023,6 +1324,25 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         if (nodes.length > 0 || edges.length > 0) {
           try {
             saveDraft(sessionIdForDraft, { nodes, edges, workspaceId: workspaceId ?? undefined });
+            if (
+              supabaseAdmin &&
+              workspaceId &&
+              (result.criticScore ?? 0) >= 6 &&
+              (result.answer?.length ?? 0) > 30
+            ) {
+              const designSummary = `Greenfield design: ${nodes.length} nodes (${nodes.map((n) => n.label || n.id).join(", ")}), ${edges.length} edges. ${(result.answer ?? "").slice(0, 300).replace(/\n/g, " ")}`;
+              supabaseAdmin
+                .from("workspace_memories")
+                .insert({
+                  workspace_id: workspaceId,
+                  content: designSummary,
+                  memory_type: "greenfield_design",
+                  node_id: null,
+                })
+                .then(undefined, (e: unknown) =>
+                  console.warn("[chat-async] greenfield memory insert:", e instanceof Error ? e.message : e)
+                );
+            }
           } catch {
             // Non-fatal
           }
@@ -1084,6 +1404,11 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         rails: railsDedupedAsync.length > 0 ? railsDedupedAsync : railsForResult,
         railIds: railsDedupedAsync.map((r) => r.id),
         boardHint: workspaceId && railsDedupedAsync.length > 0 ? { workspaceId } : undefined,
+        // Explainability metadata from manager, if present.
+        reasoningTrace: (result as any).reasoningTrace,
+        citations: (result as any).citations,
+        confidenceScore: (result as any).confidenceScore,
+        suggestedActions: (result as any).suggestedActions,
       });
 
       if (supabaseAdmin && workspaceId && (result.violations ?? []).length > 0) {

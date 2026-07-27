@@ -15,7 +15,7 @@ const ALL_PARTICLE_T = 4;
 const DRIFT_GLOW_R = 0.03;
 const ALL_GLOW_R = 0.015;
 interface Edge3DProps {
-  edge: ArchEdge;
+  edge: ArchEdge & { runtimeLatencyMs?: number; runtimeErrorRate?: number };
   srcPos: { x: number; y: number; z: number };
   tgtPos: { x: number; y: number; z: number };
   srcLayer?: string;
@@ -24,15 +24,21 @@ interface Edge3DProps {
   tracePathActive?: boolean;
 }
 
-function edgeColor(edge: ArchEdge, srcLayer?: string, tgtLayer?: string): string {
+function edgeColor(edge: Edge3DProps["edge"], srcLayer?: string, tgtLayer?: string): string {
   if (edge.isDrift) return "#ef4444";
   if (edge.isLayerViolation) return "#f59e0b";
+  // Runtime latency heatmap override (similar to 2D)
+  if (typeof edge.runtimeLatencyMs === "number") {
+    if (edge.runtimeLatencyMs < 100) return "#22c55e";
+    if (edge.runtimeLatencyMs < 300) return "#eab308";
+    return "#ef4444";
+  }
   if (edge.type === "runtime") return "#22c55e";
   const layer = (srcLayer ?? tgtLayer ?? "Uncategorized") as string;
   return LAYER_COLORS[layer]?.top ?? LAYER_COLORS["Uncategorized"].top;
 }
 
-function edgeRadius(edge: ArchEdge): number {
+function edgeRadius(edge: Edge3DProps["edge"]): number {
   if (edge.isDrift) return TUBE_RADII.drift;
   if (edge.isLayerViolation) return TUBE_RADII.violation;
   return edge.type === "runtime" ? TUBE_RADII.arch * 0.9 : TUBE_RADII.arch;
@@ -51,6 +57,7 @@ export function Edge3D({
   const radius = edgeRadius(edge);
   const isDrift = !!edge.isDrift;
   const isViolation = !!edge.isLayerViolation;
+  const hasRuntimeLatency = typeof edge.runtimeLatencyMs === "number";
 
   const start = useMemo(
     () =>
@@ -140,7 +147,7 @@ export function Edge3D({
           roughness={0.5}
           metalness={0.2}
           emissive={new THREE.Color(color)}
-          emissiveIntensity={isDrift ? 0.2 : isViolation ? 0.15 : 0}
+          emissiveIntensity={isDrift ? 0.2 : isViolation ? 0.15 : hasRuntimeLatency ? 0.08 : 0}
           transparent
           opacity={opacity}
         />

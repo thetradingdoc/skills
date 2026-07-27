@@ -64,6 +64,44 @@ npm run dev:webview
 | `ARCH_TEST_MODE=1` | Force MockEnricher (no API calls). |
 | `ARCH_FIXTURE_PATH` | Override scan root, e.g. `fixtures/sample-project`. |
 | `ANTHROPIC_API_KEY` | Fallback for API key (prefer settings). |
+| `ARCHY_LOG_PATH` | Optional path for structured runtime logs used by telemetry tools (defaults to `logs/app.log`). |
+| `ARCHY_SPANS_PATH` | Optional path for OTLP span ingestion (defaults to `logs/spans.jsonl`). POST `/api/telemetry/otlp` accepts OTLP JSON. POST `/api/workspaces/:id/telemetry/otlp` (auth) maps spans onto the graph and persists to `workspace_runtime_snapshots`. |
+
+## `archNodeId` contract
+
+Arch Visualizer uses a **stable `archNodeId`** to tie together:
+
+- static analysis nodes (graph),
+- generated/scaffolded source files,
+- logs & telemetry,
+- Jira issues.
+
+**Canonical format**
+
+- Type: conceptual identifier for a module, _not_ a raw file path.
+- Allowed charset: letters, numbers, `_`, `-`, `/`, `.`.
+- Recommended patterns:
+  - Feature or route groups: `routes/auth`, `routes/payments`
+  - Services: `services/cache`, `services/billing`
+  - UI modules: `ui/dashboard`, `ui/settings`
+  - Libraries/utilities: `lib/formatting`, `utils/time`
+
+The same value should be reused consistently across:
+
+- `// @archNodeId: <id>` header comments at the top of source files.
+- Jira labels in the form `archNodeId:<id>`.
+- Runtime logs (see logger helper) as a structured `archNodeId` field.
+
+**Header comment convention**
+
+Every file that belongs to an architecture node **must** begin with:
+
+```ts
+// @archNodeId: routes/auth
+```
+
+The `id-decorator` script and scaffold/materialize flows keep this header
+idempotent and consistent when refactoring or generating new modules.
 
 ## .context.md
 
@@ -110,5 +148,4 @@ Uses MockEnricher by default. Set `ARCH_TEST_MODE=1` in CI.
 |-----|---------|
 | [docs/CODEBASE.md](docs/CODEBASE.md) | Structure, entry points, data flow |
 | [docs/PRODUCT_STATUS.md](docs/PRODUCT_STATUS.md) | Features, APIs |
-| [docs/TODO_AUDIT.md](docs/TODO_AUDIT.md) | Tracked work |
 | [docs/ops/ENV.md](docs/ops/ENV.md) | Environment variables |

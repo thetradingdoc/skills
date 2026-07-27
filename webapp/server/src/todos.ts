@@ -2,9 +2,22 @@ import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { ensureProjectRoot } from "./cloneRepo.js";
-import { createRail, createTask as createRailTask } from "../../../src/agent/rail/manager.js";
-import type { Rail, RailTrigger, Task as RailTask } from "../../../src/agent/types.js";
+import { createRail, createTask as createRailTask, getRail, loadRails } from "../../../src/agent/rail/manager.js";
+import type { Rail, Task as RailTask } from "../../../src/agent/types.js";
 import { triggerRailExecution } from "./railExecute.js";
+import {
+  getMemoriesForContext,
+  buildMemoryContextBlock,
+} from "./memoryRetrieval.js";
+import { appendTodoSessionLog } from "./taskSessionLog.js";
+import { debugLog } from "./debugLog.js";
+import { materializeAnalysisRail } from "./railMaterializeCore.js";
+import {
+  canTransitionTodo,
+  normalizeTodoStatus,
+  isDependencyDone,
+  buildTaskAgentPrompt,
+} from "./todoPhase1.js";
 
 const router = Router();
 
@@ -22,8 +35,11 @@ export async function completeTodosForRail(railId: string): Promise<void> {
       .eq("rail_id", railId);
     await supabaseAdmin
       .from("todos")
-      .update({ status: "completed", updated_at: now })
+      .update({ status: "done", updated_at: now })
       .eq("rail_id", railId);
+    for (const row of rows ?? []) {
+      await appendTodoSessionLog(row.id as string, "done", { railId });
+    }
     if (rows && rows.length > 0) {
       const workspaceId = rows[0]!.workspace_id as string | null;
       if (workspaceId) {
@@ -150,7 +166,17 @@ router.post("/todos", requireUser, async (req, res) => {
       description,
       phase,
       depends_on: dependsOn.length ? dependsOn : null,
-      status: "pending",
+      status: "todo",
+      context: typeof req.body?.context === "string" ? req.body.context.trim() : null,
+      constraints: typeof req.body?.constraints === "string" ? req.body.constraints.trim() : null,
+      acceptance_criteria:
+        req.body?.acceptanceCriteria && typeof req.body.acceptanceCriteria === "object"
+          ? req.body.acceptanceCriteria
+          : null,
+      file_scope: Array.isArray(req.body?.fileScope)
+        ? (req.body.fileScope as string[]).filter((x) => typeof x === "string" && x.trim())
+        : null,
+      session_log: [],
       source: req.body?.source ?? null,
       source_path: req.body?.sourcePath ?? null,
     })
@@ -240,7 +266,7 @@ router.get("/todos/dependencies/ready", requireUser, async (req, res) => {
     if (
       deps.every((id) => {
         const dep = byId.get(id);
-        return dep && dep.status === "completed";
+        return dep && isDependencyDone(dep.status);
       })
     ) {
       ready.push(row.id);
@@ -248,6 +274,189 @@ router.get("/todos/dependencies/ready", requireUser, async (req, res) => {
   }
 
   res.json({ ready });
+});
+
+async function resolveWorkspaceRoot(
+  workspaceId: string,
+  userId: string
+): Promise<{ root: string; repoUrl: string | null } | { error: string }> {
+  const { data: graphRow } = await supabaseAdmin!
+    .from("graphs")
+    .select("graph_json, repo_url")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const graph = (graphRow?.graph_json ?? null) as any;
+  const repoUrl = (graphRow?.repo_url as string | null) ?? null;
+  const { rootPath, error } = await ensureProjectRoot(
+    workspaceId,
+    graph ?? { nodes: [], edges: [] },
+    repoUrl
+  );
+  if (rootPath) return { root: rootPath, repoUrl };
+  return { error: error || "Workspace has no project_root; scan a repo first." };
+}
+
+router.post("/todos/:id/run", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const todoId = req.params.id;
+  try {
+    const { data: row } = await supabaseAdmin
+      .from("todos")
+      .select("*")
+      .eq("id", todoId)
+      .maybeSingle();
+    if (!row) {
+      res.status(404).json({ error: "Todo not found" });
+      return;
+    }
+    const workspaceId = row.workspace_id as string;
+    const { data: ws } = await supabaseAdmin
+      .from("workspaces")
+      .select("id")
+      .eq("id", workspaceId)
+      .eq("owner_id", req.user!.id)
+      .single();
+    if (!ws) {
+      res.status(403).json({ error: "Access denied." });
+      return;
+    }
+    const status = normalizeTodoStatus(row.status);
+    if (status !== "todo") {
+      res.status(400).json({ error: `Task must be todo to run (current: ${status}).` });
+      return;
+    }
+    const memories = await getMemoriesForContext(supabaseAdmin, workspaceId, {});
+    const memoryBlock = buildMemoryContextBlock(memories, [], []);
+    await supabaseAdmin
+      .from("todos")
+      .update({ status: "in_progress", updated_at: new Date().toISOString() })
+      .eq("id", todoId);
+    await appendTodoSessionLog(todoId, "started", {
+      title: row.title,
+      context: row.context,
+      constraints: row.constraints,
+      file_scope: row.file_scope,
+      memories_preview: memoryBlock.slice(0, 1500),
+    });
+    const { railId } = await todoToRailCore(todoId, req.user!.id, memoryBlock);
+    const { taskId } = await triggerRailExecution(railId, workspaceId, req.user!.id);
+    await appendTodoSessionLog(todoId, "execute_triggered", { railId, taskId });
+    const { data: updated } = await supabaseAdmin.from("todos").select("*").eq("id", todoId).single();
+    res.json({ todo: updated, railId, taskId });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await appendTodoSessionLog(todoId, "error", { message: msg });
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/todos/:id/approve", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const todoId = req.params.id;
+  const force = req.body?.force === true;
+  try {
+    const { data: row } = await supabaseAdmin
+      .from("todos")
+      .select("*")
+      .eq("id", todoId)
+      .maybeSingle();
+    if (!row) {
+      res.status(404).json({ error: "Todo not found" });
+      return;
+    }
+    const status = normalizeTodoStatus(row.status);
+    if (status !== "needs_review") {
+      res.status(400).json({ error: `Task must be needs_review to approve (current: ${status}).` });
+      return;
+    }
+    const railId = row.rail_id as string | null;
+    if (!railId) {
+      res.status(400).json({ error: "Task has no linked rail." });
+      return;
+    }
+    const workspaceId = row.workspace_id as string;
+    const resolved = await resolveWorkspaceRoot(workspaceId, req.user!.id);
+    if ("error" in resolved) {
+      res.status(400).json({ error: resolved.error });
+      return;
+    }
+    void force;
+    const result = materializeAnalysisRail(resolved.root, railId);
+    if (!result.ok) {
+      res.status(result.status ?? 500).json({ error: result.error });
+      return;
+    }
+    await completeTodosForRail(railId);
+    await appendTodoSessionLog(todoId, "approved", { railId, copied: true });
+    const { data: updated } = await supabaseAdmin.from("todos").select("*").eq("id", todoId).single();
+    res.json({ todo: updated, rail: result.rail });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
+});
+
+router.post("/todos/:id/reject", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const todoId = req.params.id;
+  const backTo = req.body?.backTo === "in_progress" ? "in_progress" : "todo";
+  try {
+    const { data: row } = await supabaseAdmin
+      .from("todos")
+      .select("*")
+      .eq("id", todoId)
+      .maybeSingle();
+    if (!row) {
+      res.status(404).json({ error: "Todo not found" });
+      return;
+    }
+    const status = normalizeTodoStatus(row.status);
+    if (status !== "needs_review") {
+      res.status(400).json({ error: `Task must be needs_review to reject (current: ${status}).` });
+      return;
+    }
+    if (!canTransitionTodo("needs_review", backTo)) {
+      res.status(400).json({ error: "Invalid reject target status." });
+      return;
+    }
+    await supabaseAdmin
+      .from("todos")
+      .update({
+        status: backTo,
+        rail_id: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", todoId);
+    // #region agent log
+    debugLog({
+      hypothesisId: "H1",
+      location: "todos.ts:reject",
+      message: "reject cleared rail_id",
+      data: { todoId, backTo, previousRailId: row.rail_id ?? null },
+    });
+    // #endregion
+    await appendTodoSessionLog(todoId, "rejected", {
+      backTo,
+      reason: req.body?.reason ?? null,
+      cleared_rail_id: row.rail_id ?? null,
+    });
+    const { data: updated } = await supabaseAdmin.from("todos").select("*").eq("id", todoId).single();
+    res.json({ todo: updated });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: msg });
+  }
 });
 
 /** Single todo by ID. Must be after /todos/dependencies/ready so that path is not matched as :id. */
@@ -356,7 +565,31 @@ router.patch("/todos/:id", requireUser, async (req, res) => {
     updates.depends_on = dependsOn.length ? dependsOn : null;
   }
   if (typeof req.body?.status === "string") {
-    updates.status = req.body.status;
+    const next = normalizeTodoStatus(req.body.status);
+    const { data: cur } = await supabaseAdmin
+      .from("todos")
+      .select("status")
+      .eq("id", todoId)
+      .single();
+    const from = normalizeTodoStatus((cur as { status?: string } | null)?.status);
+    if (!canTransitionTodo(from, next)) {
+      res.status(400).json({ error: `Invalid status transition: ${from} → ${next}` });
+      return;
+    }
+    updates.status = next;
+  }
+  if (typeof req.body?.context === "string") updates.context = req.body.context.trim();
+  if (typeof req.body?.constraints === "string") updates.constraints = req.body.constraints.trim();
+  if (req.body?.acceptanceCriteria !== undefined) {
+    updates.acceptance_criteria =
+      req.body.acceptanceCriteria && typeof req.body.acceptanceCriteria === "object"
+        ? req.body.acceptanceCriteria
+        : null;
+  }
+  if (Array.isArray(req.body?.fileScope)) {
+    updates.file_scope = (req.body.fileScope as string[]).filter(
+      (x) => typeof x === "string" && x.trim()
+    );
   }
   if (req.body?.archived === false || req.body?.archived === null) {
     updates.archived_at = null;
@@ -441,12 +674,15 @@ router.delete("/todos/:id", requireUser, async (req, res) => {
 /** Core logic: create a rail from a todo. Returns { railId } or throws. Exported for greenfield→rail pipeline. */
 export async function todoToRailCore(
   todoId: string,
-  userId: string
+  userId: string,
+  memoryBlock?: string
 ): Promise<{ railId: string }> {
   if (!supabaseAdmin) throw new Error("Auth service not configured.");
   const { data: todoRow, error: todoErr } = await supabaseAdmin
     .from("todos")
-    .select("id, title, description, workspace_id, rail_id, source, source_path")
+    .select(
+      "id, title, description, context, constraints, acceptance_criteria, file_scope, workspace_id, rail_id, source, source_path"
+    )
     .eq("id", todoId)
     .maybeSingle();
   if (todoErr) throw new Error(todoErr.message);
@@ -460,7 +696,6 @@ export async function todoToRailCore(
     .eq("owner_id", userId)
     .single();
   if (!ws) throw new Error("Access denied");
-  if (todoRow.rail_id) return { railId: todoRow.rail_id };
 
   let rootPath: string | null = null;
   let repoUrl: string | null = null;
@@ -482,26 +717,77 @@ export async function todoToRailCore(
   else if (error) throw new Error(error);
   if (!rootPath) throw new Error("Workspace has no project_root; scan a repo before creating rails.");
 
+  const reusableStates = new Set([
+    "PRE_PLANNING",
+    "PLANNING",
+    "AWAITING_APPROVAL",
+    "EXECUTING",
+    "VERIFYING",
+    "SELF_CORRECTING",
+  ]);
+  if (todoRow.rail_id) {
+    loadRails(rootPath);
+    const existing = getRail(rootPath, todoRow.rail_id as string);
+    const reuse =
+      existing && reusableStates.has(existing.state as string);
+    // #region agent log
+    debugLog({
+      hypothesisId: "H2",
+      location: "todos.ts:todoToRailCore",
+      message: "rail reuse decision",
+      data: {
+        todoId,
+        existingRailId: todoRow.rail_id,
+        railState: existing?.state ?? null,
+        reuse,
+        newRail: !reuse,
+      },
+    });
+    // #endregion
+    if (reuse) return { railId: todoRow.rail_id as string };
+    await supabaseAdmin.from("todos").update({ rail_id: null }).eq("id", todoId);
+  }
+
   const now = Date.now();
   const railId = `rail-todo-${todoId}-${now}`;
-  const taskDesc =
-    (typeof todoRow.description === "string" && todoRow.description.trim()) ||
-    String(todoRow.title ?? "").slice(0, 200) ||
-    "Implement todo";
+  const agentPrompt = buildTaskAgentPrompt(todoRow as any);
+  const taskDesc = agentPrompt.slice(0, 4000) || String(todoRow.title ?? "").slice(0, 200) || "Implement todo";
+  const fileScope = Array.isArray(todoRow.file_scope)
+    ? (todoRow.file_scope as string[]).filter((x) => typeof x === "string" && x.trim())
+    : [];
+  const primaryPath = fileScope[0] ?? "src";
   const logicStep = {
     step: 1,
     layer: "Service" as const,
     nodeId: "todo",
-    filePath: "src",
+    filePath: primaryPath.replace(/\*\*$/, "").replace(/\/$/, "") || "src",
     action: taskDesc.slice(0, 120),
   };
+  const ac = todoRow.acceptance_criteria as
+    | { functional?: string[]; visual?: string[]; architectural?: string[]; technical?: string[] }
+    | null;
+  const acceptanceCriteria =
+    ac && typeof ac === "object"
+      ? {
+          functional: Array.isArray(ac.functional) ? ac.functional : [],
+          visual: Array.isArray(ac.visual) ? ac.visual : [],
+          architectural: Array.isArray(ac.architectural)
+            ? ac.architectural
+            : Array.isArray(ac.technical)
+              ? ac.technical
+              : [],
+        }
+      : undefined;
   const rail: Rail = {
     id: railId,
     version: 1,
-    outcome: String(todoRow.title ?? "").slice(0, 200) || "Todo rail",
+    outcome: `${String(todoRow.title ?? "").slice(0, 200)}\n\n${memoryBlock ? `${memoryBlock.slice(0, 3000)}\n\n` : ""}${taskDesc}`.slice(
+      0,
+      8000
+    ),
     trigger: {
       source: "chat",
-      userMessage: `Todo: ${String(todoRow.title ?? "").slice(0, 200)}`,
+      userMessage: `Task: ${String(todoRow.title ?? "").slice(0, 200)}`,
       sessionId: userId ?? "webapp",
     },
     workspaceId,
@@ -518,9 +804,8 @@ export async function todoToRailCore(
     updatedAt: now,
     createdBy: "human",
     sessionId: userId ?? "webapp",
-    originSummary:
-      (typeof todoRow.description === "string" && todoRow.description.trim()) ||
-      String(todoRow.title ?? "").slice(0, 200),
+    originSummary: taskDesc.slice(0, 500),
+    acceptanceCriteria,
   };
   createRail(rootPath, rail);
   const codeTask: RailTask = {
@@ -528,7 +813,7 @@ export async function todoToRailCore(
     railId,
     kind: "code_change",
     description: taskDesc,
-    files: [],
+    files: fileScope,
     autoCapable: true,
     status: "pending",
     agent: "executor",
@@ -566,9 +851,9 @@ export async function runAutoRailsAndExecute(
   const byId = new Map(rows.map((r) => [r.id, r]));
   const readyTodoIds: string[] = [];
   for (const row of rows) {
-    if (row.archived_at != null || row.status !== "pending") continue;
+    if (row.archived_at != null || normalizeTodoStatus(row.status) !== "todo") continue;
     const deps = row.depends_on ?? [];
-    if (deps.every((id) => (byId.get(id)?.status ?? "") === "completed")) {
+    if (deps.every((id) => isDependencyDone(byId.get(id)?.status))) {
       readyTodoIds.push(row.id);
     }
   }
@@ -663,7 +948,7 @@ router.post("/todos/auto-rails-and-execute", requireUser, async (req, res) => {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const readyTodoIds: string[] = [];
   for (const row of rows) {
-    if (row.archived_at != null || row.status !== "pending") continue;
+    if (row.archived_at != null || normalizeTodoStatus(row.status) !== "todo") continue;
     const deps = row.depends_on ?? [];
     const allCompleted = deps.every((id) => {
       const dep = byId.get(id);
@@ -763,7 +1048,7 @@ router.post("/todos/auto-execute-ready", requireUser, async (req, res) => {
   const readyTodoIds: string[] = [];
 
   for (const row of rows) {
-    if (row.archived_at != null || row.status !== "pending") continue;
+    if (row.archived_at != null || normalizeTodoStatus(row.status) !== "todo") continue;
     const deps = row.depends_on ?? [];
     const allCompleted = deps.every((id) => {
       const dep = byId.get(id);
@@ -835,7 +1120,8 @@ router.post("/todos/from-chat", requireUser, async (req, res) => {
       description: null,
       phase: null,
       depends_on: null,
-      status: "pending",
+      status: "todo",
+      session_log: [],
       source: "chat",
       source_path: null,
     }));

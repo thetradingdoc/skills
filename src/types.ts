@@ -119,8 +119,10 @@ export type TechKind =
 /** Optional cloud provider hint for tech-specific rendering. */
 export type CloudProvider = "aws" | "gcp" | "azure" | "other" | "unknown";
 
+export type ArchNodeId = string;
+
 export interface ArchNode {
-  id: string;
+  id: ArchNodeId;
   label: string;
   path: string;
   /**
@@ -155,6 +157,26 @@ export interface ArchNode {
   cloudProvider?: CloudProvider;
   /** Free-form tags for UI rendering (k8s, API, DB, external, etc.). */
   tags?: string[];
+  /**
+   * Short natural-language summary of what this node represents.
+   * More end-user friendly than description when present.
+   */
+  summary?: string;
+  /**
+   * Optional language/idiom notes for this node — used by the Learn / Code
+   * viewer panels to teach concepts (e.g. “React hook”, “NestJS module”).
+   */
+  languageNotes?: string;
+  /**
+   * Rough complexity hint for visualization and badges in the inspector.
+   * Kept free-form enough to allow future buckets.
+   */
+  complexity?: "simple" | "moderate" | "complex" | string;
+  /**
+   * Optional line range in the primary file this node maps to, for code
+   * viewer line hints (e.g. [42, 87]).
+   */
+  lineRange?: [number, number];
   /** Icon key for mapping to specific glyph/mesh on the frontend. */
   iconKey?: string;
   /**
@@ -178,7 +200,27 @@ export interface ArchNode {
   depth?: number;
   /** Live violations associated with this node (merged from CriticResult). */
   violationState?: ArchNodeViolationState;
+  /** Inferred domain (e.g. auth, payments, users). Set by SystemModel builder. */
+  domain?: string;
+  /** Inferred runtime roles (controller, service, repository, etc.). Set by SystemModel builder. */
+  runtimeRoles?: string[];
+  /** Inferred tier (core/supporting/peripheral). Set by SystemModel builder. */
+  tier?: NodeTier;
 }
+
+/** Node tier: core = critical path, supporting = used by core, peripheral = utilities/config. */
+export type NodeTier = "core" | "supporting" | "peripheral";
+
+/** Runtime roles inferred from path, layer, and semantic signals. */
+export type RuntimeRole =
+  | "controller"
+  | "service"
+  | "repository"
+  | "worker"
+  | "scheduler"
+  | "event-consumer"
+  | "gateway"
+  | "client";
 
 /** How significant an edge is architecturally */
 export type EdgeImportance = "architectural" | "utility" | "config";
@@ -191,17 +233,42 @@ export interface EnrichmentResult {
   confidence: "high" | "medium" | "low";
 }
 
+/** Request/flow edge semantics: dependency (static), runtime_path (observed), event (async), job (scheduled). */
+export type FlowKind = "dependency" | "runtime_path" | "event" | "job";
+
 export interface ArchEdge {
   id: string;
-  source: string;
-  target: string;
+  source: ArchNodeId;
+  target: ArchNodeId;
   type: "import" | "reexport" | "dynamic" | "runtime";
+  /** Request/flow semantics for runtime and path analysis. */
+  flowKind?: FlowKind;
   isDrift: boolean;
   driftReason?: string;
   /** architectural = cross-layer load-bearing, utility = helpers/config, config = env reads */
   importance?: EdgeImportance;
   /** Edge violates layer hierarchy (e.g. Data Access → Presentation) */
   isLayerViolation?: boolean;
+}
+
+/**
+ * Scaffold Node definition
+ *
+ * Canonical contract used by greenfield design, scaffold/materialize flows,
+ * and skills that create new modules on disk.
+ *
+ * - archNodeId: stable identifier for the module (e.g. routes/auth, services/cache).
+ * - path: directory or file path relative to project root where the module should live.
+ * - layer: architectural layer for visualization and validation.
+ * - kind: free-form module kind hint (service, route, adapter, job, etc.).
+ * - template: optional template/skeleton identifier or inline stub description.
+ */
+export interface ScaffoldNodeDefinition {
+  archNodeId: ArchNodeId;
+  path: string;
+  layer: NodeLayer | string;
+  kind: string;
+  template?: string;
 }
 
 export interface ArchGraph {
@@ -212,13 +279,59 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  layers?: Array<{
+    id: string;
+    name: string;
+    nodeIds: string[];
+  }>;
+  tour?: Array<{
+    order: number;
+    title: string;
+    description: string;
+    nodeIds: string[];
+    languageLesson?: string;
+  }>;
   findings?: ContractFinding[];
+}
+
+/** SystemModel node: ArchNode + inferred domain, runtimeRoles, tier for reasoning. */
+export interface SystemModelNode extends ArchNode {
+  domain: string;
+  runtimeRoles: RuntimeRole[];
+  tier: NodeTier;
+}
+
+/** SystemModel: enriched view of ArchGraph for AI and visualization. */
+export interface SystemModel {
+  nodes: SystemModelNode[];
+  edges: ArchEdge[];
+  domains: string[];
+  generatedAt: number;
+  projectRoot: string;
+  projectName?: string;
+  /** Optional reference to source graph id. */
+  graphId?: string;
+  /** Snapshot id if stored in workspace_system_models. */
+  snapshotId?: string;
 }
 
 /** History for manager/Claude; may include system messages (e.g. Librarian skill context). */
 export type ArchitectureChatHistory = Array<{
   role: "user" | "assistant" | "system";
   content: string;
+  /** Optional reasoning trace and metadata for explainability. */
+  reasoningSteps?: string[];
+  citations?: Array<{
+    label: string;
+    nodeId?: string;
+    edgeId?: string;
+    filePath?: string;
+  }>;
+  confidenceScore?: number | null;
+  suggestedActions?: string[];
+  graphCommands?: GraphCommand[];
+  relevantNodeIds?: string[];
+  taskId?: string;
 }>;
 
 /** Chat can optionally trigger graph actions (highlight, filter, focus, design, trace) */
@@ -236,6 +349,12 @@ export type GraphCommand =
       layer: NodeLayer;
       description?: string;
       archNodeId?: string;
+      /** Optional minimal skeleton/stub code for the module (designer can propose) */
+      skeletonCode?: string;
+      /** Optional layout hint for canvas auto-arrangement (e.g. "left", "center", "right") */
+      layoutHint?: string;
+      /** Optional group ID to cluster related nodes visually */
+      group?: string;
     }
   | {
       action: "connect";
@@ -276,6 +395,30 @@ export interface ValidationResult {
   testFailures: Array<{ file: string; name: string }>;
   jiraCreated: Array<{ key: string; summary: string; type: string }>;
   jiraBaseUrl: string | null;
+}
+
+/** Runtime metrics for a single edge (from OTEL/APM). */
+export interface RuntimeEdgeMetrics {
+  latencyMs?: number;
+  errorRate?: number;
+  throughputPerMin?: number;
+  /** Request/flow semantics when inferred from traces. */
+  flowKind?: FlowKind;
+}
+
+/** Runtime metrics for a single node (service). */
+export interface RuntimeNodeMetrics {
+  errorRate?: number;
+  throughputPerMin?: number;
+}
+
+/** Snapshot of runtime metrics for a workspace. */
+export interface WorkspaceRuntimeSnapshot {
+  id: string;
+  workspaceId: string;
+  recordedAt: string;
+  edges: Record<string, RuntimeEdgeMetrics>;
+  nodes: Record<string, RuntimeNodeMetrics>;
 }
 
 /** Agent plan (for Plan Review UI) — AGENT_ROADMAP v4 */
@@ -353,7 +496,12 @@ export interface WorkspaceSceneDoc {
   states?: Array<{
     id: string;
     name: string;
+    /** Built-in 3D camera preset name (top/front/side/iso) */
     cameraPresetId?: string;
+    /** Hide/show nodes (nodeId -> visible) */
+    visibility?: Record<string, boolean>;
+    /** Which annotations are visible in this state (annotation ids). Omit to show all. */
+    annotationIds?: string[];
     objectOverrides?: Record<string, Record<string, unknown>>;
   }>;
   /** Saved camera presets for this workspace scene. */

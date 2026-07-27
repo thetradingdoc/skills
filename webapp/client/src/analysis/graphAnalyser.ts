@@ -117,6 +117,7 @@ export function analyseGraph(graph: ArchGraph): ArchGraph {
       ...edge,
       importance,
       isLayerViolation: isLayerViolation(srcLayer, tgtLayer),
+      flowKind: edge.flowKind ?? "dependency",
     };
   });
 
@@ -163,4 +164,63 @@ export function filterEdges(
   );
 
   return { ...graph, edges: filtered };
+}
+
+export type NodeFilter =
+  | "all"
+  | "core"
+  | "databases"
+  | "queues"
+  | "utilities"
+  | "external"
+  | "entry_points";
+
+const DATA_TECHS: Set<string> = new Set([
+  "database",
+  "cache",
+  "redis",
+  "mysql",
+  "object-storage",
+]);
+const QUEUE_TECHS: Set<string> = new Set(["queue", "message-bus"]);
+const UTILITY_LAYERS_FILTER: Set<string> = new Set(["Utilities", "Configuration"]);
+const EXTERNAL_LAYER = "External Services";
+
+function nodeMatchesFilter(node: ArchNode, filter: NodeFilter): boolean {
+  if (filter === "all") return true;
+  const layer = (node.layer ?? "Uncategorized") as string;
+  const techKind = (node.techKind ?? "unknown") as string;
+
+  if (filter === "core") {
+    return !UTILITY_LAYERS_FILTER.has(layer) && layer !== EXTERNAL_LAYER;
+  }
+  if (filter === "databases") return DATA_TECHS.has(techKind);
+  if (filter === "queues") return QUEUE_TECHS.has(techKind);
+  if (filter === "utilities") return UTILITY_LAYERS_FILTER.has(layer);
+  if (filter === "external") return layer === EXTERNAL_LAYER;
+  if (filter === "entry_points") return !!(node as ArchNode & { isEntryPoint?: boolean }).isEntryPoint;
+
+  return true;
+}
+
+export function filterNodes(
+  graph: ArchGraph,
+  filter: NodeFilter | Set<NodeFilter>
+): ArchGraph {
+  const filters = filter instanceof Set ? filter : new Set<NodeFilter>([filter]);
+  if (filters.has("all") || filters.size === 0) return graph;
+
+  const visibleIds = new Set(
+    graph.nodes
+      .filter((n) => Array.from(filters).some((f) => nodeMatchesFilter(n, f)))
+      .map((n) => n.id)
+  );
+
+  return {
+    ...graph,
+    nodes: graph.nodes.filter((n) => visibleIds.has(n.id)),
+    edges: graph.edges.filter(
+      (e) => visibleIds.has(e.source) && visibleIds.has(e.target)
+    ),
+  };
 }

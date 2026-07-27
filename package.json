@@ -90,9 +90,7 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "scripts/landing-visual.spec.ts"
-          ],
+          "default": [],
           "description": "Playwright spec paths for agent verification (include [VISUAL] tests for UI constraints)"
         },
         "archVisualizer.jiraFilterByRepo": {
@@ -112,8 +110,8 @@
     }
   },
   "scripts": {
-    "compile": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --format=cjs --platform=node",
-    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --format=cjs --platform=node --watch",
+    "compile": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --external:ts-morph --format=cjs --platform=node",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --external:playwright --external:playwright-core --external:ts-morph --format=cjs --platform=node --watch",
     "dev:ext": "npm run watch",
     "dev:webview": "cd webview-ui && npm run dev",
     "dev": "concurrently \"npm run dev:ext\" \"npm run dev:webview\"",
@@ -121,7 +119,7 @@
     "lint": "eslint src --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "webapp:server": "cd webapp/server && npm run dev",
+    "webapp:server": "cd webapp/server && npm run build && concurrently \"npm run build:watch\" \"node --watch dist/index.js\"",
     "webapp:client": "cd webapp/client && npm run dev",
     "webapp": "concurrently \"npm run webapp:server\" \"npm run webapp:client\"",
     "test:jira-auth": "tsx scripts/test-jira-auth.ts",

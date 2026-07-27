@@ -1,7 +1,10 @@
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
+import { requireWorkspaceAccess } from "./middleware/requireWorkspaceAccess.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { assertWorkspaceAccess } from "./workspaceAccess.js";
 import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
+import { logWorkspaceActivity } from "./activityLog.js";
 import { isValidProjectKey } from "./utils/deriveProjectKey.js";
 import { deleteWorkspaceClone } from "./cloneRepo.js";
 import { buildNodeFileMappingArray } from "./nodeFileMapping.js";
@@ -14,27 +17,44 @@ router.get("/workspaces", requireUser, async (req, res) => {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
-  const { data, error } = await supabaseAdmin
+  const userId = req.user!.id;
+  const { data: owned } = await supabaseAdmin
     .from("workspaces")
     .select("id,name,created_at,thumbnail_base64")
-    .eq("owner_id", ownerId)
+    .eq("owner_id", userId)
     .is("archived_at", null)
     .order("created_at", { ascending: false });
-
-  if (error) {
-    res.status(500).json({ error: error.message });
-    return;
-  }
-
-  const rows =
-    (data ?? []) as Array<{
+  const { data: memberRows } = await supabaseAdmin
+    .from("workspace_members")
+    .select("workspace_id")
+    .eq("user_id", userId)
+    .neq("role", "owner");
+  const memberWsIds = [...new Set((memberRows ?? []).map((r: { workspace_id: string }) => r.workspace_id))];
+  const { data: shared } =
+    memberWsIds.length > 0
+      ? await supabaseAdmin
+          .from("workspaces")
+          .select("id,name,created_at,thumbnail_base64")
+          .in("id", memberWsIds)
+          .is("archived_at", null)
+          .order("created_at", { ascending: false })
+      : { data: [] };
+  const seen = new Set<string>();
+  const rows = [
+    ...(owned ?? []),
+    ...(shared ?? []).filter((w: { id: string }) => {
+      if (seen.has(w.id)) return false;
+      seen.add(w.id);
+      return true;
+    }),
+  ]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 50) as Array<{
       id: string;
       name: string;
       created_at: string;
       thumbnail_base64?: string | null;
     }>;
-
   if (rows.length === 0) {
     res.json({ workspaces: [] });
     return;
@@ -85,11 +105,18 @@ router.get("/workspaces", requireUser, async (req, res) => {
   const enriched = rows.map((w) => {
     const latest = latestByWorkspace.get(w.id);
     const violationCount = violationsByWorkspace.get(w.id) ?? 0;
+    // Health score 0-100 (higher = better): penalize violations, reward having a graph
+    const hasGraph = (latest?.nodeCount ?? 0) > 0;
+    const healthScore = Math.max(
+      0,
+      Math.min(100, (hasGraph ? 80 : 20) - violationCount * 8)
+    );
     return {
       ...w,
       last_scan_at: latest?.updated_at ?? null,
       node_count: latest?.nodeCount ?? 0,
       violation_count: violationCount,
+      health_score: healthScore,
     };
   });
 
@@ -141,55 +168,41 @@ router.post("/workspaces", requireUser, async (req, res) => {
     return;
   }
 
+  await supabaseAdmin.from("workspace_members").upsert(
+    { workspace_id: (data as { id: string }).id, user_id: ownerId, role: "owner" },
+    { onConflict: "workspace_id,user_id" }
+  );
+
   res.json({ workspace: data });
 });
 
-/** Load latest graph + repo URL for a workspace (user must own it). */
+/** Load latest graph + repo URL for a workspace. Requires owner or member access. */
 router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
-  const ownerId = req.user!.id;
+  const userId = req.user!.id;
   const workspaceId = req.params.workspaceId;
   if (!workspaceId) {
     res.status(400).json({ error: "workspaceId is required" });
     return;
   }
 
-  type WorkspaceRow = {
-    id: string;
-    jira_project_key?: string | null;
-    auto_execute_enabled?: boolean | null;
-    archived_at?: string | null;
-  };
-  let ws: WorkspaceRow | null = null;
-
-  const { data: ownedWs, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id, jira_project_key, auto_execute_enabled, archived_at")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-
-  if (!wsErr && ownedWs) {
-    ws = ownedWs as WorkspaceRow;
-  } else {
-    // Fallback: if the workspace exists but is no longer owned by this user
-    // (e.g. local dev, migrated data), still allow loading it rather than 404-ing.
-    const { data: anyWs } = await supabaseAdmin
-      .from("workspaces")
-      .select("id, jira_project_key, auto_execute_enabled, archived_at")
-      .eq("id", workspaceId)
-      .maybeSingle();
-    ws = (anyWs as WorkspaceRow | null) ?? null;
-  }
-
-  if (!ws) {
-    res.status(404).json({ error: "Workspace not found." });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, userId);
+  } catch {
+    res.status(404).json({ error: "Workspace not found or access denied." });
     return;
   }
-  if (ws.archived_at) {
+
+  const { data: ws } = await supabaseAdmin
+    .from("workspaces")
+    .select("id, owner_id, jira_project_key, auto_execute_enabled, archived_at")
+    .eq("id", workspaceId)
+    .single();
+
+  if (!ws || ws.archived_at) {
     res.status(404).json({ error: "Workspace archived." });
     return;
   }
@@ -234,6 +247,24 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     }
   }
 
+  const { data: sysModel } = await supabaseAdmin
+    .from("workspace_system_models")
+    .select("system_model_json")
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  const sysModelNodes = (sysModel?.system_model_json as { nodes?: Array<{ id: string; domain?: string; runtimeRoles?: string[]; tier?: string }> })?.nodes;
+  if (sysModelNodes && graph?.nodes && Array.isArray(graph.nodes)) {
+    const byId = new Map(sysModelNodes.map((m) => [m.id, m]));
+    for (const n of graph.nodes) {
+      const sm = n?.id ? byId.get(n.id) : undefined;
+      if (sm) {
+        (n as Record<string, unknown>).domain = sm.domain;
+        (n as Record<string, unknown>).runtimeRoles = sm.runtimeRoles;
+        (n as Record<string, unknown>).tier = sm.tier;
+      }
+    }
+  }
+
   const { data: viewsData } = await supabaseAdmin
     .from("workspace_views")
     .select("slot,preset")
@@ -246,13 +277,16 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: true });
 
+  const workspaceOwnerId = (ws as { owner_id?: string }).owner_id ?? null;
   res.json({
     graph: graph as Record<string, unknown>,
     repoUrl: graphRow.repo_url ?? "",
-    jiraProjectKey: ws.jira_project_key ?? null,
-    autoExecuteEnabled: ws.auto_execute_enabled ?? false,
+    jiraProjectKey: (ws as { jira_project_key?: string | null }).jira_project_key ?? null,
+    autoExecuteEnabled: (ws as { auto_execute_enabled?: boolean | null }).auto_execute_enabled ?? false,
     views: viewsData ?? [],
     annotations: annotationsData ?? [],
+    ownerId: workspaceOwnerId,
+    isOwner: workspaceOwnerId === userId,
   });
 });
 
@@ -380,29 +414,30 @@ router.post("/workspaces/:workspaceId/views", requireUser, async (req, res) => {
     return;
   }
 
+  logWorkspaceActivity(supabaseAdmin, {
+    workspaceId: req.params.workspaceId!,
+    actorId: req.user?.id ?? null,
+    actorName: (req as { user?: { email?: string } }).user?.email ?? null,
+    action: "view_saved",
+    entityType: "view",
+    metadata: { slot, preset },
+  });
+
   res.json({ success: true });
 });
 
 /** List annotations for a workspace. */
 router.get("/workspaces/:workspaceId/annotations", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId is required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin || !workspaceId) {
+    res.status(503).json({ error: "Auth service not configured." });
     return;
   }
   const { data, error } = await supabaseAdmin
@@ -419,24 +454,16 @@ router.get("/workspaces/:workspaceId/annotations", requireUser, async (req, res)
 
 /** Create annotation. */
 router.post("/workspaces/:workspaceId/annotations", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId is required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin || !workspaceId) {
+    res.status(503).json({ error: "Auth service not configured." });
     return;
   }
   const { type, content, node_id, layer, canvas_x, canvas_y } = req.body ?? {};
@@ -448,6 +475,7 @@ router.post("/workspaces/:workspaceId/annotations", requireUser, async (req, res
     workspace_id: workspaceId,
     type,
     content: typeof content === "string" ? content : "",
+    author_id: req.user?.id ?? null,
   };
   if (typeof node_id === "string" && node_id.trim()) payload.node_id = node_id.trim();
   else if (typeof layer === "string" && layer.trim()) payload.layer = layer.trim();
@@ -464,29 +492,31 @@ router.post("/workspaces/:workspaceId/annotations", requireUser, async (req, res
     res.status(500).json({ error: error.message });
     return;
   }
+  const ann = data as { id: string };
+  logWorkspaceActivity(supabaseAdmin, {
+    workspaceId,
+    actorId: req.user?.id ?? null,
+    actorName: (req as { user?: { email?: string } }).user?.email ?? null,
+    action: "annotation_created",
+    entityType: "annotation",
+    entityId: ann.id,
+    metadata: { type: payload.type },
+  });
   res.json({ annotation: data });
 });
 
 /** Update annotation. */
 router.patch("/workspaces/:workspaceId/annotations/:annotationId", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const { workspaceId, annotationId } = req.params;
-  if (!workspaceId || !annotationId) {
-    res.status(400).json({ error: "workspaceId and annotationId are required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin || !workspaceId || !annotationId) {
+    res.status(400).json({ error: "workspaceId and annotationId are required" });
     return;
   }
   const { type, content } = req.body ?? {};
@@ -508,29 +538,30 @@ router.patch("/workspaces/:workspaceId/annotations/:annotationId", requireUser, 
     res.status(500).json({ error: error.message });
     return;
   }
+  logWorkspaceActivity(supabaseAdmin, {
+    workspaceId,
+    actorId: req.user?.id ?? null,
+    actorName: (req as { user?: { email?: string } }).user?.email ?? null,
+    action: "annotation_updated",
+    entityType: "annotation",
+    entityId: annotationId,
+    metadata: updates,
+  });
   res.json({ annotation: data });
 });
 
 /** Delete annotation. */
 router.delete("/workspaces/:workspaceId/annotations/:annotationId", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const { workspaceId, annotationId } = req.params;
-  if (!workspaceId || !annotationId) {
-    res.status(400).json({ error: "workspaceId and annotationId are required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin || !workspaceId || !annotationId) {
+    res.status(400).json({ error: "workspaceId and annotationId are required" });
     return;
   }
   const { error } = await supabaseAdmin
@@ -542,6 +573,14 @@ router.delete("/workspaces/:workspaceId/annotations/:annotationId", requireUser,
     res.status(500).json({ error: error.message });
     return;
   }
+  logWorkspaceActivity(supabaseAdmin, {
+    workspaceId,
+    actorId: req.user?.id ?? null,
+    actorName: (req as { user?: { email?: string } }).user?.email ?? null,
+    action: "annotation_deleted",
+    entityType: "annotation",
+    entityId: annotationId,
+  });
   res.json({ success: true });
 });
 
@@ -1021,6 +1060,41 @@ router.patch("/workspaces/:workspaceId/jira-project-key", requireUser, async (re
   res.json({ success: true, projectKey });
 });
 
+/** Connect workspace to a GitHub repo (from OAuth repo picker). */
+router.patch("/workspaces/:workspaceId/connect-repo", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const userId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  const fullName = typeof req.body?.github_full_name === "string" ? req.body.github_full_name.trim() : null;
+  if (!workspaceId || !fullName) {
+    res.status(400).json({ error: "workspaceId and github_full_name required." });
+    return;
+  }
+  if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(fullName)) {
+    res.status(400).json({ error: "github_full_name must be owner/repo format." });
+    return;
+  }
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, userId);
+  } catch {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+  const repoUrl = `https://github.com/${fullName}`;
+  const { error } = await supabaseAdmin
+    .from("workspaces")
+    .update({ repo_url: repoUrl, github_full_name: fullName })
+    .eq("id", workspaceId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ success: true, repoUrl, github_full_name: fullName });
+});
+
 /** Update workspace metadata (e.g. name). */
 router.patch("/workspaces/:workspaceId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
@@ -1143,25 +1217,17 @@ type WorkspaceSceneRow = {
 
 /** List scenes for a workspace (latest first). */
 router.get("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId is required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
 
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
     return;
   }
 
@@ -1182,25 +1248,17 @@ router.get("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => {
 
 /** Load the latest scene for a workspace (or 404 if none). */
 router.get("/workspaces/:workspaceId/scenes/latest", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId is required" });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
 
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
     return;
   }
 
@@ -1228,25 +1286,12 @@ router.get("/workspaces/:workspaceId/scenes/latest", requireUser, async (req, re
  * This creates an append-only version history; consumers typically load /latest.
  */
 router.post("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => {
-  if (!supabaseAdmin) {
-    res.status(503).json({ error: "Auth service not configured." });
-    return;
-  }
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
-  if (!workspaceId) {
-    res.status(400).json({ error: "workspaceId is required" });
-    return;
-  }
-
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
     return;
   }
 
@@ -1259,6 +1304,11 @@ router.post("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => 
   }
 
   // Determine next version
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+
   const { data: latest, error: latestErr } = await supabaseAdmin
     .from("workspace_scenes")
     .select("scene_version")
@@ -1287,7 +1337,159 @@ router.post("/workspaces/:workspaceId/scenes", requireUser, async (req, res) => 
     res.status(500).json({ error: insErr.message });
     return;
   }
+  const sceneData = inserted as { id: string };
+  logWorkspaceActivity(supabaseAdmin, {
+    workspaceId,
+    actorId: req.user?.id ?? null,
+    actorName: (req as { user?: { email?: string } }).user?.email ?? null,
+    action: "scene_saved",
+    entityType: "scene",
+    entityId: sceneData.id,
+    metadata: { version: nextVersion },
+  });
   res.status(201).json({ scene: inserted as WorkspaceSceneRow });
+});
+
+/** Ingest a runtime snapshot (OTEL-inspired) for a workspace. */
+router.post("/workspaces/:workspaceId/runtime", requireUser, async (req, res) => {
+  const workspaceId = req.params.workspaceId;
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
+    return;
+  }
+
+  const snapshot = req.body as unknown;
+  if (!snapshot || typeof snapshot !== "object") {
+    res.status(400).json({ error: "snapshot_json (object) is required" });
+    return;
+  }
+
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_runtime_snapshots")
+    .insert({ workspace_id: workspaceId, snapshot_json: snapshot })
+    .select("id, workspace_id, recorded_at, snapshot_json")
+    .single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ snapshot: data as { id: string; workspace_id: string; recorded_at: string; snapshot_json: unknown } });
+});
+
+/** Ingest OTLP spans and persist as runtime snapshot (maps onto graph nodes/edges). */
+router.post("/workspaces/:workspaceId/telemetry/otlp", requireUser, async (req, res) => {
+  const workspaceId = req.params.workspaceId;
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
+  } catch (e) {
+    const err = e as { message: string; statusCode?: number };
+    res.status(err.statusCode ?? 500).json({ error: err.message });
+    return;
+  }
+
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+
+  const payload = req.body;
+  if (!payload || typeof payload !== "object") {
+    res.status(400).json({ error: "OTLP JSON body required." });
+    return;
+  }
+
+  const { extractSpansFromOtlp, extractSpansFromSimple, processSpansToSnapshot } = await import(
+    "./runtimeOtelProcessor.js"
+  );
+  let spans = extractSpansFromOtlp(payload);
+  if (spans.length === 0) spans = extractSpansFromSimple(payload);
+  if (spans.length === 0) {
+    res.status(400).json({ error: "No spans found. Send OTLP resourceSpans or { spans: [...] }." });
+    return;
+  }
+
+  const { data: graphRow } = await supabaseAdmin
+    .from("graphs")
+    .select("graph_json")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const graph = graphRow?.graph_json as ArchGraph | null;
+  if (!graph || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+    res.status(400).json({
+      error: "Workspace has no graph. Scan a repo first to map spans onto nodes/edges.",
+    });
+    return;
+  }
+
+  const { nodes, edges } = processSpansToSnapshot(spans, graph);
+  const snapshot = { nodes, edges };
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_runtime_snapshots")
+    .insert({ workspace_id: workspaceId, snapshot_json: snapshot })
+    .select("id, workspace_id, recorded_at")
+    .single();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.status(201).json({
+    accepted: spans.length,
+    snapshot: { id: data.id, workspace_id: data.workspace_id, recorded_at: data.recorded_at },
+    metrics: { nodes: Object.keys(nodes).length, edges: Object.keys(edges).length },
+  });
+});
+
+/** Load latest runtime snapshot for a workspace. */
+router.get("/workspaces/:workspaceId/runtime/latest", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const ownerId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+
+  const { data: ws, error: wsErr } = await supabaseAdmin
+    .from("workspaces")
+    .select("id")
+    .eq("id", workspaceId)
+    .eq("owner_id", ownerId)
+    .single();
+  if (wsErr || !ws) {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("workspace_runtime_snapshots")
+    .select("id, workspace_id, recorded_at, snapshot_json")
+    .eq("workspace_id", workspaceId)
+    .order("recorded_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  if (!data) {
+    res.json({ snapshot: null });
+    return;
+  }
+  res.json({ snapshot: data as { id: string; workspace_id: string; recorded_at: string; snapshot_json: unknown } });
 });
 
 export { router as workspaceRoutes };

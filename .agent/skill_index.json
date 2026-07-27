@@ -15,6 +15,36 @@
       "usage_count": 0,
       "success_rate": 0,
       "status": "active"
+    },
+    {
+      "id": "id-decorator",
+      "description": "Retrofits an existing repo with // @archNodeId: <id> header comments based on an ArchGraph JSON produced by scan-repo.",
+      "path": ".agent/skills/id-decorator.ts",
+      "language": "typescript",
+      "tags": [
+        "archNodeId",
+        "headers",
+        "static-analysis",
+        "refactor"
+      ],
+      "usage_count": 0,
+      "success_rate": 0,
+      "status": "active"
+    },
+    {
+      "id": "scaffold-node",
+      "description": "Creates a module scaffold on disk (directory or file) and ensures the // @archNodeId header is present in the entry file.",
+      "path": ".agent/skills/scaffold-node.ts",
+      "language": "typescript",
+      "tags": [
+        "archNodeId",
+        "scaffold",
+        "materialize",
+        "greenfield"
+      ],
+      "usage_count": 0,
+      "success_rate": 0,
+      "status": "active"
     }
   ]
 }

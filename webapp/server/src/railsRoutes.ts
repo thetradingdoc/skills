@@ -1195,7 +1195,21 @@ router.post("/rails/:railId/materialize", requireUser, async (req, res) => {
         // best-effort per file
       }
     }
-    const tr = transitionRail(root, railId, "ARCHIVED" as any);
+    // Respect orchestrator guards: VERIFYING -> MATERIALIZING (reviewerPassed),
+    // then MATERIALIZING -> ARCHIVED (materializationApproved).
+    const toMat = transitionRail(root, railId, "MATERIALIZING" as any, { reviewerPassed: true } as any);
+    if (!toMat.ok || !toMat.rail) {
+      sendError(
+        res,
+        500,
+        toMat.error ?? "Failed to enter MATERIALIZING after verification.",
+        "RAIL_MATERIALIZE_ERROR"
+      );
+      return;
+    }
+    updateRailState(root, railId, toMat.rail.state);
+
+    const tr = transitionRail(root, railId, "ARCHIVED" as any, { materializationApproved: true } as any);
     if (!tr.ok || !tr.rail) {
       sendError(res, 500, tr.error ?? "Failed to archive rail after materialize.", "RAIL_MATERIALIZE_ERROR");
       return;

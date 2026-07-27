@@ -1048,7 +1048,8 @@ async function openPanel(context: vscode.ExtensionContext) {
                 const baseUrl =
                   process.env.APP_URL ??
                   process.env.PLAYWRIGHT_BASE_URL ??
-                  "http://localhost:3000";
+                  // Match the default webapp client port.
+                  "http://localhost:5174";
                 const cfg = vscode.workspace.getConfiguration("archVisualizer");
                 const specs = cfg.get<string[]>("playwrightSpecs") ?? [];
                 let pwResult: Awaited<ReturnType<typeof runPlaywrightForRail>> | undefined;
@@ -1068,10 +1069,50 @@ async function openPanel(context: vscode.ExtensionContext) {
 
                 // Step 2: vision critique on every UI rail — no spec required; agent finds problems itself
                 try {
-                  const screenshotPath =
-                    pwResult?.failures?.[0]?.screenshotPath ??
-                    (await captureScreenshot(baseUrl, sandboxDir ?? rootPath, pendingPlanRailId));
-                  const violations = await runVisualCritique(screenshotPath, rail?.outcome ?? "");
+                  const capture =
+                    pwResult?.failures?.[0]?.screenshotPath
+                      ? {
+                          screenshotPath: pwResult.failures[0]!.screenshotPath,
+                          flowWidth: 0,
+                          flowHeight: 0,
+                          nodeCount: 0,
+                          edgeCount: 0,
+                          consoleErrors: [],
+                            hasLegend: false,
+                            hasEmptyWorkspaceCard: false,
+                        }
+                      : await captureScreenshot(baseUrl, sandboxDir ?? rootPath, pendingPlanRailId);
+
+                  const screenshotPath = capture.screenshotPath;
+                  let violations = await runVisualCritique(screenshotPath, rail?.outcome ?? "");
+
+                  // Deterministic fallback: even when vision critique can't run (missing API key),
+                  // we still want the agent to notice "blank canvas / ReactFlow didn't render",
+                  // but we avoid false positives on true empty/login/landing screens.
+                  if (
+                    capture &&
+                    (violations.length === 0 || !violations.some((v) => v.severity === "high"))
+                  ) {
+                    const synthetic: import("./agent/runVisualCritique").VisualViolation[] = [];
+                    const likelyGraphView = capture.hasLegend && !capture.hasEmptyWorkspaceCard;
+                    if (likelyGraphView && capture.nodeCount === 0) {
+                      synthetic.push({
+                        element: "ReactFlow",
+                        violation: "No graph nodes rendered (blank or fully filtered canvas).",
+                        severity: "high",
+                      });
+                    }
+                    if (likelyGraphView && (capture.flowWidth === 0 || capture.flowHeight === 0)) {
+                      synthetic.push({
+                        element: "Canvas",
+                        violation: `ReactFlow container has invalid size (${capture.flowWidth}x${capture.flowHeight}).`,
+                        severity: "high",
+                      });
+                    }
+                    if (synthetic.length > 0) {
+                      violations = [...violations, ...synthetic];
+                    }
+                  }
                   const high = violations.filter((v) => v.severity === "high");
                   if (high.length > 0) {
                     const visionFailures = high.map((v) => ({

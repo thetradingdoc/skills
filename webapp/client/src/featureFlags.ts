@@ -2,13 +2,17 @@ export type FeatureFlag =
   | "icons_v2"
   | "three_d_enhancements"
   | "annotations"
-  | "perf_hud";
+  | "perf_hud"
+  | "presence"
+  | "ux_review_mode";
 
 const DEFAULT_FLAGS: Record<FeatureFlag, boolean> = {
   icons_v2: true,
   three_d_enhancements: true,
   annotations: true,
   perf_hud: false,
+  presence: true,
+  ux_review_mode: false,
 };
 
 export function isFlagEnabled(flag: FeatureFlag): boolean {
