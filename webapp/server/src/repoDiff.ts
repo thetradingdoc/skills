@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { execFileSync } from "child_process";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { requireUser } from "./middleware/requireUser.js";
 import { requireWorkspaceAccess } from "./middleware/requireWorkspaceAccess.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { runScanScript, scanProjectRoot } from "./runScanScript.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot =
-  process.env.PROJECT_ROOT?.trim() || path.resolve(__dirname, "../../..");
+  process.env.PROJECT_ROOT?.trim() || scanProjectRoot || path.resolve(__dirname, "../../..");
 
 const router = Router();
 
@@ -89,21 +89,17 @@ router.get(
     }
 
     try {
-      const scanBase = execFileSync(
-        "npx",
+      const { graph: graphBase } = runScanScript(
         ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId, "--branch", base],
-        { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } }
-      );
-      const graphBase = JSON.parse(scanBase) as ArchGraphLike;
+        projectRoot
+      ) as { graph: ArchGraphLike };
 
-      const scanHead = execFileSync(
-        "npx",
+      const { graph: graphHead } = runScanScript(
         ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId, "--branch", head],
-        { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } }
-      );
-      const graphHead = JSON.parse(scanHead) as ArchGraphLike;
+        projectRoot
+      ) as { graph: ArchGraphLike };
 
-      const diff = computeDiff(graphBase, graphHead);
+      const diff = computeDiff(graphBase as ArchGraphLike, graphHead as ArchGraphLike);
       res.json({ base, head, diff });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

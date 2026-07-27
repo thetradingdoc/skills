@@ -1,6 +1,5 @@
 import crypto from "crypto";
 import { Router } from "express";
-import { execFileSync } from "child_process";
 import * as path from "path";
 import { fileURLToPath } from "url";
 import { supabaseAdmin } from "./supabaseAdmin.js";
@@ -8,10 +7,11 @@ import { insertScanHistory, updateScanHistory } from "./scanHistory.js";
 import { embedAndPersistNodes } from "../../../src/ai/nodeEmbeddings.js";
 import { runViolationScan } from "./violationStore.js";
 import { ARCH_RULESET_VERSION } from "../../../src/ai/critic.js";
+import { runScanScript, scanProjectRoot } from "./runScanScript.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot =
-  process.env.PROJECT_ROOT?.trim() || path.resolve(__dirname, "../../..");
+  process.env.PROJECT_ROOT?.trim() || scanProjectRoot || path.resolve(__dirname, "../../..");
 
 const WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim() || null;
 
@@ -104,13 +104,7 @@ router.post("/", async (req, res) => {
 
   try {
     const scanArgs = ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId];
-    const result = execFileSync("npx", scanArgs, {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env },
-    });
-    const graph = JSON.parse(result);
+    const { graph } = runScanScript(scanArgs, projectRoot);
 
     const { data: graphInsert, error: gErr } = await supabaseAdmin
       .from("graphs")

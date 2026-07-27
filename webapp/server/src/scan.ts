@@ -1,6 +1,5 @@
 import type { Request } from "express";
 import { Router } from "express";
-import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -16,6 +15,7 @@ import {
   insertScanHistory,
   updateScanHistory,
 } from "./scanHistory.js";
+import { runScanScript } from "./runScanScript.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot =
@@ -164,13 +164,8 @@ router.post("/scan", optionalUser, async (req, res) => {
   }
 
   try {
-    const result = execFileSync("npx", scanArgs, {
-      cwd: projectRoot,
-      encoding: "utf-8",
-      maxBuffer: 10 * 1024 * 1024,
-      env: { ...process.env },
-    });
-    const graph = JSON.parse(result);
+    const { graph, bytes } = runScanScript(scanArgs);
+    console.log(`[scan] live payload size confirmed: ${bytes} bytes`);
 
     if (isAnonymous) {
       const key = getAnonymousScanKey(req);
@@ -360,12 +355,7 @@ router.post("/scan/refresh", requireUser, async (req, res) => {
 
   const scanArgs = ["tsx", "scripts/scan-repo.ts", repoUrl, "--keep", "--workspace-id", workspaceId];
   try {
-    const result = execFileSync(
-      "npx",
-      scanArgs,
-      { cwd: projectRoot, encoding: "utf-8", maxBuffer: 10 * 1024 * 1024, env: { ...process.env } }
-    );
-    const graph = JSON.parse(result);
+    const { graph } = runScanScript(scanArgs);
     const { error: insErr } = await supabaseAdmin.from("graphs").insert({
       workspace_id: workspaceId,
       graph_json: graph,

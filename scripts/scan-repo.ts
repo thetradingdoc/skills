@@ -82,7 +82,13 @@ async function main() {
       })),
     };
 
-    console.log(JSON.stringify(out));
+    // Write the full graph to a temp file — stdout cannot carry multi-MB inventory
+    // payloads (ENOBUFS / maxBuffer). Parent reads the file and deletes it.
+    const outPath = path.join(tmpdir(), `arch-scan-out-${randomUUID()}.json`);
+    const json = JSON.stringify(out);
+    fs.writeFileSync(outPath, json, "utf8");
+    const bytes = Buffer.byteLength(json, "utf8");
+    console.log(JSON.stringify({ ok: true, path: outPath, bytes }));
   } finally {
     if (!workspaceId && !keepClone && fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
