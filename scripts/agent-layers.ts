@@ -1,5 +1,10 @@
 /**
  * Per-agent layer detection against reference-model.json.
+ *
+ * A component belongs to an agent's layer only if there is a path from
+ * that agent to it (forward require closure + tool-handler reach, or
+ * reverse callers into the agent for ingress). Shared repo files are
+ * not attributed by name smear.
  */
 import * as fs from "fs";
 import * as path from "path";
@@ -33,6 +38,7 @@ export type AgentLayerResult = {
   name: string;
   question: string;
   whyItMatters: string;
+  whatFillsIt?: string;
   status: LayerFill;
   /** empty = searched and found nothing; unsearched = could not search */
   emptyReason?: string;
@@ -84,7 +90,7 @@ function readSafe(abs: string): string | null {
   }
 }
 
-function walkFiles(root: string, maxFiles = 4000): string[] {
+function walkFiles(root: string, maxFiles = 5000): string[] {
   const out: string[] = [];
   const skip = new Set([
     "node_modules",
@@ -116,178 +122,181 @@ function walkFiles(root: string, maxFiles = 4000): string[] {
   return out;
 }
 
-type RepoIndex = {
+function resolveLocalRequire(
+  fromAbs: string,
+  spec: string,
+  repoRoot: string
+): string | null {
+  if (!spec.startsWith(".")) return null;
+  const dir = path.dirname(fromAbs);
+  const candidates = [
+    path.join(dir, spec),
+    path.join(dir, spec + ".js"),
+    path.join(dir, spec + ".ts"),
+    path.join(dir, spec + ".mjs"),
+    path.join(dir, spec + ".cjs"),
+    path.join(dir, spec, "index.js"),
+    path.join(dir, spec, "index.ts"),
+  ];
+  for (const abs of candidates) {
+    try {
+      if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+        const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+        if (rel.startsWith("..")) return null;
+        return abs;
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return null;
+}
+
+function extractLocalRequires(text: string): string[] {
+  const out: string[] = [];
+  const re =
+    /require\s*\(\s*['"`](\.[^'"`]+)['"`]\s*\)|from\s+['"`](\.[^'"`]+)['"`]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.push(m[1] || m[2]!);
+  }
+  return out;
+}
+
+type RepoGraph = {
   files: string[];
+  /** rel → abs */
   byRel: Map<string, string>;
-  knowledgeHits: Array<{ file: string; evidence: string }>;
-  safetyHits: Array<{ file: string; evidence: string }>;
-  observabilityHits: Array<{ file: string; evidence: string }>;
-  evaluationHits: Array<{ file: string; evidence: string }>;
-  ingressHits: Array<{ file: string; evidence: string; agentsMentioned: string[] }>;
-  deploymentHits: Array<{ file: string; evidence: string }>;
+  /** rel → files that require it (reverse edges) */
+  callersOf: Map<string, Set<string>>;
+  searchable: boolean;
 };
 
-let cachedIndex: { root: string; index: RepoIndex } | null = null;
+let cachedGraph: { root: string; graph: RepoGraph } | null = null;
 
-function buildRepoIndex(repoRoot: string): RepoIndex {
-  if (cachedIndex?.root === repoRoot) return cachedIndex.index;
+function buildRepoGraph(repoRoot: string): RepoGraph {
+  if (cachedGraph?.root === repoRoot) return cachedGraph.graph;
   const files = walkFiles(repoRoot);
   const byRel = new Map<string, string>();
-  const knowledgeHits: RepoIndex["knowledgeHits"] = [];
-  const safetyHits: RepoIndex["safetyHits"] = [];
-  const observabilityHits: RepoIndex["observabilityHits"] = [];
-  const evaluationHits: RepoIndex["evaluationHits"] = [];
-  const ingressHits: RepoIndex["ingressHits"] = [];
-  const deploymentHits: RepoIndex["deploymentHits"] = [];
-
-  const knowledgeRe =
-    /\b(pinecone|weaviate|chromadb|@chroma-core|qdrant|pgvector|createEmbedding|embeddings\.create|Pinecone|openai\.embeddings)\b/i;
-  const safetyRe =
-    /\b(pii-?redactor|redactPii|redactPHI|moderation|guardrail|openai\.moderations|content.?filter)\b/i;
-  const obsRe =
-    /\b(@opentelemetry|opentelemetry|langfuse|helicone|braintrust|logToolCall|tool_call.*log|logModelCall|trace.*tool_call|OpenTelemetry)\b/i;
-  const evalRe =
-    /\b(eval:coding|evaluate-accuracy|eval-engine|eval harness|scoring|EVAL_USE_SEMANTIC)\b/i;
-  const ingressRe =
-    /\b(router\.(get|post|put|patch|delete)|app\.(get|post)|WebSocket|webhook|retell|twilio|createServer|subscribe\(|on\(['"]message)\b/i;
-  const deployRe =
-    /\b(process\.env\.[A-Z0-9_]*(KEY|SECRET|TOKEN)|API_KEY|ecosystem\.config|Dockerfile|docker-compose)\b/;
+  const callersOf = new Map<string, Set<string>>();
+  let searchable = true;
 
   for (const abs of files) {
     const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
     byRel.set(rel, abs);
-    const text = readSafe(abs);
-    if (!text || text.length > 800_000) continue;
-    const head = text.slice(0, 120_000);
+  }
 
-    if (knowledgeRe.test(head)) {
-      const m = head.match(knowledgeRe);
-      knowledgeHits.push({
-        file: rel,
-        evidence: `${rel}: ${m?.[0] ?? "vector/embedding"}`,
-      });
+  for (const abs of files) {
+    const fromRel = path.relative(repoRoot, abs).split(path.sep).join("/");
+    const text = readSafe(abs);
+    if (text == null) {
+      searchable = false;
+      continue;
     }
-    if (safetyRe.test(head)) {
-      const m = head.match(safetyRe);
-      safetyHits.push({
-        file: rel,
-        evidence: `${rel}: ${m?.[0] ?? "safety"}`,
-      });
-    }
-    if (obsRe.test(head)) {
-      const m = head.match(obsRe);
-      // Exclude pure HTTP access-log style unless tool/model specific
-      if (!/access.?log|morgan|request.?log/i.test(m?.[0] ?? "")) {
-        observabilityHits.push({
-          file: rel,
-          evidence: `${rel}: ${m?.[0] ?? "trace"}`,
-        });
+    if (text.length > 900_000) continue;
+    for (const spec of extractLocalRequires(text)) {
+      const toAbs = resolveLocalRequire(abs, spec, repoRoot);
+      if (!toAbs) continue;
+      const toRel = path.relative(repoRoot, toAbs).split(path.sep).join("/");
+      let set = callersOf.get(toRel);
+      if (!set) {
+        set = new Set();
+        callersOf.set(toRel, set);
       }
-    }
-    if (
-      evalRe.test(head) ||
-      /coding-eval-nightly|evaluate-accuracy\.js|eval-engine\.js/i.test(rel)
-    ) {
-      evaluationHits.push({
-        file: rel,
-        evidence: /coding-eval-nightly/i.test(rel)
-          ? `${rel}: nightly workflow runs npm run eval:coding:prod`
-          : `${rel}: eval/scoring`,
-      });
-    }
-    if (ingressRe.test(head)) {
-      const agentsMentioned: string[] = [];
-      for (const name of [
-        "kelly-agent-service",
-        "retell-service",
-        "retell-websocket",
-        "voice-incoming-handler",
-        "somo-demo",
-        "consumer-navigation",
-        "orchestrator",
-      ]) {
-        if (head.includes(name) || rel.includes(name)) agentsMentioned.push(name);
-      }
-      ingressHits.push({
-        file: rel,
-        evidence: `${rel}: ingress handler`,
-        agentsMentioned,
-      });
-    }
-    if (
-      deployRe.test(head) ||
-      /ecosystem\.config|Dockerfile|docker-compose/i.test(rel)
-    ) {
-      deploymentHits.push({
-        file: rel,
-        evidence: `${rel}: runtime/secrets`,
-      });
+      set.add(fromRel);
     }
   }
 
-  const index: RepoIndex = {
-    files,
-    byRel,
-    knowledgeHits,
-    safetyHits,
-    observabilityHits,
-    evaluationHits,
-    ingressHits,
-    deploymentHits,
-  };
-  cachedIndex = { root: repoRoot, index };
-  return index;
+  const graph: RepoGraph = { files, byRel, callersOf, searchable };
+  cachedGraph = { root: repoRoot, graph };
+  return graph;
 }
 
 export function clearLayerIndexCache(): void {
-  cachedIndex = null;
+  cachedGraph = null;
+  pathCache.clear();
 }
 
-function agentBase(file: string): string {
-  return path.basename(file).replace(/\.(js|ts|mjs|tsx)$/, "");
+/** Forward require closure from seed files (agent + tool handlers). */
+function forwardClosure(
+  repoRoot: string,
+  graph: RepoGraph,
+  seeds: string[],
+  maxNodes = 400
+): { reachable: Set<string>; ok: boolean } {
+  const reachable = new Set<string>();
+  const queue: string[] = [];
+  for (const s of seeds) {
+    const norm = s.split(path.sep).join("/");
+    if (graph.byRel.has(norm)) {
+      queue.push(norm);
+      reachable.add(norm);
+    } else if (fs.existsSync(path.join(repoRoot, norm))) {
+      queue.push(norm);
+      reachable.add(norm);
+    }
+  }
+  if (queue.length === 0) return { reachable, ok: false };
+
+  while (queue.length && reachable.size < maxNodes) {
+    const rel = queue.shift()!;
+    const abs = graph.byRel.get(rel) ?? path.join(repoRoot, rel);
+    const text = readSafe(abs);
+    if (text == null) continue;
+    const slice = text.length > 400_000 ? text.slice(0, 400_000) : text;
+    for (const spec of extractLocalRequires(slice)) {
+      const toAbs = resolveLocalRequire(abs, spec, repoRoot);
+      if (!toAbs) continue;
+      const toRel = path.relative(repoRoot, toAbs).split(path.sep).join("/");
+      if (reachable.has(toRel)) continue;
+      reachable.add(toRel);
+      queue.push(toRel);
+    }
+  }
+  return { reachable, ok: true };
 }
+
+type AgentPath = {
+  /** Require-closure from the agent entry file only (turn / I/O path). */
+  agentForward: Set<string>;
+  agentForwardOk: boolean;
+  callers: string[];
+  callersOk: boolean;
+  agentRel: string;
+};
+
+const pathCache = new Map<string, AgentPath>();
 
 function toolsOf(a: AgentSurface): AgentTool[] {
   return (a.tools ?? []).filter((t) => t.name !== "(hosted)");
 }
 
-function agentSensitive(a: AgentSurface): boolean {
-  return toolsOf(a).some((t) => {
-    const p = t.reach?.cells?.patient;
-    const m = t.reach?.cells?.money;
-    return p?.state === "reaches" || m?.state === "reaches";
-  });
+function agentBase(file: string): string {
+  return path.basename(file).replace(/\.(js|ts|mjs|cjs|tsx)$/, "");
 }
 
-function relatedToAgent(
-  hitFile: string,
-  agent: AgentSurface,
-  textMentions?: string[]
-): boolean {
-  const base = agentBase(agent.file).toLowerCase();
-  const f = hitFile.toLowerCase();
-  if (f === agent.file.toLowerCase()) return true;
-  // Same directory sibling often shares the path
-  const agentDir = path.dirname(agent.file).toLowerCase();
-  if (f.startsWith(agentDir + "/") && f.includes(base.slice(0, 12))) return true;
-  if (f.includes(base)) return true;
-  if (textMentions?.some((m) => m.toLowerCase() === base || base.includes(m.toLowerCase()))) {
-    return true;
-  }
-  return false;
-}
+function buildAgentPath(
+  repoRoot: string,
+  graph: RepoGraph,
+  agent: AgentSurface
+): AgentPath {
+  const key = `${repoRoot}::${agent.file}`;
+  const hit = pathCache.get(key);
+  if (hit) return hit;
 
-/** Stricter: file requires/imports the agent module, or is the agent. */
-function importsAgent(repoRoot: string, hitRel: string, agent: AgentSurface): boolean {
-  if (hitRel === agent.file) return true;
-  const abs = path.join(repoRoot, hitRel);
-  const text = readSafe(abs);
-  if (!text) return false;
-  const base = agentBase(agent.file);
-  return new RegExp(
-    `require\\(['"\`].*${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"\`]\\)|from ['"].*${base}`,
-    "i"
-  ).test(text);
+  // Safety / context / observability / knowledge modules must be on the
+  // agent turn path — not smeared via a shared tool-executor handler file.
+  const { reachable, ok } = forwardClosure(repoRoot, graph, [agent.file]);
+  const callers = [...(graph.callersOf.get(agent.file) ?? [])];
+  const pathInfo: AgentPath = {
+    agentForward: reachable,
+    agentForwardOk: ok,
+    callers,
+    callersOk: graph.searchable,
+    agentRel: agent.file,
+  };
+  pathCache.set(key, pathInfo);
+  return pathInfo;
 }
 
 function statusFromCount(n: number, thinMax = 1): LayerFill {
@@ -296,15 +305,148 @@ function statusFromCount(n: number, thinMax = 1): LayerFill {
   return "filled";
 }
 
+const INGRESS_FILE_RE =
+  /(route|routes|webhook|webhooks|server\.js|app\.js|listener|websocket|queue|consumer|runtime\.cjs)/i;
+const INGRESS_TEXT_RE =
+  /\b(router\.(get|post|put|patch|delete)|app\.(get|post)|WebSocket|webhook|createServer|subscribe\(|on\(['"]message)\b/i;
+
+const KNOWLEDGE_FILE_RE =
+  /(pinecone|weaviate|chroma|qdrant|pgvector|vector-retriever|embedding|triage-rag|layer2-rag|remote-rag)/i;
+const KNOWLEDGE_TEXT_RE =
+  /\b(pinecone|weaviate|chromadb|qdrant|pgvector|createEmbedding|embeddings\.create|Pinecone)\b/i;
+
+const SAFETY_FILE_RE =
+  /(pii-redactor|redaction-service|safety-prescreen|guardrail|moderation)/i;
+const SAFETY_TEXT_RE =
+  /\b(pii-?redactor|redactPii|redactPHI|openai\.moderations|content.?filter|SafetyPreScreen|redactObject)\b/i;
+
+const OBS_FILE_RE = /(opentelemetry|langfuse|helicone|braintrust|otel)/i;
+const OBS_TEXT_RE =
+  /\b(@opentelemetry|opentelemetry|langfuse|helicone|braintrust|logToolCall|logModelCall)\b/i;
+
+const EVAL_FILE_RE =
+  /(evaluate-accuracy|eval-engine|coding-eval-nightly|pipeline-eval|eval:coding)/i;
+
+/**
+ * Does this harness actually invoke `agent` (or a module unique to it)?
+ * Matching on "eval exists in repo" is the smear we are removing.
+ */
+function evalExercisesAgent(
+  repoRoot: string,
+  evalRel: string,
+  agent: AgentSurface,
+  graph: RepoGraph
+): { yes: boolean; evidence: string } {
+  const base = agentBase(agent.file);
+  const abs = graph.byRel.get(evalRel) ?? path.join(repoRoot, evalRel);
+  const text = readSafe(abs);
+  if (text == null) return { yes: false, evidence: "" };
+
+  // Workflow YAML: follow the npm script it runs
+  if (/\.ya?ml$/i.test(evalRel)) {
+    const runMatch = text.match(/run:\s*npm run (\S+)/);
+    if (runMatch) {
+      const pkgAbs = path.join(repoRoot, "middleware-platform", "package.json");
+      const pkgText = readSafe(pkgAbs) ?? readSafe(path.join(repoRoot, "package.json"));
+      if (pkgText) {
+        try {
+          const pkg = JSON.parse(pkgText) as { scripts?: Record<string, string> };
+          const script = pkg.scripts?.[runMatch[1]!];
+          if (script) {
+            const scriptFile = script.match(
+              /(?:node|tsx)\s+(\S*evaluate-accuracy\S*|\S*eval-engine\S*)/
+            );
+            if (scriptFile?.[1]) {
+              const resolved = scriptFile[1].replace(/^\.\//, "");
+              const candidates = [
+                path.join("middleware-platform", resolved),
+                resolved,
+                path.join("middleware-platform", "scripts", path.basename(resolved)),
+              ];
+              for (const c of candidates) {
+                if (graph.byRel.has(c) || fs.existsSync(path.join(repoRoot, c))) {
+                  return evalExercisesAgent(repoRoot, c, agent, graph);
+                }
+              }
+            }
+            // eval:coding:prod → evaluate-accuracy — already handled via script body
+            if (/evaluate-accuracy/.test(script)) {
+              const ea = "middleware-platform/scripts/evaluate-accuracy.js";
+              if (graph.byRel.has(ea)) {
+                return evalExercisesAgent(repoRoot, ea, agent, graph);
+              }
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // YAML that names the agent entry directly
+    if (new RegExp(`\\b${base}\\b`).test(text)) {
+      return {
+        yes: true,
+        evidence: `${evalRel}: workflow names ${base}`,
+      };
+    }
+    return { yes: false, evidence: "" };
+  }
+
+  // Direct require of this agent module
+  if (
+    new RegExp(
+      `require\\(['"\`][^'"\`]*${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"\`]\\)`
+    ).test(text) ||
+    new RegExp(`from ['"][^'"]*${base}`).test(text)
+  ) {
+    return {
+      yes: true,
+      evidence: `${evalRel}: requires ${base}`,
+    };
+  }
+
+  // evaluate-accuracy.js exercises knowledge-service / medical coding — not voice agents
+  if (/evaluate-accuracy/.test(evalRel)) {
+    const requiresKnowledge =
+      /require\(['"][^'"]*knowledge-service['"]\)/.test(text) ||
+      /getCodeCandidatesDualSource/.test(text);
+    const isCodingAgent = /medical-coding|coding-orchestrator|knowledge-service/i.test(
+      agent.file
+    );
+    if (requiresKnowledge && isCodingAgent) {
+      return {
+        yes: true,
+        evidence: `${evalRel}: scores medical coding via knowledge-service`,
+      };
+    }
+    return { yes: false, evidence: "" };
+  }
+
+  // eval-engine pattern scorer — only if it imports/invokes this agent
+  if (/eval-engine/.test(evalRel)) {
+    if (new RegExp(`\\b${base}\\b`).test(text) && /require\(/.test(text)) {
+      // basename mention alone is weak; require already checked above
+    }
+    return { yes: false, evidence: "" };
+  }
+
+  return { yes: false, evidence: "" };
+}
+
+function fileLooksLikeIngress(rel: string, text: string): boolean {
+  return INGRESS_FILE_RE.test(rel) || INGRESS_TEXT_RE.test(text.slice(0, 80_000));
+}
+
 export function detectAgentLayers(
   repoRoot: string,
   agent: AgentSurface,
   model: ReferenceModel
 ): AgentLayerResult[] {
-  const index = buildRepoIndex(repoRoot);
+  const graph = buildRepoGraph(repoRoot);
+  const pathInfo = buildAgentPath(repoRoot, graph, agent);
   const base = agentBase(agent.file);
   const agentAbs = path.join(repoRoot, agent.file);
-  const agentText = readSafe(agentAbs) ?? "";
+  const agentText = readSafe(agentAbs);
   const results: AgentLayerResult[] = [];
 
   for (const spec of model.layers) {
@@ -314,77 +456,96 @@ export function detectAgentLayers(
     let emptyReason: string | undefined;
 
     if (id === "ingress") {
-      for (const h of index.ingressHits) {
-        if (!importsAgent(repoRoot, h.file, agent) && !relatedToAgent(h.file, agent, h.agentsMentioned)) {
-          continue;
-        }
-        // Prefer direct importers / self
-        if (!importsAgent(repoRoot, h.file, agent) && h.file !== agent.file) {
-          // keep only webhooks/routes that mention the agent basename
-          if (!h.agentsMentioned.some((m) => agentBase(agent.file).includes(m) || m.includes(agentBase(agent.file).slice(0, 8)))) {
+      if (!pathInfo.callersOk) {
+        status = "unsearched";
+        emptyReason =
+          "Could not build the reverse-require index — ingress callers unsearched.";
+      } else {
+        // Callers that require THIS agent and look like ingress
+        for (const caller of pathInfo.callers) {
+          if (/(__tests__|\.test\.|\.spec\.|\/tests\/|\/scripts\/e2e|e2e-)/i.test(caller)) {
             continue;
           }
-        }
-        components.push({
-          id: `ingress:${h.file}`,
-          label: path.basename(h.file),
-          evidence: h.evidence,
-        });
-      }
-      if (
-        /webhook|websocket|router\.|app\.(get|post)/i.test(agentText) ||
-        /webhooks\//.test(agent.file)
-      ) {
-        if (!components.some((c) => c.id.includes(agent.file))) {
+          const abs = graph.byRel.get(caller);
+          const text = abs ? readSafe(abs) ?? "" : "";
+          if (!fileLooksLikeIngress(caller, text)) continue;
           components.push({
-            id: `ingress:${agent.file}`,
-            label: base,
-            evidence: `${agent.file}: agent file is itself an ingress surface`,
+            id: `ingress:${caller}`,
+            label: path.basename(caller),
+            evidence: `${caller}: requires ${base} (ingress surface)`,
           });
         }
-      }
-      if (agent.loopKind === "hosted") {
-        components.push({
-          id: "ingress:hosted-console",
-          label: "hosted provider console",
-          evidence: `${agent.file}: loopKind=hosted — ingress is outside this repo`,
-        });
-      }
-      // Cap noise
-      components.splice(8);
-      status = statusFromCount(components.length);
-      if (status === "empty") {
-        emptyReason =
-          "Searched routes, webhooks, and WebSocket handlers for references to this agent — none found.";
+        // Agent file itself is an ingress when it is a webhook/route handler
+        if (
+          agentText != null &&
+          (INGRESS_FILE_RE.test(agent.file) || INGRESS_TEXT_RE.test(agentText.slice(0, 40_000)))
+        ) {
+          if (!components.some((c) => c.id === `ingress:${agent.file}`)) {
+            components.push({
+              id: `ingress:${agent.file}`,
+              label: base,
+              evidence: `${agent.file}: agent file is itself an ingress surface`,
+            });
+          }
+        }
+        if (agent.loopKind === "hosted" && components.length === 0) {
+          components.push({
+            id: "ingress:hosted-console",
+            label: "hosted provider console",
+            evidence: `${agent.file}: loopKind=hosted — primary ingress is outside this repo`,
+          });
+        }
+        components.splice(12);
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched reverse requires into this agent for routes/webhooks/WebSocket — none found.";
+        }
       }
     } else if (id === "context") {
-      if (agent.systemPrompt) {
-        components.push({
-          id: "context:systemPrompt",
-          label: "system prompt",
-          evidence: `${agent.file}: systemPrompt captured (${agent.systemPrompt.slice(0, 80)}…)`,
+      if (agentText == null) {
+        status = "unsearched";
+        emptyReason = "Could not read agent file — context unsearched.";
+      } else {
+        if (agent.systemPrompt) {
+          components.push({
+            id: "context:systemPrompt",
+            label: "system prompt",
+            evidence: `${agent.file}: systemPrompt captured (${agent.systemPrompt.slice(0, 80)}…)`,
+          });
+        }
+        // Prompt builders on the agent turn path
+        for (const rel of pathInfo.agentForward) {
+          if (!/prompt|context.?build|system.?prompt/i.test(rel)) continue;
+          if (rel === agent.file) continue;
+          components.push({
+            id: `context:${rel}`,
+            label: path.basename(rel),
+            evidence: `${rel}: on turn path from ${base}`,
+          });
+        }
+        if (/systemPrompt|SYSTEM_PROMPT|buildPrompt|promptTemplate|KellyPromptBuilder/i.test(agentText)) {
+          if (!components.some((c) => c.label === "prompt assembly")) {
+            components.push({
+              id: "context:prompt-assembly",
+              label: "prompt assembly",
+              evidence: `${agent.file}: prompt assembly symbols on agent turn path`,
+            });
+          }
+        }
+        const seen = new Set<string>();
+        const uniq = components.filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
         });
-      }
-      if (/systemPrompt|SYSTEM_PROMPT|buildPrompt|promptTemplate/i.test(agentText)) {
-        components.push({
-          id: "context:prompt-assembly",
-          label: "prompt assembly",
-          evidence: `${agent.file}: prompt assembly symbols`,
-        });
-      }
-      // Deduplicate
-      const seen = new Set<string>();
-      const uniq = components.filter((c) => {
-        if (seen.has(c.label)) return false;
-        seen.add(c.label);
-        return true;
-      });
-      components.length = 0;
-      components.push(...uniq);
-      status = statusFromCount(components.length);
-      if (status === "empty") {
-        emptyReason =
-          "Searched for systemPrompt / prompt assembly in the agent file — nothing traceable.";
+        components.length = 0;
+        components.push(...uniq.slice(0, 10));
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched prompt assembly on this agent's turn path — nothing traceable.";
+        }
       }
     } else if (id === "reasoning") {
       if (agent.provider) {
@@ -419,9 +580,7 @@ export function detectAgentLayers(
         components.push({
           id: `tool:${t.name}`,
           label: t.name,
-          evidence: t.handler
-            ? `handler ${t.handler}`
-            : t.note ?? "no handler",
+          evidence: t.handler ? `handler ${t.handler}` : t.note ?? "no handler",
           sensitive: patient ? "patient" : money ? "money" : null,
         });
       }
@@ -462,213 +621,265 @@ export function detectAgentLayers(
           }
         }
       }
-      if (/session|conversationHistory|chatHistory/i.test(agentText)) {
+      for (const rel of pathInfo.agentForward) {
+        if (!/session-state|session-store|conversation-memory|eligibility-session/i.test(rel)) {
+          continue;
+        }
         components.push({
-          id: "memory:in-agent",
-          label: "session/history in agent",
-          evidence: `${agent.file}: session or history symbols`,
+          id: `memory:mod:${rel}`,
+          label: path.basename(rel),
+          evidence: `${rel}: session module on path from ${base}`,
         });
       }
       status = statusFromCount(components.length);
       if (status === "empty") {
         emptyReason =
-          "No session/history stores attributed from tools or the agent file.";
+          "No session/history stores on this agent's tool reach or forward path.";
       }
     } else if (id === "knowledge") {
-      // Prefer tool-reach vector/RAG resources — highest signal
-      for (const t of toolsOf(agent)) {
-        for (const r of t.reach?.resources ?? []) {
-          if (/pinecone|weaviate|chroma|qdrant|vector|rag|embedding/i.test(r.name)) {
+      if (!pathInfo.agentForwardOk && toolsOf(agent).every((t) => !t.handler)) {
+        status = "unsearched";
+        emptyReason =
+          "Could not establish a forward path from this agent — knowledge unsearched.";
+      } else {
+        // Tool-reach vector/RAG resources (already traced per tool from handlers)
+        for (const t of toolsOf(agent)) {
+          for (const r of t.reach?.resources ?? []) {
+            if (/pinecone|weaviate|chroma|qdrant|vector|rag|embedding/i.test(r.name)) {
+              components.push({
+                id: `knowledge:reach:${r.kind}:${r.name}`,
+                label: r.name,
+                evidence: r.evidence,
+              });
+            }
+          }
+        }
+        // Retrieval clients the agent itself imports on the turn path
+        for (const rel of pathInfo.agentForward) {
+          if (!KNOWLEDGE_FILE_RE.test(rel)) continue;
+          components.push({
+            id: `knowledge:${rel}`,
+            label: path.basename(rel),
+            evidence: `${rel}: retrieval client on turn path from ${base}`,
+          });
+        }
+        const seen = new Set<string>();
+        const uniq = components.filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
+        });
+        components.length = 0;
+        components.push(...uniq.slice(0, 14));
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched this agent's tool reach and forward path for vector/RAG/embedding clients — none.";
+        }
+      }
+    } else if (id === "data") {
+      const tools = toolsOf(agent);
+      const allUnresolved =
+        tools.length > 0 &&
+        tools.every(
+          (t) =>
+            !t.handler ||
+            t.reach?.truncationReasons?.some((r) => /unresolved-handler/.test(r))
+        );
+      if (allUnresolved && tools.every((t) => (t.reach?.resources ?? []).length === 0)) {
+        status = "unsearched";
+        emptyReason =
+          "Tool handlers could not be resolved — data stores unsearched for this agent.";
+      } else {
+        const seen = new Set<string>();
+        for (const t of tools) {
+          for (const r of t.reach?.resources ?? []) {
+            if (r.kind === "db_call" || r.class === "plumbing") continue;
+            if (r.kind !== "db" && r.kind !== "external") continue;
+            const key = `${r.kind}:${r.name}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
             components.push({
-              id: `knowledge:reach:${r.kind}:${r.name}`,
+              id: `data:${key}`,
               label: r.name,
               evidence: r.evidence,
+              sensitive:
+                r.class === "patient"
+                  ? "patient"
+                  : r.class === "money"
+                    ? "money"
+                    : null,
             });
           }
         }
-      }
-      // Plus vector client modules that this agent (or its tool executor) imports
-      for (const h of index.knowledgeHits) {
-        if (!/pinecone|weaviate|chroma|qdrant|vector-retriever|embedding/i.test(h.file)) {
-          continue;
+        status = statusFromCount(components.length, 3);
+        if (status === "empty") {
+          emptyReason =
+            tools.length === 0
+              ? "No tools to attribute data stores from."
+              : "Tool reach found no db/external stores for this agent.";
         }
-        if (
-          importsAgent(repoRoot, h.file, agent) ||
-          relatedToAgent(h.file, agent) ||
-          // shared RAG used by kelly tool path
-          (/kelly|retell|voice|triage/i.test(base) &&
-            /pinecone|vector-retriever|layer2-rag|triage-rag/i.test(h.file))
-        ) {
-          components.push({
-            id: `knowledge:${h.file}`,
-            label: path.basename(h.file),
-            evidence: h.evidence,
-          });
-        }
-      }
-      const seen = new Set<string>();
-      const uniq = components.filter((c) => {
-        if (seen.has(c.id)) return false;
-        seen.add(c.id);
-        return true;
-      });
-      components.length = 0;
-      components.push(...uniq.slice(0, 12));
-      status = statusFromCount(components.length);
-      if (status === "empty") {
-        emptyReason =
-          "Searched for Pinecone/Weaviate/Chroma/Qdrant/pgvector and embedding calls related to this agent — none.";
-      }
-    } else if (id === "data") {
-      const seen = new Set<string>();
-      for (const t of toolsOf(agent)) {
-        for (const r of t.reach?.resources ?? []) {
-          if (r.kind === "db_call" || r.class === "plumbing") continue;
-          if (r.kind !== "db" && r.kind !== "external") continue;
-          if (r.class !== "patient" && r.class !== "money" && r.class !== "internal") {
-            if (r.class === "external") {
-              /* include external APIs as data */
-            } else continue;
-          }
-          const key = `${r.kind}:${r.name}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          components.push({
-            id: `data:${key}`,
-            label: r.name,
-            evidence: r.evidence,
-            sensitive:
-              r.class === "patient"
-                ? "patient"
-                : r.class === "money"
-                  ? "money"
-                  : null,
-          });
-        }
-      }
-      status = statusFromCount(components.length, 3);
-      if (status === "empty") {
-        emptyReason =
-          toolsOf(agent).length === 0
-            ? "No tools to attribute data stores from."
-            : "Tool reach found no db/external stores for this agent.";
       }
     } else if (id === "safety") {
-      for (const h of index.safetyHits) {
-        // Real safety: pii-redactor, moderation APIs, guardrail libs — not deploy scripts
-        if (/guardrail-no-azure|deploy\.cjs/i.test(h.file)) continue;
-        const near =
-          relatedToAgent(h.file, agent) ||
-          /pii-redactor|moderation|guardrail/i.test(h.file);
-        if (!near) continue;
-        components.push({
-          id: `safety:${h.file}`,
-          label: path.basename(h.file),
-          evidence: h.evidence,
-        });
-      }
-      if (/pii-redactor|redactPii|moderation/i.test(agentText)) {
-        components.push({
-          id: "safety:in-agent",
-          label: "safety call in agent",
-          evidence: `${agent.file}: safety/redaction symbols`,
-        });
-      }
-      const seen = new Set<string>();
-      const uniq = components.filter((c) => {
-        if (seen.has(c.id)) return false;
-        seen.add(c.id);
-        return true;
-      });
-      components.length = 0;
-      components.push(...uniq.slice(0, 8));
-      status = statusFromCount(components.length);
-      if (status === "empty") {
+      if (!pathInfo.agentForwardOk) {
+        status = "unsearched";
         emptyReason =
-          "Searched for moderation, guardrails, and PII/PHI redaction on this agent path — none found.";
+          "Could not establish a forward path from this agent — safety unsearched.";
+      } else {
+        for (const rel of pathInfo.agentForward) {
+          // Agent source file is NOT a safety control
+          if (rel === agent.file) continue;
+          if (/guardrail-no-azure|deploy\.cjs|secure-logger/i.test(rel)) continue;
+          const abs = graph.byRel.get(rel);
+          const text = abs ? readSafe(abs) ?? "" : "";
+          const fileHit = SAFETY_FILE_RE.test(rel);
+          const textHit = SAFETY_TEXT_RE.test(text.slice(0, 60_000));
+          if (!fileHit && !textHit) continue;
+          // Filename-only weak hits need an actual control symbol in-file
+          if (
+            !fileHit &&
+            !/(redact|moderat|guardrail|SafetyPreScreen|pii)/i.test(text.slice(0, 60_000))
+          ) {
+            continue;
+          }
+          // patient-orchestrator counts only when it actually redacts
+          if (
+            /patient-orchestrator/i.test(rel) &&
+            !/pii-?redactor|redact\s*\(/i.test(text.slice(0, 80_000))
+          ) {
+            continue;
+          }
+          components.push({
+            id: `safety:${rel}`,
+            label: path.basename(rel),
+            evidence: `${rel}: safety control on turn path from ${base}`,
+          });
+        }
+        const seen = new Set<string>();
+        const uniq = components.filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
+        });
+        components.length = 0;
+        components.push(...uniq.slice(0, 10));
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched this agent's path for moderation, guardrails, and PII/PHI redaction — none found.";
+        }
       }
     } else if (id === "observability") {
-      for (const h of index.observabilityHits) {
-        if (!relatedToAgent(h.file, agent)) continue;
-        components.push({
-          id: `obs:${h.file}`,
-          label: path.basename(h.file),
-          evidence: h.evidence,
-        });
-      }
-      if (/logToolCall|tool_call|logModel|trace\(/.test(agentText)) {
-        components.push({
-          id: "obs:in-agent",
-          label: "tool/model logging",
-          evidence: `${agent.file}: tool or model call logging`,
-        });
-      }
-      status = statusFromCount(components.length);
-      if (status === "empty") {
+      if (!pathInfo.agentForwardOk) {
+        status = "unsearched";
         emptyReason =
-          "Searched for tracing SDKs and model/tool-call logging (HTTP access logs excluded) — none on this path.";
+          "Could not establish a forward path from this agent — observability unsearched.";
+      } else {
+        for (const rel of pathInfo.agentForward) {
+          if (rel === agent.file) {
+            if (agentText && OBS_TEXT_RE.test(agentText)) {
+              components.push({
+                id: "obs:in-agent",
+                label: "tool/model logging",
+                evidence: `${agent.file}: tool or model call logging on agent path`,
+              });
+            }
+            continue;
+          }
+          const abs = graph.byRel.get(rel);
+          const text = abs ? readSafe(abs) ?? "" : "";
+          if (!OBS_FILE_RE.test(rel) && !OBS_TEXT_RE.test(text.slice(0, 40_000))) continue;
+          if (/access.?log|morgan|request.?log/i.test(path.basename(rel))) continue;
+          components.push({
+            id: `obs:${rel}`,
+            label: path.basename(rel),
+            evidence: `${rel}: agent-path tracing/logging (not HTTP access logs)`,
+          });
+        }
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched this agent's path for tracing SDKs and model/tool-call logging — none.";
+        }
       }
     } else if (id === "evaluation") {
-      for (const h of index.evaluationHits) {
-        // Keep real eval harness / nightly workflow — not every package.json mention
-        if (
-          /coding-eval-nightly|evaluate-accuracy|eval-engine|pipeline-eval|eval:coding/i.test(
-            h.file + h.evidence
-          )
-        ) {
+      if (!graph.searchable) {
+        status = "unsearched";
+        emptyReason = "Could not scan the repo for eval harnesses — evaluation unsearched.";
+      } else {
+        for (const abs of graph.files) {
+          const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+          if (!EVAL_FILE_RE.test(rel)) {
+            // Also catch package scripts referencing eval — skip; workflows cover nightly
+            continue;
+          }
+          const { yes, evidence } = evalExercisesAgent(repoRoot, rel, agent, graph);
+          if (!yes) continue;
           components.push({
-            id: `eval:${h.file}`,
-            label: path.basename(h.file),
-            evidence: h.evidence,
+            id: `eval:${rel}`,
+            label: path.basename(rel),
+            evidence,
           });
         }
-      }
-      const seen = new Set<string>();
-      const uniq = components.filter((c) => {
-        if (seen.has(c.id)) return false;
-        seen.add(c.id);
-        return true;
-      });
-      components.length = 0;
-      components.push(...uniq.slice(0, 8));
-      // Eval is repo-level for all voice/kelly agents when present
-      status = statusFromCount(components.length);
-      if (status === "empty") {
-        emptyReason =
-          "Searched eval harnesses, scoring scripts, and coding-eval-nightly.yml — nothing attributable to this agent.";
+        const seen = new Set<string>();
+        const uniq = components.filter((c) => {
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
+        });
+        components.length = 0;
+        components.push(...uniq.slice(0, 8));
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched eval harnesses for ones that invoke this agent — none (e.g. evaluate-accuracy.js scores medical coding via knowledge-service, not this surface).";
+        }
       }
     } else if (id === "deployment") {
-      for (const h of index.deploymentHits.slice(0, 20)) {
-        if (
-          relatedToAgent(h.file, agent) ||
-          /ecosystem\.config|Dockerfile|package\.json/i.test(h.file)
-        ) {
+      if (agentText == null && !pathInfo.agentForwardOk) {
+        status = "unsearched";
+        emptyReason = "Could not read agent entry — deployment unsearched.";
+      } else {
+        // Deploy configs that name THIS agent's entrypoint
+        for (const abs of graph.files) {
+          const rel = path.relative(repoRoot, abs).split(path.sep).join("/");
+          if (!/ecosystem\.config|Dockerfile|docker-compose|Procfile|pm2/i.test(rel)) {
+            continue;
+          }
+          const text = readSafe(abs);
+          if (!text) continue;
+          if (
+            text.includes(base) ||
+            text.includes(agent.file) ||
+            text.includes(path.basename(agent.file))
+          ) {
+            components.push({
+              id: `deploy:${rel}`,
+              label: path.basename(rel),
+              evidence: `${rel}: references ${base}`,
+            });
+          }
+        }
+        if (agentText && /process\.env\./.test(agentText)) {
           components.push({
-            id: `deploy:${h.file}`,
-            label: path.basename(h.file),
-            evidence: h.evidence,
+            id: "deploy:env",
+            label: "process.env secrets",
+            evidence: `${agent.file}: reads process.env (this agent process)`,
           });
         }
-      }
-      if (/process\.env\./.test(agentText)) {
-        components.push({
-          id: "deploy:env",
-          label: "process.env secrets",
-          evidence: `${agent.file}: reads process.env`,
-        });
-      }
-      const seen = new Set<string>();
-      const uniq = components.filter((c) => {
-        if (seen.has(c.id)) return false;
-        seen.add(c.id);
-        return true;
-      });
-      components.length = 0;
-      components.push(...uniq.slice(0, 10));
-      status = statusFromCount(components.length);
-      if (status === "empty") {
-        emptyReason =
-          "Searched deploy configs and secret env references for this agent — none found.";
+        // Hosted: deployment is the provider runtime
+        if (agent.loopKind === "hosted" && components.length === 0) {
+          components.push({
+            id: "deploy:hosted",
+            label: "hosted provider runtime",
+            evidence: `${agent.file}: loopKind=hosted — process runs at provider`,
+          });
+        }
+        status = statusFromCount(components.length);
+        if (status === "empty") {
+          emptyReason =
+            "Searched deploy configs that start this agent's process — none found.";
+        }
       }
     }
 
@@ -677,8 +888,10 @@ export function detectAgentLayers(
       name: spec.name,
       question: spec.question,
       whyItMatters: spec.whyItMatters,
+      whatFillsIt: spec.whatFillsIt,
       status,
-      emptyReason: status === "empty" ? emptyReason : undefined,
+      emptyReason:
+        status === "empty" || status === "unsearched" ? emptyReason : undefined,
       components,
     });
   }
