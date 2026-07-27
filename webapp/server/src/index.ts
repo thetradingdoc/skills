@@ -42,6 +42,7 @@ import { repoDiffRoutes } from "./repoDiff.js";
 import { githubPrCommentRoutes } from "./githubPrComments.js";
 import { githubConnectRoutes } from "./githubConnect.js";
 import { soloWorkspaceRoutes } from "./soloWorkspace.js";
+import { resourceClassifyRoutes } from "./resourceClassify.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../client/dist");
@@ -66,6 +67,7 @@ app.use(
 const PORT = process.env.PORT ?? 4000;
 
 app.use("/api", scanRoutes);
+app.use("/api", resourceClassifyRoutes);
 app.use("/api", chatRoutes);
 app.use("/api", fileContentRoutes);
 app.use("/api", validateRoutes);

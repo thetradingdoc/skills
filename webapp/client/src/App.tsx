@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
+import ResourcesView from "./ResourcesView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -803,7 +804,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources">("2d");
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
 
@@ -7700,7 +7701,24 @@ export default function App() {
                 >
                   Reach
                 </button>
-                {graphViewMode !== "agents" && graphViewMode !== "reach" && (
+                <button
+                  type="button"
+                  title="Resource classification"
+                  onClick={() => setGraphViewMode("resources")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "resources" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "resources" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "resources" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Resources
+                </button>
+                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -7928,6 +7946,12 @@ export default function App() {
               <AgentsView agents={graph?.agents} />
             ) : graphViewMode === "reach" ? (
               <ReachView agents={graph?.agents} />
+            ) : graphViewMode === "resources" ? (
+              <ResourcesView
+                agents={graph?.agents}
+                apiBase={API_BASE}
+                onGraphPatch={(patch) => setGraph((g) => (g ? patch(g) : g))}
+              />
             ) : (
             <ArchCanvas
               graph={effectiveGraph!}
