@@ -4,6 +4,7 @@ import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
 import ResourcesView from "./ResourcesView";
 import GuardView from "./GuardView";
+import LayersView from "./LayersView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import type {
   ArchGraph,
@@ -805,7 +806,8 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers">("2d");
+  const [layersAgentFile, setLayersAgentFile] = useState<string | null>(null);
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
 
@@ -2033,9 +2035,14 @@ export default function App() {
           return;
         }
 
-        // Successful scan: always show the graph.
+        // Successful scan: always show the graph — Layers is the default picture.
         setSelectedAgentFile(null);
         setGraph(analyseGraph(data));
+        setGraphViewMode("layers");
+        const firstAgent = (data as ArchGraph).agents?.agents?.find(
+          (a) => a.kind === "agent"
+        );
+        if (firstAgent) setLayersAgentFile(firstAgent.file);
 
         // Signed-in path MUST return workspaceId (server enforces this).
         if (data.workspaceId) {
@@ -7670,6 +7677,23 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  title="Layers canvas"
+                  onClick={() => setGraphViewMode("layers")}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: 10,
+                    fontFamily: "monospace",
+                    border: graphViewMode === "layers" ? "1px solid #60a5fa" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: graphViewMode === "layers" ? "rgba(29,78,216,0.2)" : "transparent",
+                    color: graphViewMode === "layers" ? "#93c5fd" : "#9ca3af",
+                    cursor: "pointer",
+                  }}
+                >
+                  Layers
+                </button>
+                <button
+                  type="button"
                   title="Agents view"
                   onClick={() => setGraphViewMode("agents")}
                   style={{
@@ -7736,7 +7760,7 @@ export default function App() {
                 >
                   Guard
                 </button>
-                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && (
+                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && graphViewMode !== "layers" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -7960,7 +7984,13 @@ export default function App() {
               height: "100%",
             }}
           >
-            {graphViewMode === "agents" ? (
+            {graphViewMode === "layers" ? (
+              <LayersView
+                agents={graph?.agents}
+                selectedAgentFile={layersAgentFile}
+                onSelectAgent={setLayersAgentFile}
+              />
+            ) : graphViewMode === "agents" ? (
               <AgentsView agents={graph?.agents} />
             ) : graphViewMode === "reach" ? (
               <ReachView agents={graph?.agents} />

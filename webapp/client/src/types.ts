@@ -306,6 +306,20 @@ export type AgentSurface = {
   loopKind: AgentLoopKind | null;
   tools: AgentTool[];
   auth?: AgentAuthFinding;
+  layers?: Array<{
+    id: string;
+    name: string;
+    question: string;
+    whyItMatters: string;
+    status: "filled" | "thin" | "empty" | "unsearched";
+    emptyReason?: string;
+    components: Array<{
+      id: string;
+      label: string;
+      evidence: string;
+      sensitive?: "patient" | "money" | null;
+    }>;
+  }>;
 };
 
 export type AgentInventoryResult = {
