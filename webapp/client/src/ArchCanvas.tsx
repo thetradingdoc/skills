@@ -3227,7 +3227,6 @@ export function ArchCanvas({
           >
             <span style={{ color: canvasTheme[theme].badgeViolation }} title="Violations count">V</span>
             <span style={{ color: canvasTheme[theme].badgeTrace }} title="Traces">TR</span>
-            <span style={{ color: canvasTheme[theme].badgeJira }} title="Jira linked">J</span>
             <span style={{ color: canvasTheme[theme].badgeDrift }} title="Drift">D</span>
             <span title="Depth from entry">d</span>
           </div>

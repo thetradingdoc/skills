@@ -154,6 +154,8 @@ function CellMark({
   return (
     <button
       type="button"
+      data-testid="reach-cell"
+      data-reach-state="reaches"
       title={`reaches at depth ${depth ?? "?"}${disputed ? " (disputed)" : ""}`}
       onClick={onClick}
       style={{

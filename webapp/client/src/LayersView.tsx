@@ -135,6 +135,7 @@ export default function LayersView({
         <span style={{ color: "#93c5fd", fontWeight: 600, fontSize: 12 }}>Layers</span>
         <span style={{ color: "#6b7280", fontSize: 11 }}>Agent</span>
         <select
+          data-testid="layers-agent-select"
           value={agentFile ?? ""}
           onChange={(e) => pickAgent(e.target.value)}
           style={{
@@ -160,7 +161,12 @@ export default function LayersView({
         )}
       </div>
 
-      <div style={{ flex: 1, overflow: "auto", padding: "8px 12px 24px" }}>
+      <div
+        key={agentFile ?? "none"}
+        data-testid="layers-canvas"
+        data-agent-file={agentFile ?? ""}
+        style={{ flex: 1, overflow: "auto", padding: "8px 12px 24px" }}
+      >
         {layers.length === 0 && (
           <div style={{ color: "#fbbf24", padding: 24, fontSize: 12 }}>
             No layer data on this agent — re-scan after reference-model detection is wired.
@@ -177,6 +183,10 @@ export default function LayersView({
           return (
             <div
               key={layer.id}
+              data-testid="layers-band"
+              data-layer-id={layer.id}
+              data-layer-status={layer.status}
+              data-layer-components={String(layer.components?.length ?? 0)}
               style={{
                 display: "flex",
                 minHeight: loud ? 72 : 56,
