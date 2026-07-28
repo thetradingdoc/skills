@@ -937,6 +937,10 @@ export default function App() {
   const [threadSearch, setThreadSearch] = useState("");
   const [threadListLoading, setThreadListLoading] = useState(false);
   const [tokenWarning, setTokenWarning] = useState<{ input: number; output: number; overBudget?: boolean } | null>(null);
+  /** Theme, density, presentation, runtime, 2D/3D and the legend only affect the
+   *  module canvas. On Layers, Standard, Agents, Reach, Resources and Guard they
+   *  are noise, so the bar hides them there. */
+  const isCanvasView = graphViewMode === "2d" || graphViewMode === "3d";
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
   const [canvasDensity, setCanvasDensity] = useState<CanvasDensity>("standard");
   const [presentationMode, setPresentationMode] = useState(false);
@@ -6945,6 +6949,8 @@ export default function App() {
             padding: "8px 12px",
             borderBottom: "1px solid #30363d",
             flexShrink: 0,
+            flexWrap: "wrap",
+            rowGap: 6,
           }}
         >
             <button
@@ -7878,8 +7884,9 @@ export default function App() {
                 )}
               </div>
             )}
+            {isCanvasView && (
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Theme</span>
+              <span style={{ fontSize: 10, color: "#8b949e", fontFamily: "monospace" }}>Theme</span>
               <button
                 type="button"
                 onClick={() =>
@@ -7898,57 +7905,9 @@ export default function App() {
                 {canvasTheme === "dark" ? "Dark" : "Light"}
               </button>
             </div>
+            )}
+            {isCanvasView && (
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Presentation</span>
-              <button
-                type="button"
-                onClick={() => setPresentationMode((p) => !p)}
-                style={{
-                  padding: "4px 10px",
-                  fontSize: 10,
-                  borderRadius: 999,
-                  border: presentationMode ? "1px solid #60a5fa" : "1px solid #30363d",
-                  background: presentationMode ? "rgba(96,165,250,0.2)" : "transparent",
-                  color: presentationMode ? "#93c5fd" : "#9ca3af",
-                  cursor: "pointer",
-                }}
-              >
-                {presentationMode ? "On" : "Off"}
-              </button>
-              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Runtime</span>
-              <button
-                type="button"
-                onClick={() => setRuntimeLive((p) => !p)}
-                style={{
-                  padding: "4px 10px",
-                  fontSize: 10,
-                  borderRadius: 999,
-                  border: runtimeLive ? "1px solid #22c55e" : "1px solid #30363d",
-                  background: runtimeLive ? "rgba(34,197,94,0.16)" : "transparent",
-                  color: runtimeLive ? "#bbf7d0" : "#9ca3af",
-                  cursor: "pointer",
-                }}
-              >
-                {runtimeLive ? "Live" : "Off"}
-              </button>
-              <span style={{ fontSize: 10, color: "#000", fontFamily: "monospace" }}>Density</span>
-              <button
-                type="button"
-                onClick={() =>
-                  setCanvasDensity((prev) => (prev === "standard" ? "compact" : "standard"))
-                }
-                style={{
-                  padding: "4px 10px",
-                  fontSize: 10,
-                  borderRadius: 999,
-                  border: "1px solid #30363d",
-                  background: canvasDensity === "standard" ? "#0f172a" : "#e5e7eb",
-                  color: canvasDensity === "standard" ? "#e5e7eb" : "#020617",
-                  cursor: "pointer",
-                }}
-              >
-                {canvasDensity === "standard" ? "Std" : "Compact"}
-              </button>
             </div>
             <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
               <button
