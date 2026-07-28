@@ -768,7 +768,7 @@ export default function App() {
 
   const processPdfFile = useCallback((f: File) => {
     if (f.size > 25 * 1024 * 1024) {
-      alert("PDF must be under 25MB.");
+      setError("PDF must be under 25MB.");
       return;
     }
     setDocAttachment(null);
@@ -782,7 +782,7 @@ export default function App() {
 
   const processDocFile = useCallback(async (f: File) => {
     if (f.size > 10 * 1024 * 1024) {
-      alert("Word document must be under 10MB.");
+      setError("Word document must be under 10MB.");
       return;
     }
     setPdfAttachment(null);
@@ -792,13 +792,13 @@ export default function App() {
       const { value } = await mammoth.extractRawText({ arrayBuffer: arr });
       const text = (value ?? "").trim();
       if (!text) {
-        alert("Could not extract text from document. The file may be empty or corrupted.");
+        setError("Could not extract text from that document — it may be empty or corrupted.");
         return;
       }
       setDocAttachment({ name: f.name, extractedText: text });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      alert(`Could not read document: ${msg}. Try saving as .docx (Word 2007+ format).`);
+      setError(`Could not read that document: ${msg}. Try saving it as .docx.`);
     }
   }, []);
 
@@ -809,7 +809,7 @@ export default function App() {
       const isDoc = f.type === "application/msword" || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".doc") || lower.endsWith(".docx");
       if (isPdf) processPdfFile(f);
       else if (isDoc) processDocFile(f);
-      else alert("Please attach a PDF or Word document (.doc, .docx).");
+      else setError("Attach a PDF or Word document (.doc, .docx).");
     },
     [processPdfFile, processDocFile]
   );
@@ -1108,7 +1108,7 @@ export default function App() {
         };
         refetch();
       } else {
-        alert(data.error ?? "Failed to run npm audit.");
+        setError(data.error ?? "Failed to run npm audit.");
       }
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to run npm audit.");
@@ -5013,21 +5013,6 @@ export default function App() {
                                 {v.sourceNodeId}
                                 {v.targetNodeId ? ` → ${v.targetNodeId}` : ""}
                               </span>
-                              {v.jiraKey && (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    padding: "2px 6px",
-                                    borderRadius: 3,
-                                    background: "#1f6feb33",
-                                    color: "#58a6ff",
-                                    fontWeight: 600,
-                                    whiteSpace: "nowrap",
-                                  }}
-                                >
-                                  {v.jiraKey}
-                                </span>
-                              )}
                             </div>
                             <div
                               style={{
@@ -6040,10 +6025,7 @@ export default function App() {
                     },
                   }}
                 >
-                  {String(m.content ?? "").replace(
-                    /(rail-[a-zA-Z0-9-]+)/g,
-                    (match) => `[${match}](#rail:${match})`
-                  )}
+                  {String(m.content ?? "")}
                 </ReactMarkdown>
                 {isAssistant && !isCritic && (() => {
                   const am = m as ArchitectureChatMessage;
