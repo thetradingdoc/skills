@@ -23,3 +23,7 @@ webapp/server/.agent/greenfield/
 .agent/rail_registry.json
 .agent/rails/
 .agent/sandboxes/
+
+tmp-audit-empty-repo/
+test-results/
+logs/
