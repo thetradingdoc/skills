@@ -384,6 +384,8 @@ export type AgentSurface = {
   loopKind: AgentLoopKind | null;
   tools: AgentTool[];
   auth?: AgentAuthFinding;
+  /** When set, tools live in AgentInventoryResult.toolCatalogs[catalogId]. */
+  catalogId?: string;
 };
 
 export type AgentInventoryResult = {
@@ -392,6 +394,8 @@ export type AgentInventoryResult = {
   languages: Record<string, number>;
   pythonAgents: string[];
   searchedFor: string[];
+  /** Shared tool catalogs, keyed by hash. Agents reference these via catalogId. */
+  toolCatalogs?: Record<string, AgentTool[]>;
 };
 
 /** SystemModel node: ArchNode + inferred domain, runtimeRoles, tier for reasoning. */

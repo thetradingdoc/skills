@@ -12,13 +12,31 @@ import { simpleGit } from "simple-git";
 import * as fs from "fs";
 import * as path from "path";
 import { tmpdir } from "os";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import { scanProject } from "../src/analyzer/scanner";
 import { detectDrift } from "../src/analyzer/driftDetector";
 import { enrichGraph } from "../src/ai/enricher-v2";
 import { analyseGraph } from "../src/analysis/graphAnalyser";
 import { getClonesDir, authUrl, cloneToStablePath } from "../webapp/server/src/cloneRepo.js";
 import { buildAgentInventory } from "./agent-inventory";
+
+/**
+ * Agents that share an identical tool list (e.g. several Retell handlers routing
+ * through one executor) each carried their own full copy, which dominated the
+ * payload. Store each distinct list once and reference it by hash.
+ */
+function packToolCatalogs(inv: any) {
+  if (!inv || !Array.isArray(inv.agents)) return inv;
+  const toolCatalogs: Record<string, unknown[]> = {};
+  const agents = inv.agents.map((a: any) => {
+    if (!Array.isArray(a.tools) || a.tools.length === 0) return a;
+    const id = createHash("sha1").update(JSON.stringify(a.tools)).digest("hex").slice(0, 12);
+    toolCatalogs[id] = a.tools;
+    const { tools, ...rest } = a;
+    return { ...rest, catalogId: id };
+  });
+  return { ...inv, agents, toolCatalogs };
+}
 
 async function main() {
   const repoUrl = process.argv[2];
@@ -62,7 +80,7 @@ async function main() {
     graph = await enrichGraph(graph);
     graph = analyseGraph(graph);
 
-    const agents = buildAgentInventory(absoluteCloneDir);
+    const agents = packToolCatalogs(buildAgentInventory(absoluteCloneDir));
 
     // Normalize for JSON output:
     // - projectRoot: absolute path to the cloned repo (server uses this as rootPath)

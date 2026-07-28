@@ -1,0 +1,13 @@
+{
+  "generatedAt": "2026-07-27T18:24:41.548Z",
+  "branch": "f5ad18f",
+  "findings": [
+    {
+      "sev": "blocker",
+      "surface": "Live POST /api/scan (somo)",
+      "status": "broken",
+      "claim": "HTTP 403: {\"error\":\"Sign up to continue scanning.\",\"code\":\"SIGNUP_REQUIRED\",\"limit\":2}",
+      "evidence": "/tmp/reaudit-scan.json"
+    }
+  ]
+}

@@ -634,7 +634,29 @@ export default function App() {
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
-  const [graph, setGraph] = useState<ArchGraph | null>(null);
+  const [graph, setGraphRaw] = useState<ArchGraph | null>(null);
+  /**
+   * Scans ship tool catalogs deduplicated: agents that share an identical tool
+   * lcarry a catalogId instead of their own copy. Expand once here so every
+   * view can read agent.tools as before.
+   */
+  const setGraph = useCallback<typeof setGraphRaw>((value) => {
+    const expand = (g: ArchGraph | null): ArchGraph | null => {
+      const inv = g?.agents as any;
+      if (!inv?.toolCatalogs || !Array.isArray(inv.agents)) return g;
+      for (const a of inv.agents) {
+        if (a.catalogId && inv.toolCatalogs[a.catalogId]) {
+          a.tools = inv.toolCatalogs[a.catalogId];
+        }
+      }
+      return g;
+    };
+    if (typeof value === "function") {
+      setGraphRaw((prev) => expand((value as (p: ArchGraph | null) => ArchGraph | null)(prev)));
+    } else {
+      setGraphRaw(expand(value));
+    }
+  }, []);
   const [selectedAgentFile, setSelectedAgentFile] = useState<string | null>(null);
   const effectiveGraph = useMemo(() => {
     if (!graph) return null;

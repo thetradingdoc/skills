@@ -320,6 +320,7 @@ export type AgentSurface = {
       sensitive?: "patient" | "money" | null;
     }>;
   }>;
+  catalogId?: string;
 };
 
 export type AgentInventoryResult = {
@@ -328,6 +329,7 @@ export type AgentInventoryResult = {
   languages: Record<string, number>;
   pythonAgents: string[];
   searchedFor: string[];
+  toolCatalogs?: Record<string, AgentTool[]>;
 };
 
 // ── Scene model (iCraft-style authored scenes) ────────────────────────────────

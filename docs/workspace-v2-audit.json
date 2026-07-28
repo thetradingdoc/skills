@@ -1,0 +1,181 @@
+{
+  "file": "/Users/ojrichard/Downloads/workspace-v2.html",
+  "issueCount": 28,
+  "bySeverity": {
+    "medium": 10,
+    "blocker": 1,
+    "high": 12,
+    "low": 4,
+    "info": 1
+  },
+  "issues": [
+    {
+      "severity": "medium",
+      "area": "Landing",
+      "title": "Home nav link is a dead hash",
+      "detail": "href=# — no destination"
+    },
+    {
+      "severity": "medium",
+      "area": "Landing",
+      "title": "About nav link is a dead hash",
+      "detail": "href=# — no destination"
+    },
+    {
+      "severity": "medium",
+      "area": "Landing",
+      "title": "Contact nav link is a dead hash",
+      "detail": "href=# — no destination"
+    },
+    {
+      "severity": "blocker",
+      "area": "Landing",
+      "title": ".l-rings decorative overlay intercepts all pointer events",
+      "detail": "Sign in / Get started / possibly Scan card are unclickable without force"
+    },
+    {
+      "severity": "high",
+      "area": "Landing",
+      "title": "Sign in does not open auth",
+      "detail": "toast=\"\""
+    },
+    {
+      "severity": "high",
+      "area": "No-agent",
+      "title": "Point at a file is stub-only",
+      "detail": "Point at a file"
+    },
+    {
+      "severity": "medium",
+      "area": "Top bar",
+      "title": "Product view \"Agents\" not present in this prototype",
+      "detail": "workspace-v2 uses Layers/Reach/Flow/Standard/Guard only"
+    },
+    {
+      "severity": "medium",
+      "area": "Top bar",
+      "title": "Product view \"Resources\" not present in this prototype",
+      "detail": "workspace-v2 uses Layers/Reach/Flow/Standard/Guard only"
+    },
+    {
+      "severity": "low",
+      "area": "Dimension",
+      "title": "3D is CSS isometric tilt only, not a real 3D graph",
+      "detail": "functional but not true 3D"
+    },
+    {
+      "severity": "medium",
+      "area": "Code tab",
+      "title": "Source path is fabricated (always routes/${tool}.js)",
+      "detail": "Not real file paths from the scan"
+    },
+    {
+      "severity": "high",
+      "area": "Code tab",
+      "title": "Open in VS Code is stub-only",
+      "detail": "Opening in editor"
+    },
+    {
+      "severity": "high",
+      "area": "Inspect",
+      "title": "Add rule is stub-only (toast, no rules mutation)",
+      "detail": ""
+    },
+    {
+      "severity": "medium",
+      "area": "Dashboard",
+      "title": "Gap rows are buttons but do not navigate to the related layer/component",
+      "detail": "click is a no-op beyond hover style"
+    },
+    {
+      "severity": "medium",
+      "area": "Dashboard",
+      "title": "Coverage bar buttons do not scroll/focus the matching Layers band",
+      "detail": ""
+    },
+    {
+      "severity": "high",
+      "area": "Dashboard",
+      "title": "Canvas filters are stub-only",
+      "detail": "toast says applied but canvas node count unchanged"
+    },
+    {
+      "severity": "high",
+      "area": "Chat",
+      "title": "Chat send is stub-only",
+      "detail": "shows toast 'Sent' but does not append a message or call an API"
+    },
+    {
+      "severity": "high",
+      "area": "Export",
+      "title": "Export actions are stub-only even when signed in",
+      "detail": "Export SVG — done"
+    },
+    {
+      "severity": "high",
+      "area": "Workspace menu",
+      "title": "Scan history is stub-only",
+      "detail": "Scan history — done"
+    },
+    {
+      "severity": "high",
+      "area": "Top bar",
+      "title": "Rename workspace is stub-only",
+      "detail": "Rename workspace"
+    },
+    {
+      "severity": "high",
+      "area": "Top bar",
+      "title": "Save is stub-only",
+      "detail": "Save — done"
+    },
+    {
+      "severity": "high",
+      "area": "Guard",
+      "title": "Check now is stub-only",
+      "detail": "does not re-evaluate edited textarea against rules"
+    },
+    {
+      "severity": "high",
+      "area": "Guard",
+      "title": "Editing reach.rules textarea does not change FAIL/PASS results",
+      "detail": ""
+    },
+    {
+      "severity": "low",
+      "area": "Agent selector",
+      "title": "livekit-transcription listed as agent with 0 tools",
+      "detail": "copy itself says 'Not an agent' in Reasoning void"
+    },
+    {
+      "severity": "medium",
+      "area": "Responsive",
+      "title": "Inspect panel hidden below 1280px with no alternate evidence UI",
+      "detail": "@media (max-width:1280px){.inspect{display:none}}"
+    },
+    {
+      "severity": "medium",
+      "area": "Scanning",
+      "title": "Scan header hardcodes 'Reading somo-platform'",
+      "detail": "shown while scanning other repo: \"Reading somo-platform\""
+    },
+    {
+      "severity": "low",
+      "area": "Workspace menu",
+      "title": "Close workspace is location.reload() — fine for prototype, no confirm dialog",
+      "detail": ""
+    },
+    {
+      "severity": "info",
+      "area": "Scope",
+      "title": "This file is a static HTML prototype with hardcoded AGENTS/GAPS data — not wired to the real scanner",
+      "detail": ""
+    },
+    {
+      "severity": "low",
+      "area": "Top bar",
+      "title": "Learn density mode from product app is absent (Overview/Deep dive only)",
+      "detail": ""
+    }
+  ]
+}
