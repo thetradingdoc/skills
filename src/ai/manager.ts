@@ -1,3 +1,4 @@
+import { summariseAgentInventory } from "./agentSummary";
 import * as fs from "fs";
 import * as path from "path";
 import type {
@@ -59,6 +60,8 @@ export interface ArchitectureMode {
   readonly mode: AgentMode;
   execute(params: Record<string, unknown>): Promise<ManagerResult>;
 }
+
+/** Condense the agent inventory into prose the model can reason over. */
 
 export async function runArchitectureTask(params: {
   question: string;
@@ -614,6 +617,17 @@ async function runGreenfieldTask(params: {
     } catch {
       // Best-effort; proceed without retrieval
     }
+  }
+
+  // Agent inventory needs no filesystem access, so it is added whether or not
+  // retrieval succeeded — a saved graph often has a projectRoot that no longer
+  // exists on this machine.
+  const agentSmary = summariseAgentInventory(params.graph);
+  if (agentSummary) {
+    contextBlock = agentSummary + (contextBlock ? "\n\n" + contextBlock : "");
+  }
+  if (process.env.ARCHY_DUMP_CONTEXT === "1") {
+    try { fs.writeFileSync("/tmp/archy-context.txt", String(contextBlock ?? "(contextBlock is undefined)"), "utf8"); } catch {}
   }
 
   const maxAttempts = 2;

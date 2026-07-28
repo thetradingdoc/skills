@@ -18,6 +18,7 @@ import type {
 import { emitTrace } from "../agent/traceLogger";
 import { bumpSessionUsage } from "../agent/sessionPersistence";
 import { registerSkill, formatSkillSummary } from "../agent/skillStore";
+import { summariseAgentInventory } from "./agentSummary";
 import { routeQuestion } from "./questionRouter";
 import { retrieveFileSnippets } from "./retriever";
 import {
@@ -1143,10 +1144,17 @@ export async function askAboutArchitecture(
     .map((h) => h.content)
     .join("\n\n");
   const systemParts = [railSystemContent, systemFromHistory].filter(Boolean).join("\n\n");
+  const agentFacts = summariseAgentInventory(graph);
+  const basePrompt = agentFacts
+    ? buildSystemPrompt(graph) + "\n\n" + agentFacts
+    : buildSystemPrompt(graph);
+  if (process.env.ARCHY_DUMP_CONTEXT === "1") {
+    try { fs.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(no agent inventory on graph)"), "utf8"); } catch {}
+  }
   let systemPrompt =
     systemParts.length > 0
-      ? systemParts + "\n\n" + buildSystemPrompt(graph)
-      : buildSystemPrompt(graph);
+      ? systemParts + "\n\n" + basePrompt
+      : basePrompt;
   if (feedbackContext && feedbackContext.trim()) {
     systemPrompt = feedbackContext.trim() + "\n\n" + systemPrompt;
   }
@@ -1188,7 +1196,12 @@ export async function askAboutArchitecture(
     { role: "user", content: userContent },
   ];
 
-  const MAX_STEPS = 6;
+  const MAX_STEPS = 8;
+  // Phase 1 chat needs retrieval and answering only. The full set (Jira,
+  // scaffold, run_command, propose_architecture, skills) is phase 2 machinery
+  // and made the model exhaust its step budget exploring instead of answering.
+  const CHAT_TOOL_NAMES = new Set(["retrieve_files", "grep_codebase", "read_file", "answer"]);
+  const CHAT_TOOLS = TOOLS.filter((t) => CHAT_TOOL_NAMES.has(t.name));
   let finalAnswer = "";
   let finalGraphCommand: GraphCommand | undefined;
   let proposal: unknown;
@@ -1210,14 +1223,16 @@ export async function askAboutArchitecture(
         max_tokens: 2048,
         temperature: 0.2,
         system: systemPrompt,
-        tools: TOOLS,
+        tools: forcedSkillName || isUsageRequest ? TOOLS : CHAT_TOOLS,
         // When we know a skill save is required, force save_skill on first step.
         // When the user asked to use a skill (not save), force run_skill on first step.
         ...(forcedSkillName && step === 0
           ? { tool_choice: { type: "tool" as const, name: "save_skill" as const } }
           : isUsageRequest && step === 0
             ? { tool_choice: { type: "tool" as const, name: "run_skill" as const } }
-            : {}),
+            : step === MAX_STEPS - 1
+              ? { tool_choice: { type: "tool" as const, name: "answer" as const } }
+              : {}),
         messages,
       });
 

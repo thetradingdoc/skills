@@ -2602,6 +2602,59 @@ router3.post("/scan/refresh", requireUser, async (req, res) => {
 import { Router as Router7 } from "express";
 import { randomUUID } from "node:crypto";
 
+// ../../src/ai/agentSummary.ts
+function summariseAgentInventory(graph) {
+  const inv = graph && graph.agents;
+  const list = inv && inv.agents;
+  if (!Array.isArray(list) || list.length === 0) return void 0;
+  const catalogs = inv.toolCatalogs || {};
+  const toolsOf = (a) => Array.isArray(a.tools) ? a.tools : a.catalogId ? catalogs[a.catalogId] || [] : [];
+  const agents = list.filter((a) => a.kind === "agent");
+  const helpers = list.filter((a) => a.kind === "helper").length;
+  const unknown = list.filter((a) => a.kind === "unknown").length;
+  const L = [];
+  L.push("## Agent inventory (from this scan)");
+  L.push(agents.length + " agent surfaces, " + helpers + " LLM helpers without tools, " + unknown + " unclassified.");
+  if (Array.isArray(inv.pythonAgents) && inv.pythonAgents.length) {
+    L.push("NOT SCANNED: " + inv.pythonAgents.length + " Python agent file(s): " + inv.pythonAgents.join(", "));
+  }
+  L.push("");
+  for (const a of agents) {
+    const tools = toolsOf(a);
+    const rc = (cls) => tools.filter((t) => t && t.reach && t.reach.cells && t.reach.cells[cls] && t.reach.cells[cls].state === "reaches").length;
+    let untraced = 0;
+    for (const t of tools) {
+      const cells = t && t.reach && t.reach.cells || {};
+      for (const k of Object.keys(cells)) {
+        if (cells[k] && cells[k].state === "not-traced") untraced++;
+      }
+    }
+    L.push("### " + a.file);
+    L.push("provider=" + a.provider + " loop=" + (a.loopKind || "unknown") + " model=" + (a.model || "not determinable") + " tools=" + tools.length);
+    L.push("reach: " + rc("patient") + " tools reach patient data, " + rc("money") + " reach money, " + rc("external") + " reach external services. " + untraced + " cells could not be traced.");
+    L.push(a.auth && a.auth.found ? "auth: " + (a.auth.location || "found") : "auth: NO authentication found before tool execution.");
+    const layers = a.layers;
+    if (layers && typeof layers === "object") {
+      const filled = [];
+      const missing = [];
+      for (const k of Object.keys(layers)) {
+        const v = layers[k];
+        const st = v && v.status;
+        const nm = v && (v.id || v.layer || v.name) || k;
+        if (st === "empty" || st === "unsearched") missing.push(nm + " (" + st + ")");
+        else filled.push(nm + " " + (v && v.components && v.components.length || ""));
+      }
+      if (filled.length) L.push("layers present: " + filled.join(", "));
+      if (missing.length) L.push("layers MISSING: " + missing.join(", "));
+    }
+    const names = tools.slice(0, 40).map((t) => t.name).filter(Boolean);
+    if (names.length) L.push("tools: " + names.join(", ") + (tools.length > names.length ? " (+" + (tools.length - names.length) + " more)" : ""));
+    L.push("");
+  }
+  L.push("Answer only from the facts above and from files you retrieve. Do not assert that a tool reaches a resource unless it is stated here or proven by a file you read. Where a cell is not-traced, say so rather than assuming it is clear.");
+  return L.join("\n");
+}
+
 // ../../src/ai/manager.ts
 import * as fs16 from "fs";
 import * as path17 from "path";
@@ -4607,7 +4660,15 @@ Use these exact ids in any graphCommand you emit.`;
   const railSystemContent = railContext.filter((h) => h.role === "system").map((h) => h.content).join("\n\n");
   const systemFromHistory = (history ?? []).filter((h) => h.role === "system").map((h) => h.content).join("\n\n");
   const systemParts = [railSystemContent, systemFromHistory].filter(Boolean).join("\n\n");
-  let systemPrompt = systemParts.length > 0 ? systemParts + "\n\n" + buildSystemPrompt(graph) : buildSystemPrompt(graph);
+  const agentFacts = summariseAgentInventory(graph);
+  const basePrompt = agentFacts ? buildSystemPrompt(graph) + "\n\n" + agentFacts : buildSystemPrompt(graph);
+  if (process.env.ARCHY_DUMP_CONTEXT === "1") {
+    try {
+      fs14.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(no agent inventory on graph)"), "utf8");
+    } catch {
+    }
+  }
+  let systemPrompt = systemParts.length > 0 ? systemParts + "\n\n" + basePrompt : basePrompt;
   if (feedbackContext && feedbackContext.trim()) {
     systemPrompt = feedbackContext.trim() + "\n\n" + systemPrompt;
   }
@@ -4638,7 +4699,9 @@ Use these exact ids in any graphCommand you emit.`;
     ...railPriorTurns,
     { role: "user", content: userContent }
   ];
-  const MAX_STEPS = 6;
+  const MAX_STEPS = 8;
+  const CHAT_TOOL_NAMES = /* @__PURE__ */ new Set(["retrieve_files", "grep_codebase", "read_file", "answer"]);
+  const CHAT_TOOLS = TOOLS.filter((t) => CHAT_TOOL_NAMES.has(t.name));
   let finalAnswer = "";
   let finalGraphCommand;
   let proposal;
@@ -4655,10 +4718,10 @@ Use these exact ids in any graphCommand you emit.`;
         max_tokens: 2048,
         temperature: 0.2,
         system: systemPrompt,
-        tools: TOOLS,
+        tools: forcedSkillName || isUsageRequest ? TOOLS : CHAT_TOOLS,
         // When we know a skill save is required, force save_skill on first step.
         // When the user asked to use a skill (not save), force run_skill on first step.
-        ...forcedSkillName && step === 0 ? { tool_choice: { type: "tool", name: "save_skill" } } : isUsageRequest && step === 0 ? { tool_choice: { type: "tool", name: "run_skill" } } : {},
+        ...forcedSkillName && step === 0 ? { tool_choice: { type: "tool", name: "save_skill" } } : isUsageRequest && step === 0 ? { tool_choice: { type: "tool", name: "run_skill" } } : step === MAX_STEPS - 1 ? { tool_choice: { type: "tool", name: "answer" } } : {},
         messages
       });
       const inputTokens = response.usage?.input_tokens ?? 0;
@@ -5708,6 +5771,16 @@ ${skillsText}
         }
       } catch {
       }
+    } catch {
+    }
+  }
+  const agentSmary = summariseAgentInventory(params.graph);
+  if (agentSummary) {
+    contextBlock = agentSummary + (contextBlock ? "\n\n" + contextBlock : "");
+  }
+  if (process.env.ARCHY_DUMP_CONTEXT === "1") {
+    try {
+      fs16.writeFileSync("/tmp/archy-context.txt", String(contextBlock ?? "(contextBlock is undefined)"), "utf8");
     } catch {
     }
   }
