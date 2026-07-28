@@ -883,6 +883,14 @@ export default function App() {
     }
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
+  /** The picture is free to read; keeping it needs an account. Save, Share and
+   *  Export all land here rather than failing silently. */
+  const promptSignup = useCallback((what: string) => {
+    setAuthMode("signup");
+    setAuthMessage(`Create a free account to ${what}.`);
+    setShowAuthModal(true);
+  }, []);
+
   const [authMode, setAuthMode] = useState<"signin" | "signup" | "reset">("signup");
   const [loginHover, setLoginHover] = useState(false);
   const [ctaHover, setCtaHover] = useState(false);
@@ -1103,7 +1111,7 @@ export default function App() {
     } finally {
       setNpmAuditRunning(false);
     }
-  }, [activeWorkspaceId, accessToken]);
+  }, [activeWorkspaceId, accessToken, promptSignup]);
 
   const handleSignOut = useCallback(async () => {
     if (!supabase || isSigningOut) return;
@@ -1195,8 +1203,13 @@ export default function App() {
     }
   }, [accessToken]);
 
+
   const handleShare = useCallback(async (): Promise<{ url: string } | null> => {
-    if (!activeWorkspaceId || !accessToken) return null;
+    if (!accessToken) {
+      promptSignup("share this workspace");
+      return null;
+    }
+    if (!activeWorkspaceId) return null;
     try {
       const res = await fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/share`, {
         method: "POST",
@@ -1231,7 +1244,11 @@ export default function App() {
   );
 
   const handleSaveWorkspace = useCallback(async (): Promise<void> => {
-    if (!graph || !activeWorkspaceId || !accessToken) {
+    if (!accessToken) {
+      promptSignup("save this workspace");
+      return;
+    }
+    if (!graph || !activeWorkspaceId) {
       return;
     }
     try {
@@ -2093,19 +2110,16 @@ export default function App() {
           setError(null);
         } else if (typeof data.persistError === "string" && data.persistError.trim()) {
           // Anonymous / non-persisted path: surface why persistence is unavailable.
-          setError(`Workspace save failed: ${data.persistError}`);
+          if (accessToken) setError(`Workspace save failed: ${data.persistError}`);
           // Persist anonymous graph snapshot for refresh-only restore.
           try {
             localStorage.setItem("anonGraph", JSON.stringify(data));
           } catch {
             // ignore
           }
-          // Gentle governance: prompt user to sign in so future scans can be saved.
-          if (!accessToken) {
-            setAuthMode("signup");
-            setShowAuthModal(true);
-            setAuthMessage("Sign in to save and share this workspace.");
-          }
+          // An anonymous scan is a success, not a failure. The picture is free to
+          // read; keeping it is what needs an account. The signup prompt now fires
+          // from Save, Share and Export instead of covering the result on arrival.
         } else {
           setError("Workspace save failed: no workspaceId returned from server.");
         }
