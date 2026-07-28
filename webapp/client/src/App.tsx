@@ -970,12 +970,43 @@ export default function App() {
   const [selectedAnnotationForComments, setSelectedAnnotationForComments] = useState<string | null>(null);
   const [activeWorkspaceIsOwner, setActiveWorkspaceIsOwner] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  /** The scanner sets projectName from the clone directory, which is
+   *  arch-viz-<uuid>. Show the repository instead — that is what the user
+   *  typed and what they will recognise. */
+  const displayWorkspaceName = (() => {
+    const n = graph?.projectName;
+    if (n && !/^arch-viz-[0-9a-f-]{8,}/i.test(n) && n !== "My workspace") return n;
+    const url = graph?.projectRoot || repoUrl || "";
+    const m = String(url).match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
+    i(m) return m[2];
+    return n || "My workspace";
+  })();
+
   const [workspaceTitleEditing, setWorkspaceTitleEditing] = useState(false);
   const [workspaceTitleDraft, setWorkspaceTitleDraft] = useState("");
   const saveStatusTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shareCopiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [panelWidth, setPanelWidth] = useState(320);
   const [isResizing, setIsResizing] = useState(false);
+  /** What a scan found, as four numbers. Module and connection counts say
+   *  nothing about risk; these do. */
+  const agentSummaryStats = (() => {
+    const inv = graph?.agents;
+    const list = inv?.agents ?? [];
+    const catalogs = inv?.toolCatalogs ?? {};
+    const toolsOf = (a) => Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
+    const agents = list.filter((a) => a.kind === 'agent');
+    let noAuth = 0, patientTools = 0, moneyTools = 0;
+    for (const a of agents) {
+      if (!a.auth?.found) noAuth++;
+      for (const t of toolsOf(a)) {
+        if (t?.reach?.cells?.patient?.state === 'reaches') patientTools++;
+        if (t?.reach?.cells?.money?.state === 'reaches') moneyTools++;
+      }
+    }
+    return { agents: agents.length, noAuth, patientTools, moneyTools };
+  })();
+
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const panelWidthBeforeCollapseRef = useRef<number>(320);
   const leftPanelUserToggledRef = useRef(false);
@@ -4426,7 +4457,7 @@ export default function App() {
         )}
 
         {/* Dashboard content: project overview, health, execution, violations, governance, proposed nodes */}
-        {sidebarTab === "dashboard" && (
+        {!leftPanelCollapsed && sidebarTab === "dashboard" && (
           <div
             style={{
               display: "grid",
@@ -4440,11 +4471,16 @@ export default function App() {
                 title="Agents Found"
                 rightHeaderContent={
                   <span style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 11, color: "#8b949e" }}>
-                    {(graph?.agents?.agents ?? []).length} surface{(graph?.agents?.agents ?? []).length === 1 ? "" : "s"}
-                    {" · "}
-                    {graph!.nodes.length} modules
-                    {" · "}
-                    {graph!.edges.length} connections
+                    <span style={{ color: "#e6edf3" }}>{agentSummaryStats.agents} agents</span>
+                    {agentSummaryStats.noAuth > 0 && (
+                      <span style={{ color: "#f85149", marginLeft: 12 }}>{agentSummaryStats.noAuth} without auth</span>
+                    )}
+                    {agentSummaryStats.patientTools > 0 && (
+                      <span style={{ color: "#f85149", marginLeft: 12 }}>{agentSummaryStats.patientTools} tools reach patient data</span>
+                    )}
+                    {agentSummaryStats.moneyTools > 0 && (
+                      <span style={{ color: "#d29922", marginLeft: 12 }}>{agentSummaryStats.moneyTools} reach money</span>
+                    )}
                   </span>
                 }
               >
@@ -5036,7 +5072,7 @@ export default function App() {
           </div>
         )}
 
-        {sidebarTab === "code" && (
+        {!leftPanelCollapsed && sidebarTab === "code" && (
           <CodeViewerPanel
             node={selectedNodeData ?? null}
             graph={effectiveGraph ?? null}
@@ -6980,7 +7016,7 @@ export default function App() {
                       if (t) handleRenameWorkspaceTitle(t);
                       setWorkspaceTitleEditing(false);
                     } else if (e.key === "Escape") {
-                      setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
+                      setWorkspaceTitleDraft(displayWorkspaceName);
                       setWorkspaceTitleEditing(false);
                     }
                   }}
@@ -6999,7 +7035,7 @@ export default function App() {
                 <span
                   onClick={() => {
                     if (activeWorkspaceId && accessToken) {
-                      setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
+                      setWorkspaceTitleDraft(displayWorkspaceName);
                       setWorkspaceTitleEditing(true);
                     }
                   }}
@@ -7014,7 +7050,7 @@ export default function App() {
                     cursor: activeWorkspaceId && accessToken ? "pointer" : "default",
                   }}
                 >
-                  {graph.projectName ?? "My workspace"}
+                  {displayWorkspaceName}
                 </span>
               )}
               <button
@@ -7124,7 +7160,7 @@ export default function App() {
               <input
                 value={graphSearch}
                 onChange={(e) => setGraphSearch(e.target.value)}
-                placeholder="Search nodes…"
+                placeholder="Search…"
                 style={{
                   marginLeft: 8,
                   width: 160,
@@ -7176,7 +7212,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => {
-                          setWorkspaceTitleDraft(graph.projectName ?? "My workspace");
+                          setWorkspaceTitleDraft(displayWorkspaceName);
                           setWorkspaceTitleEditing(true);
                           setShowWorkspaceMenu(false);
                         }}
@@ -7890,9 +7926,6 @@ export default function App() {
               </button>
             </div>
             )}
-            {isCanvasView && (
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            </div>
             <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
               <button
                 type="button"

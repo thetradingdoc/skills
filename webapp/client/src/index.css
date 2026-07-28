@@ -1,0 +1,78 @@
+/* Global chrome.
+   The client is styled entirely inline, so this file holds only the rules that
+   cannot live on an element: interaction feedback, focus rings, scrollbars.
+   Component appearance stays inline. */
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 151 buttons had pointer cursors and almost no hover state, so the interface
+   never visibly responded to the mouse. brightness() lifts each one against
+   whatever background it already has, so one rule covers all of them. */
+button:not(:disabled) {
+  transition: filter 120ms ease, opacity 120ms ease;
+}
+button:not(:disabled):hover {
+  filter: brightness(1.35);
+}
+button:not(:disabled):active {
+  filter: brightness(0.92);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Keyboard users get the same affordance as mouse users. */
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: 1px;
+}
+
+/* Rows and cards that behave as controls. */
+[role="button"]:hover {
+  filter: brightness(1.2);
+}
+
+input, textarea, select {
+  transition: border-color 120ms ease;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
