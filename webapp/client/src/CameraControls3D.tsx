@@ -208,7 +208,7 @@ export function SnapButtons3D({ onSnap, onExport, onSavePreset, presetSlots }: S
             border: "1px solid transparent",
             borderRadius: 6,
             background: "transparent",
-            color: "#94a3b8",
+            color: "#8b949e",
             cursor: "pointer",
           }}
         >
@@ -238,9 +238,9 @@ export function SnapButtons3D({ onSnap, onExport, onSavePreset, presetSlots }: S
                   fontSize: 9,
                   fontFamily: "monospace",
                   borderRadius: 6,
-                  border: has ? "1px solid #60a5fa66" : "1px solid transparent",
+                  border: has ? "1px solid #58a6ff66" : "1px solid transparent",
                   background: has ? "#0b1220" : "transparent",
-                  color: has ? "#60a5fa" : "#94a3b8",
+                  color: has ? "#58a6ff" : "#8b949e",
                   cursor: "pointer",
                 }}
               >
@@ -262,7 +262,7 @@ export function SnapButtons3D({ onSnap, onExport, onSavePreset, presetSlots }: S
             border: "1px solid transparent",
             borderRadius: 6,
             background: "transparent",
-            color: "#94a3b8",
+            color: "#8b949e",
             cursor: "pointer",
           }}
         >

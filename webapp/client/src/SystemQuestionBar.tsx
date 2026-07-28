@@ -53,7 +53,7 @@ export function SystemQuestionBar({
           disabled={!value.trim() || disabled}
           style={{
             padding: "4px 12px",
-            background: value.trim() && !disabled ? "#3b82f6" : "#334155",
+            background: value.trim() && !disabled ? "#1f6feb" : "#334155",
             border: "none",
             borderRadius: 4,
             color: "#fff",

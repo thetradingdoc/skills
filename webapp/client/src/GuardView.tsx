@@ -51,7 +51,7 @@ type EvalResponse = {
 const STATUS_COLOR: Record<string, string> = {
   PASS: "#86efac",
   FAIL: "#f87171",
-  UNEVALUABLE: "#fbbf24",
+  UNEVALUABLE: "#d29922",
 };
 
 export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
@@ -210,7 +210,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
         style={{
           flex: 1,
           padding: 32,
-          color: "#9ca3af",
+          color: "#8b949e",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         }}
       >
@@ -240,7 +240,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
           padding: "10px 20px",
           borderBottom: "1px solid #30363d",
           fontSize: 12,
-          color: "#e5e7eb",
+          color: "#e6edf3",
           background: "rgba(15,23,42,0.9)",
           display: "flex",
           flexWrap: "wrap",
@@ -248,13 +248,13 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
           alignItems: "center",
         }}
       >
-        <span style={{ color: "#93c5fd", fontWeight: 600 }}>Guard</span>
-        <span style={{ color: "#9ca3af" }}>
+        <span style={{ color: "#58a6ff", fontWeight: 600 }}>Guard</span>
+        <span style={{ color: "#8b949e" }}>
           {report?.ciLine ??
             `${blocking} new failures would block, ${baselined} baselined, ${uneval} unevaluable.`}
         </span>
         {report?.confidenceOfReaches && (
-          <span style={{ color: "#6b7280", fontSize: 11 }}>
+          <span style={{ color: "#7d8590", fontSize: 11 }}>
             reaches conf: high {report.confidenceOfReaches.high} · medium{" "}
             {report.confidenceOfReaches.medium}
           </span>
@@ -282,7 +282,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
               alignItems: "center",
             }}
           >
-            <span style={{ fontSize: 11, color: "#9ca3af" }}>reach.rules</span>
+            <span style={{ fontSize: 11, color: "#8b949e" }}>reach.rules</span>
             <button
               type="button"
               disabled={busy}
@@ -292,9 +292,9 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                 fontSize: 11,
                 padding: "4px 10px",
                 borderRadius: 4,
-                border: "1px solid #3b82f6",
+                border: "1px solid #1f6feb",
                 background: "rgba(37,99,235,0.2)",
-                color: "#93c5fd",
+                color: "#58a6ff",
                 cursor: "pointer",
               }}
             >
@@ -310,7 +310,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                 borderRadius: 4,
                 border: "1px solid #30363d",
                 background: "transparent",
-                color: "#d1d5db",
+                color: "#e6edf3",
                 cursor: "pointer",
               }}
             >
@@ -328,7 +328,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
               outline: "none",
               padding: 12,
               background: "#0b1220",
-              color: "#e5e7eb",
+              color: "#e6edf3",
               fontSize: 12,
               lineHeight: 1.5,
               fontFamily: "inherit",
@@ -363,7 +363,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
             >
               Mark current failures as pre-existing
             </button>
-            <span style={{ fontSize: 10, color: "#6b7280" }}>
+            <span style={{ fontSize: 10, color: "#7d8590" }}>
               Baselined failures show separately and do not block CI.
             </span>
           </div>
@@ -387,14 +387,14 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                   <span style={{ color, fontWeight: 700, fontSize: 11, minWidth: 110 }}>
                     {statusLabel}
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 10 }}>
+                  <span style={{ color: "#7d8590", fontSize: 10 }}>
                     {e.display ?? `${e.status} (${e.coveragePercent ?? "?"}%)`}
                   </span>
                 </div>
-                <div style={{ marginTop: 4, color: "#e5e7eb", fontSize: 12 }}>{e.rule.raw}</div>
-                <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af" }}>{e.reason}</div>
+                <div style={{ marginTop: 4, color: "#e6edf3", fontSize: 12 }}>{e.rule.raw}</div>
+                <div style={{ marginTop: 6, fontSize: 11, color: "#8b949e" }}>{e.reason}</div>
                 {e.claim && (
-                  <div style={{ marginTop: 8, fontSize: 11, color: "#d1d5db" }}>
+                  <div style={{ marginTop: 8, fontSize: 11, color: "#e6edf3" }}>
                     claim: {e.claim.tool}
                     {e.claim.resource ? ` → ${e.claim.resource}` : ""}
                     {e.claim.confidence ? ` (${e.claim.confidence})` : ""}
@@ -412,7 +412,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                           marginLeft: 10,
                           background: "transparent",
                           border: "none",
-                          color: "#93c5fd",
+                          color: "#58a6ff",
                           cursor: "pointer",
                           fontSize: 11,
                           textDecoration: "underline",
@@ -429,7 +429,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
                   </div>
                 )}
                 {e.status === "UNEVALUABLE" && e.unevaluableCount != null && (
-                  <div style={{ marginTop: 4, fontSize: 10, color: "#fbbf24" }}>
+                  <div style={{ marginTop: 4, fontSize: 10, color: "#d29922" }}>
                     {e.unevaluableCount} covering cell(s)
                   </div>
                 )}
@@ -438,7 +438,7 @@ export default function GuardView({ agents, apiBase, onOpenEvidence }: Props) {
           })}
 
           {report && report.evaluations.length === 0 && (
-            <div style={{ color: "#6b7280", fontSize: 12 }}>
+            <div style={{ color: "#7d8590", fontSize: 12 }}>
               No rules yet. Save a starter reach.rules or write rules in the editor.
             </div>
           )}

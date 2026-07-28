@@ -25,15 +25,15 @@ interface Edge3DProps {
 }
 
 function edgeColor(edge: Edge3DProps["edge"], srcLayer?: string, tgtLayer?: string): string {
-  if (edge.isDrift) return "#ef4444";
-  if (edge.isLayerViolation) return "#f59e0b";
+  if (edge.isDrift) return "#f85149";
+  if (edge.isLayerViolation) return "#d29922";
   // Runtime latency heatmap override (similar to 2D)
   if (typeof edge.runtimeLatencyMs === "number") {
-    if (edge.runtimeLatencyMs < 100) return "#22c55e";
+    if (edge.runtimeLatencyMs < 100) return "#3fb950";
     if (edge.runtimeLatencyMs < 300) return "#eab308";
-    return "#ef4444";
+    return "#f85149";
   }
-  if (edge.type === "runtime") return "#22c55e";
+  if (edge.type === "runtime") return "#3fb950";
   const layer = (srcLayer ?? tgtLayer ?? "Uncategorized") as string;
   return LAYER_COLORS[layer]?.top ?? LAYER_COLORS["Uncategorized"].top;
 }
@@ -174,7 +174,7 @@ export function Edge3D({
       {isViolation && (
         <pointLight
           ref={lightRef}
-          color="#f59e0b"
+          color="#d29922"
           intensity={0.3}
           distance={1.5}
           decay={2}
@@ -187,13 +187,13 @@ export function Edge3D({
         <>
           <pointLight
             ref={driftLightRef}
-            color="#ef4444"
+            color="#f85149"
             intensity={0.3}
             distance={1.5}
             decay={2}
             position={[mid.x, mid.y, mid.z]}
           />
-          <DriftParticle curve={curve} color="#ef4444" opacity={opacity} period={DRIFT_PARTICLE_T} />
+          <DriftParticle curve={curve} color="#f85149" opacity={opacity} period={DRIFT_PARTICLE_T} />
         </>
       )}
 
@@ -267,7 +267,7 @@ function AllParticle({
     <mesh ref={meshRef}>
       <sphereGeometry args={[ALL_GLOW_R, 8, 6]} />
       <meshBasicMaterial
-        color="#60a5fa"
+        color="#58a6ff"
         transparent
         opacity={opacity}
       />

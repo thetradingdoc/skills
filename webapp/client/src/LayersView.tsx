@@ -100,7 +100,7 @@ export default function LayersView({
         style={{
           flex: 1,
           padding: 32,
-          color: "#9ca3af",
+          color: "#8b949e",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         }}
       >
@@ -132,15 +132,15 @@ export default function LayersView({
           background: "rgba(15,23,42,0.95)",
         }}
       >
-        <span style={{ color: "#93c5fd", fontWeight: 600, fontSize: 12 }}>Layers</span>
-        <span style={{ color: "#6b7280", fontSize: 11 }}>Agent</span>
+        <span style={{ color: "#58a6ff", fontWeight: 600, fontSize: 12 }}>Layers</span>
+        <span style={{ color: "#7d8590", fontSize: 11 }}>Agent</span>
         <select
           data-testid="layers-agent-select"
           value={agentFile ?? ""}
           onChange={(e) => pickAgent(e.target.value)}
           style={{
             background: "#0b1220",
-            color: "#e5e7eb",
+            color: "#e6edf3",
             border: "1px solid #30363d",
             borderRadius: 4,
             padding: "4px 8px",
@@ -155,7 +155,7 @@ export default function LayersView({
           ))}
         </select>
         {surface?.loopKind === "hosted" && (
-          <span style={{ fontSize: 11, color: "#fbbf24" }}>
+          <span style={{ fontSize: 11, color: "#d29922" }}>
             hosted — control loop lives outside this repo
           </span>
         )}
@@ -168,7 +168,7 @@ export default function LayersView({
         style={{ flex: 1, overflow: "auto", padding: "8px 12px 24px" }}
       >
         {layers.length === 0 && (
-          <div style={{ color: "#fbbf24", padding: 24, fontSize: 12 }}>
+          <div style={{ color: "#d29922", padding: 24, fontSize: 12 }}>
             No layer data on this agent — re-scan after reference-model detection is wired.
           </div>
         )}
@@ -222,11 +222,11 @@ export default function LayersView({
                   >
                     {layer.name}
                   </span>
-                  <span style={{ color: "#6b7280", fontSize: 10 }}>
+                  <span style={{ color: "#7d8590", fontSize: 10 }}>
                     {layer.components.length}
                   </span>
                 </div>
-                <div style={{ color: "#9ca3af", fontSize: 10, lineHeight: 1.35 }}>
+                <div style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.35 }}>
                   {question}
                 </div>
               </div>
@@ -246,7 +246,7 @@ export default function LayersView({
                   <div
                     style={{
                       width: "100%",
-                      border: "1px dashed #f59e0b",
+                      border: "1px dashed #d29922",
                       borderRadius: 4,
                       padding: "10px 12px",
                       background: "rgba(0,0,0,0.2)",
@@ -295,13 +295,13 @@ export default function LayersView({
                           padding: "5px 8px",
                           borderRadius: 4,
                           border: sens
-                            ? `1px solid ${sens === "patient" ? "#f87171" : "#fbbf24"}`
+                            ? `1px solid ${sens === "patient" ? "#f87171" : "#d29922"}`
                             : "1px solid #30363d",
                           background:
                             selectedComponent?.component.id === c.id
                               ? "rgba(37,99,235,0.25)"
                               : "rgba(15,23,42,0.9)",
-                          color: "#e5e7eb",
+                          color: "#e6edf3",
                           fontSize: 10,
                           cursor: "pointer",
                           maxWidth: 200,
@@ -333,12 +333,12 @@ export default function LayersView({
                 {!isEmpty &&
                   !isUnsearched &&
                   layer.components.length > 24 && (
-                    <span style={{ color: "#6b7280", fontSize: 10 }}>
+                    <span style={{ color: "#7d8590", fontSize: 10 }}>
                       +{layer.components.length - 24} more
                     </span>
                   )}
                 {layer.status === "thin" && layer.components.length > 0 && (
-                  <span style={{ color: "#9ca3af", fontSize: 10, marginLeft: 4 }}>
+                  <span style={{ color: "#8b949e", fontSize: 10, marginLeft: 4 }}>
                     thin
                   </span>
                 )}
@@ -368,7 +368,7 @@ export default function LayersView({
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#9ca3af",
+                color: "#8b949e",
                 cursor: "pointer",
                 fontSize: 11,
               }}
@@ -376,7 +376,7 @@ export default function LayersView({
               close
             </button>
           </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "#93c5fd", lineHeight: 1.5 }}>
+          <div style={{ marginTop: 8, fontSize: 11, color: "#58a6ff", lineHeight: 1.5 }}>
             {selectedComponent.component.evidence}
           </div>
           {selectedComponent.component.sensitive && (

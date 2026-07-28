@@ -170,7 +170,7 @@ function RememberThisButton({
         borderRadius: 4,
         border: "1px solid #334155",
         background: saved ? "rgba(34,197,94,0.2)" : "transparent",
-        color: saved ? "#4ade80" : "#94a3b8",
+        color: saved ? "#4ade80" : "#8b949e",
         cursor: saving || saved ? "default" : "pointer",
       }}
     >
@@ -458,7 +458,7 @@ function DesignTicker() {
   font-family: "DM Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 56px;
   line-height: 80px;
-  color: #000000;
+  color: #8b949e;
 }
 .ll-ticker__container {
   font-weight: 700;
@@ -2952,7 +2952,7 @@ export default function App() {
                     style={{
                       fontFamily: '"DM Sans", sans-serif',
                       fontSize: 13,
-                      color: "#9ca3af",
+                      color: "#8b949e",
                     }}
                   >
                     {authMode === "reset"
@@ -2967,7 +2967,7 @@ export default function App() {
                   style={{
                     background: "transparent",
                     border: "none",
-                    color: "#9ca3af",
+                    color: "#8b949e",
                     cursor: "pointer",
                     fontSize: 18,
                   }}
@@ -3001,7 +3001,7 @@ export default function App() {
                         ? "2px solid #c8f135"
                         : "1px solid rgba(55,65,81,0.9)",
                     background: "transparent",
-                    color: authMode === "signup" ? "#f9fafb" : "#6b7280",
+                    color: authMode === "signup" ? "#f9fafb" : "#7d8590",
                     fontFamily: '"DM Mono", monospace',
                     letterSpacing: "0.16em",
                     textTransform: "uppercase",
@@ -3025,7 +3025,7 @@ export default function App() {
                         ? "2px solid #c8f135"
                         : "1px solid rgba(55,65,81,0.9)",
                     background: "transparent",
-                    color: authMode === "signin" ? "#f9fafb" : "#6b7280",
+                    color: authMode === "signin" ? "#f9fafb" : "#7d8590",
                     fontFamily: '"DM Mono", monospace',
                     letterSpacing: "0.16em",
                     textTransform: "uppercase",
@@ -3155,7 +3155,7 @@ export default function App() {
                       cursor: "pointer",
                       background:
                         "linear-gradient(135deg, #c8f135 0%, #d9ff4a 45%, #c8f135 100%)",
-                      color: "#111827",
+                      color: "#0d1117",
                       fontWeight: 600,
                       fontSize: 14,
                       opacity: authBusy ? 0.7 : 1,
@@ -3186,10 +3186,10 @@ export default function App() {
                     }}
                   >
                     <div style={{ fontWeight: 600, marginBottom: 8 }}>Thank you! Your account was created.</div>
-                    <div style={{ color: "#9ca3af", marginBottom: 6 }}>
-                      We sent a confirmation link to <strong style={{ color: "#e5e7eb" }}>{authEmail}</strong>.
+                    <div style={{ color: "#8b949e", marginBottom: 6 }}>
+                      We sent a confirmation link to <strong style={{ color: "#e6edf3" }}>{authEmail}</strong>.
                     </div>
-                    <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                    <div style={{ fontSize: 12, color: "#8b949e" }}>
                       Click the link in the email to activate your account, then sign in.
                     </div>
                   </div>
@@ -3225,7 +3225,7 @@ export default function App() {
                       border: "none",
                       cursor: "pointer",
                       background: "rgba(75,85,99,0.3)",
-                      color: "#9ca3af",
+                      color: "#8b949e",
                       fontSize: 13,
                     }}
                   >
@@ -3268,7 +3268,7 @@ export default function App() {
                     <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                       <span
                         style={{
-                          color: "#9ca3af",
+                          color: "#8b949e",
                           fontSize: 13,
                           padding: "0 4px",
                         }}
@@ -3340,7 +3340,7 @@ export default function App() {
                         outline: "none",
                       }}
                     />
-                    <div style={{ marginTop: 8, fontSize: 13, color: "#9ca3af" }}>
+                    <div style={{ marginTop: 8, fontSize: 13, color: "#8b949e" }}>
                       During signup, would you like to connect existing GitHub repositories?
                     </div>
                     <div
@@ -3364,7 +3364,7 @@ export default function App() {
                               ? "rgba(200,241,53,0.18)"
                               : "transparent",
                           color:
-                            signupHasRepos === "yes" ? "#e5ff7a" : "#e5e7eb",
+                            signupHasRepos === "yes" ? "#e5ff7a" : "#e6edf3",
                           fontSize: 12,
                         }}
                       >
@@ -3383,7 +3383,7 @@ export default function App() {
                               ? "rgba(31,41,55,0.9)"
                               : "transparent",
                           color:
-                            signupHasRepos === "no" ? "#f9fafb" : "#e5e7eb",
+                            signupHasRepos === "no" ? "#f9fafb" : "#e6edf3",
                           fontSize: 12,
                         }}
                       >
@@ -3395,7 +3395,7 @@ export default function App() {
                         <label
                           style={{
                             fontSize: 12,
-                            color: "#9ca3af",
+                            color: "#8b949e",
                             marginTop: 4,
                           }}
                         >
@@ -3423,7 +3423,7 @@ export default function App() {
                       <p
                         style={{
                           fontSize: 12,
-                          color: "#9ca3af",
+                          color: "#8b949e",
                           marginTop: 4,
                         }}
                       >
@@ -3583,7 +3583,7 @@ export default function App() {
                       cursor: "pointer",
                       background:
                         "linear-gradient(135deg, #c8f135 0%, #d9ff4a 45%, #c8f135 100%)",
-                      color: "#111827",
+                      color: "#0d1117",
                       fontWeight: 600,
                       fontSize: 14,
                       opacity: authBusy ? 0.7 : 1,
@@ -3719,7 +3719,7 @@ export default function App() {
                           border: "none",
                           padding: 0,
                           fontSize: 11,
-                          color: "#9ca3af",
+                          color: "#8b949e",
                           cursor: "pointer",
                           textDecoration: "underline",
                         }}
@@ -3764,7 +3764,7 @@ export default function App() {
                       cursor: "pointer",
                       background:
                         "linear-gradient(135deg, #c8f135 0%, #d9ff4a 45%, #c8f135 100%)",
-                      color: "#111827",
+                      color: "#0d1117",
                       fontWeight: 600,
                       fontSize: 14,
                       opacity: authBusy ? 0.7 : 1,
@@ -3835,8 +3835,8 @@ export default function App() {
         className="landing-page"
         style={{
           minHeight: "100vh",
-          backgroundColor: "#000000",
-          color: "#000000",
+          backgroundColor: "#8b949e",
+          color: "#8b949e",
           position: "relative",
           overflow: "hidden",
           fontFamily:
@@ -3898,7 +3898,7 @@ export default function App() {
               letterSpacing: "0.24em",
           display: "flex",
           alignItems: "center",
-              color: "#000000",
+              color: "#8b949e",
             }}
           >
             LITTLELABS
@@ -4031,7 +4031,7 @@ export default function App() {
             borderRadius: 12,
             border: "1px solid rgba(15,23,42,0.08)",
             padding: 16,
-            color: "#111827",
+            color: "#0d1117",
             fontFamily:
               '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
             boxSizing: "border-box",
@@ -4051,7 +4051,7 @@ export default function App() {
               fontSize: 12,
               textTransform: "uppercase",
               letterSpacing: 1,
-              color: "#6b7280",
+              color: "#7d8590",
               marginBottom: 6,
             }}
           >
@@ -4069,7 +4069,7 @@ export default function App() {
               background: "#ffffff",
               border: "1px solid rgba(209,213,219,1)",
               borderRadius: 8,
-              color: "#111827",
+              color: "#0d1117",
               marginBottom: 10,
               outline: "none",
               boxSizing: "border-box",
@@ -4098,7 +4098,7 @@ export default function App() {
               width: "100%",
               padding: "10px 16px",
               background: authLoading ? "#d4d4d8" : "#c8f135",
-              color: "#111827",
+              color: "#0d1117",
               border: "none",
               borderRadius: 8,
               fontSize: 14,
@@ -4263,7 +4263,7 @@ export default function App() {
                   fontFamily: "monospace",
                   borderRadius: 10,
                   border: sidebarTab === (t.key as any) ? "1px solid #58a6ff" : "1px solid #30363d",
-                  background: sidebarTab === (t.key as any) ? "#1f2937" : "transparent",
+                  background: sidebarTab === (t.key as any) ? "#161b22" : "transparent",
                   color: sidebarTab === (t.key as any) ? "#e6edf3" : "#8b949e",
                   cursor: "pointer",
                 }}
@@ -4302,7 +4302,7 @@ export default function App() {
                 width: "100%",
                 marginTop: 8,
                 padding: "8px 12px",
-                background: authLoading ? "#374151" : "#238636",
+                background: authLoading ? "#30363d" : "#238636",
                 color: "#fff",
                 border: "none",
                 borderRadius: 6,
@@ -4352,7 +4352,7 @@ export default function App() {
                   ? "1px solid #58a6ff"
                   : "1px solid #30363d",
               background:
-                sidebarTab === "dashboard" ? "#1f2937" : "#161b22",
+                sidebarTab === "dashboard" ? "#161b22" : "#161b22",
               color: sidebarTab === "dashboard" ? "#e6edf3" : "#8b949e",
               cursor: "pointer",
               position: "relative",
@@ -4396,7 +4396,7 @@ export default function App() {
                 sidebarTab === "chat"
                   ? "1px solid #58a6ff"
                   : "1px solid #30363d",
-              background: sidebarTab === "chat" ? "#1f2937" : "#161b22",
+              background: sidebarTab === "chat" ? "#161b22" : "#161b22",
               color: sidebarTab === "chat" ? "#e6edf3" : "#8b949e",
               cursor: "pointer",
             }}
@@ -4414,7 +4414,7 @@ export default function App() {
                 sidebarTab === "code"
                   ? "1px solid #58a6ff"
                   : "1px solid #30363d",
-              background: sidebarTab === "code" ? "#1f2937" : "#161b22",
+              background: sidebarTab === "code" ? "#161b22" : "#161b22",
               color: sidebarTab === "code" ? "#e6edf3" : "#8b949e",
               cursor: "pointer",
             }}
@@ -4600,15 +4600,15 @@ export default function App() {
                     const completed = wsTasks.filter((t) => t.status === "completed").length;
                     if (wsTasks.length === 0) {
                       return (
-                        <span style={{ fontSize: 10, color: "#6b7280" }}>
+                        <span style={{ fontSize: 10, color: "#7d8590" }}>
                           No tasks yet
                         </span>
                       );
                     }
                     return (
-                      <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
+                      <span style={{ fontSize: 10, color: "#8b949e", fontFamily: "monospace" }}>
                         {running} running ·{" "}
-                        <span style={{ color: needsReview > 0 ? "#f59e0b" : "#6b7280" }}>
+                        <span style={{ color: needsReview > 0 ? "#d29922" : "#7d8590" }}>
                           {needsReview} needs review
                         </span>{" "}
                         · {completed} completed
@@ -4625,7 +4625,7 @@ export default function App() {
                       .map((t) => {
                         const isAttention = t.status === "failed" || t.status === "needs_review";
                         const border = isAttention ? "1px solid rgba(245,158,11,0.6)" : "1px solid #30363d";
-                        const bg = isAttention ? "rgba(245,158,11,0.06)" : "#111827";
+                        const bg = isAttention ? "rgba(245,158,11,0.06)" : "#0d1117";
                         return (
                           <button
                             key={t.id}
@@ -4670,7 +4670,7 @@ export default function App() {
                                 flex: 1,
                                 minWidth: 0,
                                 fontSize: 11,
-                                color: "#e5e7eb",
+                                color: "#e6edf3",
                                 whiteSpace: "nowrap",
                                 overflow: "hidden",
                                 textOverflow: "ellipsis",
@@ -4683,10 +4683,10 @@ export default function App() {
                                 fontSize: 10,
                                 color:
                                   t.status === "running"
-                                    ? "#60a5fa"
+                                    ? "#58a6ff"
                                     : t.status === "completed"
                                       ? "#4ade80"
-                                      : "#f59e0b",
+                                      : "#d29922",
                               }}
                             >
                               {t.status === "needs_review" ? "needs review" : t.status}
@@ -4788,10 +4788,10 @@ export default function App() {
                     style={{
                       padding: "6px 8px",
                       background: "rgba(34,197,94,0.12)",
-                      border: "1px solid #22c55e44",
+                      border: "1px solid #3fb95044",
                       borderRadius: 6,
                       fontSize: 11,
-                      color: "#22c55e",
+                      color: "#3fb950",
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
@@ -4847,7 +4847,7 @@ export default function App() {
                         padding: "4px 8px",
                         fontSize: 10,
                         background: "#21262d",
-                        color: npmAuditRunning ? "#6b7280" : "#7d8590",
+                        color: npmAuditRunning ? "#7d8590" : "#7d8590",
                         border: "1px solid #30363d",
                         borderRadius: 6,
                         cursor: activeWorkspaceId && !npmAuditRunning ? "pointer" : "not-allowed",
@@ -4858,7 +4858,7 @@ export default function App() {
                     </button>
                   </div>
                   {showSupplyChainRisk && vulnerableNodeIds && vulnerableNodeIds.size > 0 && (
-                    <div style={{ marginTop: 6, fontSize: 10, color: "#f59e0b" }}>
+                    <div style={{ marginTop: 6, fontSize: 10, color: "#d29922" }}>
                       {vulnerableNodeIds.size} node{vulnerableNodeIds.size !== 1 ? "s" : ""} with risky deps
                     </div>
                   )}
@@ -5096,7 +5096,7 @@ export default function App() {
               textTransform: "uppercase",
               letterSpacing: 0.5,
               background: "rgba(59,130,246,0.16)",
-              color: "#93c5fd",
+              color: "#58a6ff",
               border: "1px solid rgba(59,130,246,0.4)",
             }}
           >
@@ -5109,9 +5109,9 @@ export default function App() {
               marginLeft: "auto",
               padding: "2px 8px",
               borderRadius: 999,
-              border: "1px solid #374151",
-              background: showThinkingPanel ? "#111827" : "transparent",
-              color: "#9ca3af",
+              border: "1px solid #30363d",
+              background: showThinkingPanel ? "#0d1117" : "transparent",
+              color: "#8b949e",
               fontSize: 10,
               cursor: "pointer",
             }}
@@ -5339,7 +5339,7 @@ export default function App() {
                           ? "#58a6ff"
                           : t.status === "completed"
                             ? "#3fb950"
-                            : "#f59e0b";
+                            : "#d29922";
                       const isAttention = t.status === "failed" || t.status === "needs_review";
                       return (
                         <div
@@ -5415,7 +5415,7 @@ export default function App() {
                                 fontSize: 10,
                                 fontFamily: "monospace",
                                 fontWeight: 600,
-                                color: t.status === "running" && (t.retryAttempt ?? 0) >= 2 ? "#f59e0b" : (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
+                                color: t.status === "running" && (t.retryAttempt ?? 0) >= 2 ? "#d29922" : (t.retryAttempt ?? 0) >= 2 ? "#f85149" : "#7d8590",
                               }}
                             >
                               Attempt {t.retryAttempt}/{t.retryMax}
@@ -5467,10 +5467,10 @@ export default function App() {
                 marginBottom: 4,
                 padding: 8,
                 borderRadius: 6,
-                background: "#111827",
-                border: "1px solid #1f2937",
+                background: "#0d1117",
+                border: "1px solid #161b22",
                 fontSize: 12,
-                color: "#9ca3af",
+                color: "#8b949e",
               }}
             >
               <div
@@ -5486,7 +5486,7 @@ export default function App() {
                     fontSize: 11,
                     textTransform: "uppercase",
                     letterSpacing: 1,
-                    color: "#6b7280",
+                    color: "#7d8590",
                   }}
                 >
                   Thinking
@@ -5497,7 +5497,7 @@ export default function App() {
                   style={{
                     border: "none",
                     background: "transparent",
-                    color: "#6b7280",
+                    color: "#7d8590",
                     fontSize: 11,
                     cursor: "pointer",
                   }}
@@ -5505,7 +5505,7 @@ export default function App() {
                   Hide
                 </button>
               </div>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+            <div style={{ fontSize: 12, color: "#8b949e" }}>
               {(() => {
                 const t = activeTaskId
                   ? backgroundTasks.find((x) => x.id === activeTaskId)
@@ -5523,7 +5523,7 @@ export default function App() {
                 marginBottom: 8,
                 padding: 10,
                 borderRadius: 6,
-                background: "#111827",
+                background: "#0d1117",
                 border: "1px solid #30363d",
                 fontSize: 11,
               }}
@@ -5533,17 +5533,17 @@ export default function App() {
                   fontSize: 10,
                   textTransform: "uppercase",
                   letterSpacing: 1,
-                  color: "#f59e0b",
+                  color: "#d29922",
                   marginBottom: 6,
                 }}
               >
                 Critic — score: {lastCriticResult.score}/10
               </div>
-              <div style={{ color: "#9ca3af", marginBottom: 8, whiteSpace: "pre-wrap" }}>
+              <div style={{ color: "#8b949e", marginBottom: 8, whiteSpace: "pre-wrap" }}>
                 {lastCriticResult.report}
               </div>
               {lastCriticResult.violations.length > 0 && (
-                <ul style={{ margin: 0, paddingLeft: 16, color: "#e5e7eb" }}>
+                <ul style={{ margin: 0, paddingLeft: 16, color: "#e6edf3" }}>
                   {lastCriticResult.violations.slice(0, 10).map((v, i) => (
                     <li key={i}>
                       [{v.severity}] {v.description}
@@ -5562,8 +5562,8 @@ export default function App() {
                   padding: "2px 8px",
                   fontSize: 10,
                   background: "transparent",
-                  color: "#6b7280",
-                  border: "1px solid #374151",
+                  color: "#7d8590",
+                  border: "1px solid #30363d",
                   borderRadius: 4,
                   cursor: "pointer",
                 }}
@@ -5608,14 +5608,14 @@ export default function App() {
                         gap: 4,
                         fontSize: 10,
                         fontFamily: "monospace",
-                        color: "#9ca3af",
+                        color: "#8b949e",
                       }}
                     >
                       {task.logicPath.map((step, i) => (
                         <span key={i}>
                           <span
                             style={{
-                              color: task.currentStep === i ? "#58a6ff" : "#6b7280",
+                              color: task.currentStep === i ? "#58a6ff" : "#7d8590",
                               fontWeight: task.currentStep === i ? 600 : 400,
                             }}
                           >
@@ -5625,7 +5625,7 @@ export default function App() {
                         </span>
                       ))}
                       {(task.hallucinationIndex ?? 0) > 0.5 && (
-                        <span style={{ marginLeft: 6, color: "#f59e0b" }}>⚠ drift</span>
+                        <span style={{ marginLeft: 6, color: "#d29922" }}>⚠ drift</span>
                       )}
                     </div>
                   )}
@@ -5659,7 +5659,7 @@ export default function App() {
                       padding: "2px 6px",
                       background: "transparent",
                       border: "none",
-                      color: "#94a3b8",
+                      color: "#8b949e",
                       cursor: "pointer",
                       fontSize: 12,
                     }}
@@ -5667,16 +5667,16 @@ export default function App() {
                     ×
                   </button>
                 </div>
-                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
+                <div style={{ color: "#e6edf3", fontSize: 11, marginBottom: 4 }}>
                   <strong>Thinking</strong>
                 </div>
-                <div style={{ color: "#9ca3af", fontSize: 11, marginBottom: 4 }}>
+                <div style={{ color: "#8b949e", fontSize: 11, marginBottom: 4 }}>
                   {task.prompt ?? "No prompt available."}
                 </div>
                 {task.answerPreview && (
                   <div
                     style={{
-                      color: "#6b7280",
+                      color: "#7d8590",
                       fontSize: 11,
                       marginBottom: 6,
                       maxHeight: 80,
@@ -5687,10 +5687,10 @@ export default function App() {
                     {task.answerPreview}
                   </div>
                 )}
-                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 4 }}>
+                <div style={{ color: "#e6edf3", fontSize: 11, marginBottom: 4 }}>
                   <strong>Exploring</strong>
                 </div>
-                <ul style={{ margin: 0, paddingLeft: 18, color: "#9ca3af", fontSize: 11, marginBottom: 6 }}>
+                <ul style={{ margin: 0, paddingLeft: 18, color: "#8b949e", fontSize: 11, marginBottom: 6 }}>
                   {task.steps.map((s, idx) => {
                     const stepDone = task.totalSteps > 0 && task.currentStep > idx;
                     return (
@@ -5698,7 +5698,7 @@ export default function App() {
                         key={idx}
                         style={{
                           textDecoration: stepDone ? "line-through" : undefined,
-                          color: stepDone ? "#6b7280" : "#9ca3af",
+                          color: stepDone ? "#7d8590" : "#8b949e",
                         }}
                       >
                         {idx + 1}. {s}
@@ -5707,7 +5707,7 @@ export default function App() {
                     );
                   })}
                 </ul>
-                <div style={{ color: "#e5e7eb", fontSize: 11, marginBottom: 2 }}>
+                <div style={{ color: "#e6edf3", fontSize: 11, marginBottom: 2 }}>
                   <strong>Progress</strong>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
@@ -5716,7 +5716,7 @@ export default function App() {
                       flex: 1,
                       height: 4,
                       borderRadius: 999,
-                      background: "#111827",
+                      background: "#0d1117",
                       overflow: "hidden",
                     }}
                   >
@@ -5727,12 +5727,12 @@ export default function App() {
                             ? `${(Math.min(task.currentStep, task.totalSteps) / task.totalSteps) * 100}%`
                             : "0%",
                         height: "100%",
-                        background: "#22c55e",
+                        background: "#3fb950",
                         transition: "width 0.2s ease",
                       }}
                     />
                   </div>
-                  <span style={{ fontSize: 10, color: "#9ca3af", fontFamily: "monospace" }}>
+                  <span style={{ fontSize: 10, color: "#8b949e", fontFamily: "monospace" }}>
                     {task.totalSteps > 0
                       ? `${Math.min(task.currentStep, task.totalSteps)}/${task.totalSteps}`
                       : "0/0"}
@@ -5740,21 +5740,21 @@ export default function App() {
                 </div>
                 {(task.retryAttempt != null || task.rejectionReason) && (
                   <div style={{ marginBottom: 8, padding: 8, background: "rgba(245,158,11,0.08)", borderRadius: 6, border: "1px solid rgba(245,158,11,0.3)" }}>
-                    <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                    <div style={{ color: "#d29922", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
                       Self-correcting
                     </div>
                     {task.retryAttempt != null && task.retryMax != null && (
-                      <div style={{ fontSize: 10, color: "#e5e7eb", marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: "#e6edf3", marginBottom: 4 }}>
                         Attempt {task.retryAttempt}/{task.retryMax}
                       </div>
                     )}
                     {task.rejectionReason && (
-                      <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: "#8b949e", marginBottom: 4 }}>
                         <strong>Rejection:</strong> {task.rejectionReason}
                       </div>
                     )}
                     {task.selfCorrectingChange && (
-                      <div style={{ fontSize: 10, color: "#9ca3af" }}>
+                      <div style={{ fontSize: 10, color: "#8b949e" }}>
                         <strong>Changing:</strong> {task.selfCorrectingChange}
                       </div>
                     )}
@@ -5762,26 +5762,26 @@ export default function App() {
                 )}
                 {(task.hallucinationIndex != null && task.hallucinationIndex > 0) && (
                   <div style={{ marginBottom: 8, padding: 8, background: "rgba(245,158,11,0.06)", borderRadius: 6, border: "1px solid rgba(245,158,11,0.2)" }}>
-                    <div style={{ color: "#f59e0b", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
+                    <div style={{ color: "#d29922", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
                       Drift
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <div style={{ flex: 1, height: 6, background: "#111827", borderRadius: 999, overflow: "hidden" }}>
+                      <div style={{ flex: 1, height: 6, background: "#0d1117", borderRadius: 999, overflow: "hidden" }}>
                         <div
                           style={{
                             width: `${Math.min(100, task.hallucinationIndex! * 100)}%`,
                             height: "100%",
-                            background: (task.hallucinationIndex ?? 0) > 0.5 ? "#f85149" : "#f59e0b",
+                            background: (task.hallucinationIndex ?? 0) > 0.5 ? "#f85149" : "#d29922",
                             transition: "width 0.2s",
                           }}
                         />
                       </div>
-                      <span style={{ fontSize: 10, fontFamily: "monospace", color: "#9ca3af" }}>
+                      <span style={{ fontSize: 10, fontFamily: "monospace", color: "#8b949e" }}>
                         {(task.hallucinationIndex! * 100).toFixed(0)}%
                       </span>
                     </div>
                     {(task.hallucinationIndex ?? 0) > 0.5 && !task.hallucinationAcknowledged && (
-                      <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: "#d29922", marginBottom: 4 }}>
                         High drift score — review the assistant response before acting on it.
                       </div>
                     )}
@@ -5798,7 +5798,7 @@ export default function App() {
                           fontSize: 10,
                           background: "rgba(34,197,94,0.2)",
                           color: "#4ade80",
-                          border: "1px solid #22c55e",
+                          border: "1px solid #3fb950",
                           borderRadius: 4,
                           cursor: "pointer",
                         }}
@@ -5836,7 +5836,7 @@ export default function App() {
               if (needsReviewTasks.length === 0) return null;
               const t = needsReviewTasks[0];
               const count = needsReviewTasks.length;
-              const color = t.status === "failed" ? "#f85149" : "#f59e0b";
+              const color = t.status === "failed" ? "#f85149" : "#d29922";
               const bg = t.status === "failed" ? "rgba(248,81,73,0.12)" : "rgba(245,158,11,0.12)";
               const border = t.status === "failed" ? "1px solid #f85149" : "1px solid rgba(245,158,11,0.5)";
               return (
@@ -5938,8 +5938,8 @@ export default function App() {
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
                     background: m.role === "user" ? "#1e3a5f" : isCritic ? "rgba(245,158,11,0.12)" : "#1c2128",
-                    border: m.role === "user" ? "1px solid #30363d" : isCritic ? "1px solid #f59e0b44" : "1px solid #30363d",
-                    color: m.role === "user" ? "#e6edf3" : isCritic ? "#fbbf24" : "#c9d1d9",
+                    border: m.role === "user" ? "1px solid #30363d" : isCritic ? "1px solid #d2992244" : "1px solid #30363d",
+                    color: m.role === "user" ? "#e6edf3" : isCritic ? "#d29922" : "#c9d1d9",
                 }}
               >
                 <div
@@ -5953,7 +5953,7 @@ export default function App() {
                   <div
                     style={{
                       fontSize: 10,
-                      color: isCritic ? "#f59e0b" : "#7d8590",
+                      color: isCritic ? "#d29922" : "#7d8590",
                       textTransform: "uppercase",
                     }}
                   >
@@ -6075,7 +6075,7 @@ export default function App() {
                                 borderRadius: 999,
                                 border: "1px solid #475569",
                                 fontSize: 10,
-                                color: "#e5e7eb",
+                                color: "#e6edf3",
                                 background:
                                   confidence >= 80
                                     ? "rgba(22,163,74,0.15)"
@@ -6090,7 +6090,7 @@ export default function App() {
                         </div>
                         {am.taskId && (
                           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ fontSize: 10, color: "#6b7280" }}>Feedback</span>
+                            <span style={{ fontSize: 10, color: "#7d8590" }}>Feedback</span>
                             <button
                               type="button"
                               onClick={async () => {
@@ -6125,7 +6125,7 @@ export default function App() {
                               style={{
                                 border: "none",
                                 background: "transparent",
-                                color: am.feedback === "up" ? "#4ade80" : "#9ca3af",
+                                color: am.feedback === "up" ? "#4ade80" : "#8b949e",
                                 cursor: "pointer",
                                 fontSize: 12,
                               }}
@@ -6166,7 +6166,7 @@ export default function App() {
                               style={{
                                 border: "none",
                                 background: "transparent",
-                                color: am.feedback === "down" ? "#f97373" : "#9ca3af",
+                                color: am.feedback === "down" ? "#f97373" : "#8b949e",
                                 cursor: "pointer",
                                 fontSize: 12,
                               }}
@@ -6178,7 +6178,7 @@ export default function App() {
                       </div>
                       {am.reasoningSteps && am.reasoningSteps.length > 0 && (
                         <details style={{ marginTop: 4 }}>
-                          <summary style={{ cursor: "pointer", color: "#9ca3af" }}>Show reasoning steps</summary>
+                          <summary style={{ cursor: "pointer", color: "#8b949e" }}>Show reasoning steps</summary>
                           <ol style={{ marginTop: 4, paddingLeft: 18 }}>
                             {am.reasoningSteps.map((step, idx) => (
                               <li key={idx} style={{ marginBottom: 2 }}>
@@ -6189,7 +6189,7 @@ export default function App() {
                         </details>
                       )}
                       {am.citations && am.citations.length > 0 && (
-                        <div style={{ marginTop: 4, fontSize: 10, color: "#9ca3af" }}>
+                        <div style={{ marginTop: 4, fontSize: 10, color: "#8b949e" }}>
                           <div style={{ marginBottom: 2 }}>Citations:</div>
                           <ul style={{ paddingLeft: 16, margin: 0, listStyle: "none" }}>
                             {am.citations.map((c, idx) => (
@@ -6253,7 +6253,7 @@ export default function App() {
                         </div>
                       )}
                       {am.suggestedActions && am.suggestedActions.length > 0 && (
-                        <div style={{ marginTop: 4, fontSize: 10, color: "#9ca3af" }}>
+                        <div style={{ marginTop: 4, fontSize: 10, color: "#8b949e" }}>
                           <div style={{ marginBottom: 2 }}>Suggested actions:</div>
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                             {am.suggestedActions.map((label, idx) => (
@@ -6292,8 +6292,8 @@ export default function App() {
                                   padding: "3px 8px",
                                   borderRadius: 999,
                                   border: "1px solid #30363d",
-                                  background: "#111827",
-                                  color: "#e5e7eb",
+                                  background: "#0d1117",
+                                  color: "#e6edf3",
                                   cursor: chatLoading ? "not-allowed" : "pointer",
                                   fontSize: 10,
                                 }}
@@ -6398,7 +6398,7 @@ export default function App() {
                         width: 6,
                         height: 6,
                         borderRadius: "50%",
-                        background: "#60a5fa",
+                        background: "#58a6ff",
                         animation: "chatDots 1.4s ease-in-out infinite",
                         animationDelay: `${i * 0.2}s`,
                       }}
@@ -6419,7 +6419,7 @@ export default function App() {
                 border: tokenWarning.overBudget ? "1px solid rgba(239,68,68,0.4)" : "1px solid rgba(245,158,11,0.4)",
                 borderRadius: 6,
                 fontSize: 11,
-                color: tokenWarning.overBudget ? "#f87171" : "#fbbf24",
+                color: tokenWarning.overBudget ? "#f87171" : "#d29922",
               }}
             >
               {tokenWarning.overBudget
@@ -6725,7 +6725,7 @@ export default function App() {
                             style={{
                               fontSize: 14,
                               fontWeight: 600,
-                              color: "#60a5fa",
+                              color: "#58a6ff",
                               fontFamily: "monospace",
                             }}
                           >
@@ -6741,7 +6741,7 @@ export default function App() {
                         <div
                           style={{
                             fontSize: 10,
-                            color: "#9ca3af",
+                            color: "#8b949e",
                             marginTop: 2,
                             display: "flex",
                             gap: 8,
@@ -6779,7 +6779,7 @@ export default function App() {
                             justifyContent: "space-between",
                             gap: 8,
                             fontSize: 11,
-                            color: "#9ca3af",
+                            color: "#8b949e",
                           }}
                         >
                           <span
@@ -6813,7 +6813,7 @@ export default function App() {
                               borderRadius: 4,
                               border: "1px solid #2563eb",
                               background: "transparent",
-                              color: "#93c5fd",
+                              color: "#58a6ff",
                               cursor: "pointer",
                             }}
                           >
@@ -6837,7 +6837,7 @@ export default function App() {
                               fontSize: 10,
                               padding: "2px 6px",
                               borderRadius: 4,
-                              border: "1px solid #dc2626",
+                              border: "1px solid #f85149",
                               background: "transparent",
                               color: "#fca5a5",
                               cursor: "pointer",
@@ -7022,7 +7022,7 @@ export default function App() {
                   title={activeWorkspaceId && accessToken ? "Click to rename" : undefined}
                   style={{
                     fontSize: 11,
-                    color: "#000000",
+                    color: "#8b949e",
                     maxWidth: 140,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -7698,10 +7698,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "2d" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "2d" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "2d" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "2d" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "2d" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7715,10 +7715,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "3d" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "3d" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "3d" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "3d" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "3d" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7732,10 +7732,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "layers" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "layers" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "layers" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "layers" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "layers" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7749,10 +7749,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "standard" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "standard" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "standard" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "standard" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "standard" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7766,10 +7766,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "agents" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "agents" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "agents" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "agents" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "agents" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7783,10 +7783,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "reach" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "reach" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "reach" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "reach" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "reach" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7800,10 +7800,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "resources" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "resources" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "resources" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "resources" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "resources" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7817,10 +7817,10 @@ export default function App() {
                     padding: "4px 10px",
                     fontSize: 10,
                     fontFamily: "monospace",
-                    border: graphViewMode === "guard" ? "1px solid #60a5fa" : "1px solid transparent",
+                    border: graphViewMode === "guard" ? "1px solid #58a6ff" : "1px solid transparent",
                     borderRadius: 8,
                     background: graphViewMode === "guard" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "guard" ? "#93c5fd" : "#9ca3af",
+                    color: graphViewMode === "guard" ? "#58a6ff" : "#8b949e",
                     cursor: "pointer",
                   }}
                 >
@@ -7847,10 +7847,10 @@ export default function App() {
                           padding: "4px 8px",
                           fontSize: 10,
                           fontFamily: "monospace",
-                          border: graphCanvasViewMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                          border: graphCanvasViewMode === mode ? "1px solid #58a6ff" : "1px solid transparent",
                           borderRadius: 8,
                           background: graphCanvasViewMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
-                          color: graphCanvasViewMode === mode ? "#93c5fd" : "#9ca3af",
+                          color: graphCanvasViewMode === mode ? "#58a6ff" : "#8b949e",
                           cursor: "pointer",
                           textTransform: "capitalize",
                         }}
@@ -7869,10 +7869,10 @@ export default function App() {
                           padding: "4px 8px",
                           fontSize: 10,
                           fontFamily: "monospace",
-                          border: graphLayoutMode === mode ? "1px solid #60a5fa" : "1px solid transparent",
+                          border: graphLayoutMode === mode ? "1px solid #58a6ff" : "1px solid transparent",
                           borderRadius: 8,
                           background: graphLayoutMode === mode ? "rgba(29,78,216,0.2)" : "transparent",
-                          color: graphLayoutMode === mode ? "#93c5fd" : "#9ca3af",
+                          color: graphLayoutMode === mode ? "#58a6ff" : "#8b949e",
                           cursor: "pointer",
                           textTransform: "capitalize",
                         }}
@@ -7897,8 +7897,8 @@ export default function App() {
                   fontSize: 10,
                   borderRadius: 999,
                   border: "1px solid #30363d",
-                  background: canvasTheme === "dark" ? "#020617" : "#e5e7eb",
-                  color: canvasTheme === "dark" ? "#e5e7eb" : "#020617",
+                  background: canvasTheme === "dark" ? "#020617" : "#e6edf3",
+                  color: canvasTheme === "dark" ? "#e6edf3" : "#020617",
                   cursor: "pointer",
                 }}
               >
@@ -7919,7 +7919,7 @@ export default function App() {
                   borderRadius: 999,
                   border: "1px solid #30363d",
                   background: showExportMenu ? "rgba(96,165,250,0.15)" : "transparent",
-                  color: "#9ca3af",
+                  color: "#8b949e",
                   cursor: "pointer",
                   fontFamily: "monospace",
                 }}

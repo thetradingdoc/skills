@@ -84,7 +84,7 @@ export function SharedView({ slug }: { slug: string }) {
           backdropFilter: "blur(8px)",
         }}
       >
-        <span style={{ fontSize: 11, fontFamily: "monospace", color: "#94a3b8", letterSpacing: "0.1em" }}>
+        <span style={{ fontSize: 11, fontFamily: "monospace", color: "#8b949e", letterSpacing: "0.1em" }}>
           LITTLELABS
         </span>
         <a

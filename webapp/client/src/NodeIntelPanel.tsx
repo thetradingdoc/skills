@@ -28,7 +28,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
       <div
         style={{
           fontSize: 9,
-          color: "#64748b",
+          color: "#7d8590",
           textTransform: "uppercase",
           letterSpacing: 1,
           marginBottom: 4,
@@ -66,7 +66,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
           <div style={{ fontWeight: 600, fontSize: 13, color: "#f1f5f9" }}>
             {node.suggestedLabel ?? node.label}
           </div>
-          <div style={{ fontSize: 10, color: "#64748b", marginTop: 2, wordBreak: "break-all" }}>
+          <div style={{ fontSize: 10, color: "#7d8590", marginTop: 2, wordBreak: "break-all" }}>
             {node.id}
           </div>
         </div>
@@ -81,7 +81,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
                 background: "transparent",
                 border: "1px solid #334155",
                 borderRadius: 4,
-                color: "#94a3b8",
+                color: "#8b949e",
                 cursor: "pointer",
               }}
             >
@@ -97,7 +97,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
               background: "transparent",
               border: "1px solid #334155",
               borderRadius: 4,
-              color: "#94a3b8",
+              color: "#8b949e",
               cursor: "pointer",
             }}
           >
@@ -131,7 +131,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
                   padding: "2px 6px",
                   borderRadius: 4,
                   background: "rgba(96,165,250,0.2)",
-                  color: "#93c5fd",
+                  color: "#58a6ff",
                 }}
               >
                 {r}
@@ -144,7 +144,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
                   padding: "2px 6px",
                   borderRadius: 4,
                   background: "rgba(96,165,250,0.2)",
-                  color: "#93c5fd",
+                  color: "#58a6ff",
                 }}
               >
                 {node.role}
@@ -167,23 +167,23 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
         </SECTION>
 
         <SECTION title="Dependencies">
-          <div style={{ fontSize: 11, color: "#94a3b8" }}>
+          <div style={{ fontSize: 11, color: "#8b949e" }}>
             ↑ {inbound.length} inbound · ↓ {outbound.length} outbound
           </div>
         </SECTION>
 
         <SECTION title="Flows">
-          <div style={{ fontSize: 11, color: "#94a3b8" }}>
+          <div style={{ fontSize: 11, color: "#8b949e" }}>
             {inbound.length + outbound.length} total edges
           </div>
         </SECTION>
 
         <SECTION title="Blast radius">
-          <div style={{ fontSize: 11, color: blastRadius.size > 0 ? "#f59e0b" : "#64748b" }}>
+          <div style={{ fontSize: 11, color: blastRadius.size > 0 ? "#d29922" : "#7d8590" }}>
             {blastRadius.size} downstream node{blastRadius.size !== 1 ? "s" : ""} impacted
           </div>
           {upstream.size > 0 && (
-            <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+            <div style={{ fontSize: 10, color: "#7d8590", marginTop: 2 }}>
               {upstream.size} upstream dependenc{upstream.size !== 1 ? "ies" : "y"}
             </div>
           )}
@@ -191,7 +191,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
 
         {node.description && (
           <SECTION title="Description">
-            <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.4 }}>
+            <div style={{ fontSize: 11, color: "#8b949e", lineHeight: 1.4 }}>
               {node.description.slice(0, 120)}
               {node.description.length > 120 ? "…" : ""}
             </div>

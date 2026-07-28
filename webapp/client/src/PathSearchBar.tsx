@@ -46,7 +46,7 @@ export function PathSearchBar({ graph, onPathFound, onClear }: PathSearchBarProp
         fontSize: 11,
       }}
     >
-      <span style={{ color: "#94a3b8", whiteSpace: "nowrap" }}>Path:</span>
+      <span style={{ color: "#8b949e", whiteSpace: "nowrap" }}>Path:</span>
       <select
         value={fromId}
         onChange={(e) => setFromId(e.target.value)}
@@ -67,7 +67,7 @@ export function PathSearchBar({ graph, onPathFound, onClear }: PathSearchBarProp
           </option>
         ))}
       </select>
-      <span style={{ color: "#64748b" }}>→</span>
+      <span style={{ color: "#7d8590" }}>→</span>
       <select
         value={toId}
         onChange={(e) => setToId(e.target.value)}
@@ -94,7 +94,7 @@ export function PathSearchBar({ graph, onPathFound, onClear }: PathSearchBarProp
         disabled={!fromId || !toId}
         style={{
           padding: "4px 10px",
-          background: "#3b82f6",
+          background: "#1f6feb",
           border: "none",
           borderRadius: 4,
           color: "#fff",
@@ -113,7 +113,7 @@ export function PathSearchBar({ graph, onPathFound, onClear }: PathSearchBarProp
             background: "transparent",
             border: "1px solid #475569",
             borderRadius: 4,
-            color: "#94a3b8",
+            color: "#8b949e",
             fontSize: 11,
             cursor: "pointer",
           }}
@@ -122,7 +122,7 @@ export function PathSearchBar({ graph, onPathFound, onClear }: PathSearchBarProp
         </button>
       )}
       {path !== null && (
-        <span style={{ color: path.length ? "#22c55e" : "#f59e0b", fontSize: 11 }}>
+        <span style={{ color: path.length ? "#3fb950" : "#d29922", fontSize: 11 }}>
           {path.length ? `${path.length} node${path.length !== 1 ? "s" : ""}` : "No path"}
         </span>
       )}

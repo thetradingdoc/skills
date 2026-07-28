@@ -98,7 +98,7 @@ export function exportArchitectureSvg(graph: ArchGraph): string {
       `<rect x="${vGap}" y="${y}" width="${svgWidth - 2 * vGap}" height="${layerHeight}" rx="12" ry="12" fill="rgba(15,23,42,0.9)" stroke="rgba(30,64,175,0.6)" />`
     );
     parts.push(
-      `<text x="${vGap + 12}" y="${y + 20}" fill="#94a3b8" font-family="monospace" font-size="11">${esc(
+      `<text x="${vGap + 12}" y="${y + 20}" fill="#8b949e" font-family="monospace" font-size="11">${esc(
         layer
       )}</text>`
     );
@@ -114,7 +114,7 @@ export function exportArchitectureSvg(graph: ArchGraph): string {
     const tx = tgt.x;
     const ty = tgt.y + nodeHeight / 2;
     const mx = (sx + tx) / 2;
-    const color = e.isDrift ? "#ef4444" : e.isLayerViolation ? "#f59e0b" : "#60a5fa";
+    const color = e.isDrift ? "#f85149" : e.isLayerViolation ? "#d29922" : "#58a6ff";
     const dash = e.isDrift ? "6 3" : e.isLayerViolation ? "2 4" : "none";
     parts.push(
       `<path d="M${sx},${sy} C${mx},${sy} ${mx},${ty} ${tx},${ty}" fill="none" stroke="${color}" stroke-width="1.4" stroke-dasharray="${dash}" />`
@@ -128,13 +128,13 @@ export function exportArchitectureSvg(graph: ArchGraph): string {
     const label = esc(n.suggestedLabel ?? n.role ?? n.label);
     const tech = esc(((n as any).techKind as string | undefined) ?? "unknown");
     parts.push(
-      `<rect x="${pos.x}" y="${pos.y}" width="${nodeWidth}" height="${nodeHeight}" rx="8" ry="8" fill="#020617" stroke="#1f2937" />`
+      `<rect x="${pos.x}" y="${pos.y}" width="${nodeWidth}" height="${nodeHeight}" rx="8" ry="8" fill="#020617" stroke="#161b22" />`
     );
     parts.push(
-      `<text x="${pos.x + 8}" y="${pos.y + 20}" fill="#e5e7eb" font-family="monospace" font-size="11">${label}</text>`
+      `<text x="${pos.x + 8}" y="${pos.y + 20}" fill="#e6edf3" font-family="monospace" font-size="11">${label}</text>`
     );
     parts.push(
-      `<text x="${pos.x + 8}" y="${pos.y + 36}" fill="#64748b" font-family="monospace" font-size="9">${tech}</text>`
+      `<text x="${pos.x + 8}" y="${pos.y + 36}" fill="#7d8590" font-family="monospace" font-size="9">${tech}</text>`
     );
   }
 

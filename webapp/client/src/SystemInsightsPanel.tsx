@@ -16,7 +16,7 @@ export function SystemInsightsPanel({
       <div
         style={{
           padding: 16,
-          color: "#64748b",
+          color: "#7d8590",
           fontSize: 12,
           fontFamily: "monospace",
         }}
@@ -53,7 +53,7 @@ export function SystemInsightsPanel({
             style={{
               background: "none",
               border: "none",
-              color: "#94a3b8",
+              color: "#8b949e",
               cursor: "pointer",
               fontSize: 14,
             }}
@@ -74,7 +74,7 @@ export function SystemInsightsPanel({
             padding: "10px 12px",
             background: "rgba(30,41,59,0.8)",
             border: `1px solid ${
-              i.severity === "high" ? "#ef4444" : i.severity === "medium" ? "#f59e0b" : "#334155"
+              i.severity === "high" ? "#f85149" : i.severity === "medium" ? "#d29922" : "#334155"
             }`,
             borderRadius: 6,
             color: "#e2e8f0",
@@ -82,7 +82,7 @@ export function SystemInsightsPanel({
           }}
         >
           <div style={{ fontWeight: 600, fontSize: 11, marginBottom: 4 }}>{i.title}</div>
-          <div style={{ fontSize: 10, color: "#94a3b8", lineHeight: 1.3 }}>{i.description}</div>
+          <div style={{ fontSize: 10, color: "#8b949e", lineHeight: 1.3 }}>{i.description}</div>
         </button>
       ))}
     </div>

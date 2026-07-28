@@ -132,7 +132,7 @@ export function LayerPlane3D({ band, nodeCount }: LayerPlane3DProps) {
             <span
               style={{
                 fontSize: 9,
-                color: "#64748b",
+                color: "#7d8590",
                 background: "rgba(30,41,59,0.8)",
                 padding: "2px 6px",
                 borderRadius: 10,

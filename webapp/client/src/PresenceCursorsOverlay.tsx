@@ -53,7 +53,7 @@ export function PresenceCursorsOverlay({ workspaceId, containerRef }: Props) {
               width: 12,
               height: 12,
               borderRadius: "50%",
-              border: "2px solid #3b82f6",
+              border: "2px solid #1f6feb",
               background: "rgba(59, 130, 246, 0.3)",
               boxShadow: "0 0 8px rgba(59, 130, 246, 0.5)",
               transition: "left 0.05s ease-out, top 0.05s ease-out",

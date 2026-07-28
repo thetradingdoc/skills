@@ -228,7 +228,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                 background: "transparent",
                 border: "none",
                 borderBottom: activeTab === tab.id ? `2px solid ${cfg.color}` : "2px solid transparent",
-                color: activeTab === tab.id ? "#e2e8f0" : "#64748b",
+                color: activeTab === tab.id ? "#e2e8f0" : "#7d8590",
                 cursor: "pointer",
               }}
             >
@@ -250,7 +250,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
               {node.suggestedLabel ?? node.label}
             </span>
             {node.role && (
-              <span style={{ fontSize: 12, color: "#64748b", marginLeft: 8 }}>{node.role}</span>
+              <span style={{ fontSize: 12, color: "#7d8590", marginLeft: 8 }}>{node.role}</span>
             )}
             <div style={{ fontSize: 11, color: cfg.color, marginTop: 2, wordBreak: "break-all" }}>
               {node.id}
@@ -296,7 +296,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                   borderRadius: 6,
                   border: "1px solid #4b5563",
                   background: "#020617",
-                  color: "#e5e7eb",
+                  color: "#e6edf3",
                   cursor: todoCreating ? "wait" : "pointer",
                   whiteSpace: "nowrap",
                 }}
@@ -321,7 +321,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                 padding: "8px 14px",
                 fontSize: 12,
                 background: "#1e293b",
-                color: "#94a3b8",
+                color: "#8b949e",
                 border: "1px solid #334155",
                 borderRadius: 6,
                 cursor: "pointer",
@@ -354,13 +354,13 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
               {activeTab === "traces" && (
                 <>
                   {!accessToken ? (
-                    <p style={{ color: "#64748b" }}>Sign in to view traces.</p>
+                    <p style={{ color: "#7d8590" }}>Sign in to view traces.</p>
                   ) : tracesLoading ? (
-                    <p style={{ color: "#64748b" }}>Loading traces…</p>
+                    <p style={{ color: "#7d8590" }}>Loading traces…</p>
                   ) : tracesError ? (
                     <p style={{ color: "#f87171" }}>{tracesError}</p>
                   ) : traces.length === 0 ? (
-                    <p style={{ color: "#64748b" }}>No traces for this node yet.</p>
+                    <p style={{ color: "#7d8590" }}>No traces for this node yet.</p>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                       {traces.map((t, i) => (
@@ -379,15 +379,15 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                             </div>
                           )}
                           {t.agent_model && (
-                            <span style={{ fontSize: 10, color: "#64748b", marginRight: 8 }}>
+                            <span style={{ fontSize: 10, color: "#7d8590", marginRight: 8 }}>
                               {t.agent_model}
                             </span>
                           )}
                           {t.agent_latency_ms != null && (
-                            <span style={{ fontSize: 10, color: "#64748b" }}>{t.agent_latency_ms}ms</span>
+                            <span style={{ fontSize: 10, color: "#7d8590" }}>{t.agent_latency_ms}ms</span>
                           )}
                           {t.critic_score != null && (
-                            <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 8 }}>
+                            <span style={{ fontSize: 10, color: "#8b949e", marginLeft: 8 }}>
                               score: {t.critic_score}
                             </span>
                           )}
@@ -412,11 +412,11 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
               {activeTab === "memory" && (
                 <>
                   {!accessToken || !workspaceId ? (
-                    <p style={{ color: "#64748b" }}>Sign in and load a workspace to view memories.</p>
+                    <p style={{ color: "#7d8590" }}>Sign in and load a workspace to view memories.</p>
                   ) : memoriesLoading ? (
-                    <p style={{ color: "#64748b" }}>Loading memories…</p>
+                    <p style={{ color: "#7d8590" }}>Loading memories…</p>
                   ) : memories.length === 0 ? (
-                    <p style={{ color: "#64748b" }}>No architectural memories for this node yet.</p>
+                    <p style={{ color: "#7d8590" }}>No architectural memories for this node yet.</p>
                   ) : (
                     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                       {memories.map((m, i) => (
@@ -442,23 +442,23 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                 </>
               )}
               {activeTab === "state" && (
-                <p style={{ color: "#64748b" }}>Node state — coming soon.</p>
+                <p style={{ color: "#7d8590" }}>Node state — coming soon.</p>
               )}
               {activeTab === "eval" && (
                 <>
                   {!accessToken ? (
-                    <p style={{ color: "#64748b" }}>Sign in to view evaluation metrics.</p>
+                    <p style={{ color: "#7d8590" }}>Sign in to view evaluation metrics.</p>
                   ) : evalLoading ? (
-                    <p style={{ color: "#64748b" }}>Loading…</p>
+                    <p style={{ color: "#7d8590" }}>Loading…</p>
                   ) : evalData ? (
                     <div style={{ display: "flex", gap: 24 }}>
                       <div>
-                        <span style={{ color: "#64748b", fontSize: 11 }}>Traces</span>
+                        <span style={{ color: "#7d8590", fontSize: 11 }}>Traces</span>
                         <div style={{ fontSize: 18, fontWeight: 600, color: "#e2e8f0" }}>{evalData.count}</div>
                       </div>
                       {evalData.avgLatency != null && (
                         <div>
-                          <span style={{ color: "#64748b", fontSize: 11 }}>Avg latency</span>
+                          <span style={{ color: "#7d8590", fontSize: 11 }}>Avg latency</span>
                           <div style={{ fontSize: 18, fontWeight: 600, color: "#e2e8f0" }}>
                             {Math.round(evalData.avgLatency)}ms
                           </div>
@@ -466,7 +466,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                       )}
                       {evalData.avgScore != null && (
                         <div>
-                          <span style={{ color: "#64748b", fontSize: 11 }}>Avg critic score</span>
+                          <span style={{ color: "#7d8590", fontSize: 11 }}>Avg critic score</span>
                           <div style={{ fontSize: 18, fontWeight: 600, color: "#e2e8f0" }}>
                             {evalData.avgScore.toFixed(1)}
                           </div>
@@ -474,7 +474,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                       )}
                     </div>
                   ) : (
-                    <p style={{ color: "#64748b" }}>No evaluation data for this node.</p>
+                    <p style={{ color: "#7d8590" }}>No evaluation data for this node.</p>
                   )}
                 </>
               )}
@@ -495,7 +495,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
             <div style={{ padding: 12, overflowY: "auto", flex: 1 }}>
               {Array.isArray(node.files) && node.files.length > 0 && (
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontSize: 10, color: "#64748b", marginBottom: 6, fontWeight: 600 }}>
+                  <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 6, fontWeight: 600 }}>
                     Files ({node.files.length}) — click to open
                   </div>
                   <div
@@ -524,9 +524,9 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                               ? isActive
                                 ? "#22d3ee"
                                 : isOpen
-                                  ? "#60a5fa"
-                                  : "#94a3b8"
-                              : "#64748b",
+                                  ? "#58a6ff"
+                                  : "#8b949e"
+                              : "#7d8590",
                             cursor: baseRepo ? "pointer" : "default",
                             background: isActive ? "#1e293b" : "transparent",
                           }}
@@ -544,10 +544,10 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                 <div style={{ marginBottom: 12 }}>
                   {inbound.length > 0 && (
                     <div style={{ marginBottom: 8 }}>
-                      <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 4 }}>
                         Inbound ({inbound.length})
                       </div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                      <div style={{ fontSize: 11, color: "#8b949e" }}>
                         {inbound.slice(0, 5).map((e) => {
                           const src = graph.nodes.find((n) => n.id === e.source);
                           return (
@@ -555,17 +555,17 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                           );
                         })}
                         {inbound.length > 5 && (
-                          <div style={{ color: "#64748b" }}>+{inbound.length - 5} more</div>
+                          <div style={{ color: "#7d8590" }}>+{inbound.length - 5} more</div>
                         )}
                       </div>
                     </div>
                   )}
                   {outbound.length > 0 && (
                     <div>
-                      <div style={{ fontSize: 10, color: "#64748b", marginBottom: 4 }}>
+                      <div style={{ fontSize: 10, color: "#7d8590", marginBottom: 4 }}>
                         Outbound ({outbound.length})
                       </div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                      <div style={{ fontSize: 11, color: "#8b949e" }}>
                         {outbound.slice(0, 5).map((e) => {
                           const tgt = graph.nodes.find((n) => n.id === e.target);
                           return (
@@ -573,7 +573,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                           );
                         })}
                         {outbound.length > 5 && (
-                          <div style={{ color: "#64748b" }}>+{outbound.length - 5} more</div>
+                          <div style={{ color: "#7d8590" }}>+{outbound.length - 5} more</div>
                         )}
                       </div>
                     </div>
@@ -589,7 +589,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                       padding: "4px 8px",
                       fontSize: 10,
                       background: "#1e293b",
-                      color: "#94a3b8",
+                      color: "#8b949e",
                       border: "1px solid #334155",
                       borderRadius: 4,
                       cursor: "pointer",
@@ -610,7 +610,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                         overflowY: "auto",
                         whiteSpace: "pre-wrap",
                         wordBreak: "break-word",
-                        color: "#94a3b8",
+                        color: "#8b949e",
                       }}
                     >
                       {node.contextRawContent}
@@ -659,7 +659,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                           fontSize: 11,
                           fontFamily: "monospace",
                           background: isActive ? "#0d1117" : "#1e293b",
-                          color: isActive ? "#e2e8f0" : "#94a3b8",
+                          color: isActive ? "#e2e8f0" : "#8b949e",
                           borderRadius: 6,
                           cursor: "pointer",
                           border: `1px solid ${isActive ? "#334155" : "transparent"}`,
@@ -673,7 +673,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                             marginLeft: 2,
                             background: "none",
                             border: "none",
-                            color: "#64748b",
+                            color: "#7d8590",
                             cursor: "pointer",
                             fontSize: 12,
                             lineHeight: 1,
@@ -691,7 +691,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                       padding: "4px 8px",
                       fontSize: 10,
                       background: "transparent",
-                      color: "#64748b",
+                      color: "#7d8590",
                       border: "1px solid #334155",
                       borderRadius: 4,
                       cursor: "pointer",
@@ -713,7 +713,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                   }}
                 >
                   {activeState === "loading" && (
-                    <span style={{ color: "#64748b" }}>Loading…</span>
+                    <span style={{ color: "#7d8590" }}>Loading…</span>
                   )}
                   {activeState && typeof activeState === "object" && "error" in activeState && (
                     <span style={{ color: "#f87171" }}>{activeState.error}</span>
@@ -744,7 +744,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  color: "#64748b",
+                  color: "#7d8590",
                   fontSize: 12,
                 }}
               >

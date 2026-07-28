@@ -7,11 +7,11 @@ import { LAYER_CFG } from "./layerPalette";
 import { useSceneAnimation } from "./SceneAnimations";
 
 const STATUS_COLOR: Record<string, string> = {
-  stable: "#22c55e",
-  new: "#60a5fa",
-  warning: "#f59e0b",
-  error: "#ef4444",
-  deprecated: "#6b7280",
+  stable: "#3fb950",
+  new: "#58a6ff",
+  warning: "#d29922",
+  error: "#f85149",
+  deprecated: "#7d8590",
   unknown: "#1e293b",
 };
 
@@ -25,20 +25,20 @@ const KIND_ICON: Record<string, string> = {
 };
 
 const TECH_COLOR: Record<string, string> = {
-  "database": "#22c55e",
+  "database": "#3fb950",
   "cache": "#f97316",
   "queue": "#eab308",
   "message-bus": "#a855f7",
-  "http-api": "#60a5fa",
+  "http-api": "#58a6ff",
   "web-ui": "#38bdf8",
   "mobile-app": "#f472b6",
-  "kubernetes": "#3b82f6",
+  "kubernetes": "#1f6feb",
   "container-service": "#a78bfa",
   "serverless": "#facc15",
   "object-storage": "#fb923c",
   "external-saas": "#f97316",
-  "generic-service": "#e5e7eb",
-  "unknown": "#9ca3af",
+  "generic-service": "#e6edf3",
+  "unknown": "#8b949e",
 };
 
 const CARD_W = 1.5;
@@ -74,7 +74,7 @@ function drawCardTexture(
   const layer = node.layer ?? "Uncategorized";
 
   ctx.font = "14px 'JetBrains Mono','Fira Code',monospace";
-  ctx.fillStyle = "#94a3b8";
+  ctx.fillStyle = "#8b949e";
   ctx.fillText(`${kindIcon}  ${layer}`, pad, y);
   y += 22;
 
@@ -125,11 +125,11 @@ function drawCardTexture(
     ["ctx", health.hasContext],
   ];
   for (const [lbl, ok] of healthChips) {
-    ctx.fillStyle = ok ? "#22c55e" : "#1e2d45";
+    ctx.fillStyle = ok ? "#3fb950" : "#1e2d45";
     ctx.beginPath();
     ctx.arc(pad, y, 4, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = ok ? "#22c55e" : "#475569";
+    ctx.fillStyle = ok ? "#3fb950" : "#475569";
     ctx.fillText(lbl, pad + 10, y + 4);
     y += 18;
   }
@@ -279,7 +279,7 @@ export function NodeCard3D({
           map={tex}
           roughness={isVirtual ? 0.95 : healthy ? 0.35 : 0.95}
           metalness={isVirtual ? 0.2 : healthy ? 0.4 : 0.2}
-          emissive={new THREE.Color(isDrift ? "#ef4444" : cfg.accent)}
+          emissive={new THREE.Color(isDrift ? "#f85149" : cfg.accent)}
           emissiveIntensity={isDrift ? 0.3 : isSelected ? 0.9 : outlineOpacity > 0 ? 0.4 : 0.05}
           color={techKind && TECH_COLOR[techKind] ? TECH_COLOR[techKind] : "#0c1220"}
           transparent={opacity < 1 || isVirtual}

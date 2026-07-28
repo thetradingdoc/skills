@@ -35,9 +35,9 @@ function AgentCard({
         textAlign: "left",
         padding: "12px 14px",
         borderRadius: 10,
-        border: selected ? "1px solid #60a5fa" : "1px solid #30363d",
+        border: selected ? "1px solid #58a6ff" : "1px solid #30363d",
         background: selected ? "rgba(29,78,216,0.18)" : "rgba(6,12,26,0.85)",
-        color: "#e5e7eb",
+        color: "#e6edf3",
         cursor: "pointer",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
       }}
@@ -49,7 +49,7 @@ function AgentCard({
         style={{
           marginTop: 6,
           fontSize: 11,
-          color: "#9ca3af",
+          color: "#8b949e",
           display: "flex",
           flexWrap: "wrap",
           gap: "6px 12px",
@@ -62,7 +62,7 @@ function AgentCard({
           {toolCount} tool{toolCount === 1 ? "" : "s"}
         </span>
       </div>
-      <div style={{ marginTop: 4, fontSize: 10, color: "#6b7280" }}>{surface.file}</div>
+      <div style={{ marginTop: 4, fontSize: 10, color: "#7d8590" }}>{surface.file}</div>
     </button>
   );
 }
@@ -88,14 +88,14 @@ function ToolCard({
         maxWidth: 280,
       }}
     >
-      <div style={{ fontSize: 12, color: "#93c5fd", fontWeight: 600 }}>{name}</div>
+      <div style={{ fontSize: 12, color: "#58a6ff", fontWeight: 600 }}>{name}</div>
       {handler && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#9ca3af", wordBreak: "break-all" }}>
+        <div style={{ marginTop: 4, fontSize: 10, color: "#8b949e", wordBreak: "break-all" }}>
           {handler}
         </div>
       )}
       {!handler && note && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#6b7280" }}>{note}</div>
+        <div style={{ marginTop: 4, fontSize: 10, color: "#7d8590" }}>{note}</div>
       )}
       {!handler && !note && (
         <div style={{ marginTop: 4, fontSize: 10, color: "#4b5563" }}>handler unresolved</div>
@@ -122,7 +122,7 @@ function CollapsibleGroup({
         style={{
           background: "transparent",
           border: "none",
-          color: "#d1d5db",
+          color: "#e6edf3",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
           fontSize: 12,
           cursor: "pointer",
@@ -132,7 +132,7 @@ function CollapsibleGroup({
           gap: 8,
         }}
       >
-        <span style={{ color: "#6b7280" }}>{open ? "▼" : "▶"}</span>
+        <span style={{ color: "#7d8590" }}>{open ? "▼" : "▶"}</span>
         {title}
       </button>
       {open && <div style={{ marginTop: 10 }}>{children}</div>}
@@ -172,22 +172,22 @@ export default function AgentsView({ agents }: Props) {
           padding: 32,
           overflow: "auto",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          color: "#d1d5db",
+          color: "#e6edf3",
           background: "rgba(6,12,26,0.4)",
         }}
       >
         <h2 style={{ margin: "0 0 12px", fontSize: 18, color: "#f3f4f6", fontWeight: 600 }}>
           No agents found
         </h2>
-        <p style={{ margin: "0 0 16px", fontSize: 13, color: "#9ca3af", maxWidth: 520, lineHeight: 1.5 }}>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "#8b949e", maxWidth: 520, lineHeight: 1.5 }}>
           This scan did not find any model-client surfaces. The inventory looks for declared
           package.json SDKs intersecting a known list, plus HTTP calls to openai / anthropic /
           groq / retell.
         </p>
         {searched.length > 0 && (
           <>
-            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>Searched for:</div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#9ca3af", lineHeight: 1.7 }}>
+            <div style={{ fontSize: 11, color: "#7d8590", marginBottom: 8 }}>Searched for:</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#8b949e", lineHeight: 1.7 }}>
               {searched.map((s) => (
                 <li key={s}>{s}</li>
               ))}
@@ -195,7 +195,7 @@ export default function AgentsView({ agents }: Props) {
           </>
         )}
         {searched.length === 0 && (
-          <p style={{ fontSize: 12, color: "#6b7280" }}>
+          <p style={{ fontSize: 12, color: "#7d8590" }}>
             No inventory payload on this graph — re-scan the repo to populate agents.
           </p>
         )}
@@ -222,7 +222,7 @@ export default function AgentsView({ agents }: Props) {
           borderRight: "1px solid #30363d",
         }}
       >
-        <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 12, letterSpacing: 0.04 }}>
+        <div style={{ fontSize: 11, color: "#7d8590", marginBottom: 12, letterSpacing: 0.04 }}>
           AGENTS — {agentSurfaces.length}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -236,7 +236,7 @@ export default function AgentsView({ agents }: Props) {
           ))}
         </div>
         {agentSurfaces.length === 0 && (
-          <p style={{ fontSize: 12, color: "#9ca3af", lineHeight: 1.5 }}>
+          <p style={{ fontSize: 12, color: "#8b949e", lineHeight: 1.5 }}>
             No kind=agent surfaces. Helpers and unknowns are listed below.
           </p>
         )}
@@ -255,12 +255,12 @@ export default function AgentsView({ agents }: Props) {
                   border: "1px solid #21262d",
                   background: "rgba(6,12,26,0.5)",
                   fontSize: 11,
-                  color: "#9ca3af",
+                  color: "#8b949e",
                   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                 }}
               >
-                <div style={{ color: "#d1d5db" }}>{fileName(h.file)}</div>
-                <div style={{ marginTop: 2, color: "#6b7280" }}>
+                <div style={{ color: "#e6edf3" }}>{fileName(h.file)}</div>
+                <div style={{ marginTop: 2, color: "#7d8590" }}>
                   {h.provider}
                   {h.model ? ` · ${h.model}` : ""}
                 </div>
@@ -276,7 +276,7 @@ export default function AgentsView({ agents }: Props) {
         <div style={{ marginTop: 20 }}>
           <div
             style={{
-              color: "#d1d5db",
+              color: "#e6edf3",
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
               fontSize: 12,
               padding: "4px 0",
@@ -294,7 +294,7 @@ export default function AgentsView({ agents }: Props) {
                   border: "1px solid #3f3f1a",
                   background: "rgba(40,40,10,0.35)",
                   fontSize: 11,
-                  color: "#e5e7eb",
+                  color: "#e6edf3",
                   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                 }}
               >
@@ -317,7 +317,7 @@ export default function AgentsView({ agents }: Props) {
             style={{
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
               fontSize: 13,
-              color: "#6b7280",
+              color: "#7d8590",
               marginTop: 8,
             }}
           >
@@ -335,7 +335,7 @@ export default function AgentsView({ agents }: Props) {
               <div style={{ fontSize: 16, color: "#f3f4f6", fontWeight: 600 }}>
                 {fileName(selected.file)}
               </div>
-              <div style={{ marginTop: 6, fontSize: 11, color: "#9ca3af" }}>
+              <div style={{ marginTop: 6, fontSize: 11, color: "#8b949e" }}>
                 {selected.kindSignal}
               </div>
             </div>
@@ -356,7 +356,7 @@ export default function AgentsView({ agents }: Props) {
                 />
               ))}
               {(selected.tools?.length ?? 0) === 0 && (
-                <div style={{ fontSize: 12, color: "#6b7280" }}>No tools extracted.</div>
+                <div style={{ fontSize: 12, color: "#7d8590" }}>No tools extracted.</div>
               )}
             </div>
           </>

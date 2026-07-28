@@ -22,8 +22,8 @@ function fileName(file: string): string {
 
 const TIER_COLOR: Record<string, string> = {
   essential: "#f87171",
-  expected: "#fbbf24",
-  optional: "#6b7280",
+  expected: "#d29922",
+  optional: "#7d8590",
 };
 
 export default function StandardView({
@@ -74,7 +74,7 @@ export default function StandardView({
         style={{
           flex: 1,
           padding: 32,
-          color: "#9ca3af",
+          color: "#8b949e",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
         }}
       >
@@ -106,16 +106,16 @@ export default function StandardView({
           background: "rgba(15,23,42,0.95)",
         }}
       >
-        <span style={{ color: "#93c5fd", fontWeight: 600, fontSize: 12 }}>
+        <span style={{ color: "#58a6ff", fontWeight: 600, fontSize: 12 }}>
           Standard
         </span>
-        <span style={{ color: "#6b7280", fontSize: 11 }}>Agent</span>
+        <span style={{ color: "#7d8590", fontSize: 11 }}>Agent</span>
         <select
           value={agentFile ?? ""}
           onChange={(e) => pickAgent(e.target.value)}
           style={{
             background: "#0b1220",
-            color: "#e5e7eb",
+            color: "#e6edf3",
             border: "1px solid #30363d",
             borderRadius: 4,
             padding: "4px 8px",
@@ -146,7 +146,7 @@ export default function StandardView({
 
       <div style={{ flex: 1, overflow: "auto", padding: "12px 16px 32px" }}>
         {!model && (
-          <div style={{ color: "#fbbf24", fontSize: 12 }}>
+          <div style={{ color: "#d29922", fontSize: 12 }}>
             Loading reference-model.json…
           </div>
         )}
@@ -163,12 +163,12 @@ export default function StandardView({
                 background: scorecard.sensitive
                   ? "rgba(127,29,29,0.25)"
                   : "rgba(30,41,59,0.5)",
-                color: "#e5e7eb",
+                color: "#e6edf3",
                 fontSize: 12,
                 lineHeight: 1.5,
               }}
             >
-              <div style={{ color: "#93c5fd", fontWeight: 600, marginBottom: 4 }}>
+              <div style={{ color: "#58a6ff", fontWeight: 600, marginBottom: 4 }}>
                 Calibration
               </div>
               {scorecard.calibration}
@@ -184,7 +184,7 @@ export default function StandardView({
                     key={row.id}
                     style={{
                       border: essentialEmpty
-                        ? "2px dashed #ef4444"
+                        ? "2px dashed #f85149"
                         : row.pass
                           ? "1px solid #30363d"
                           : "1px solid #b45309",
@@ -213,12 +213,12 @@ export default function StandardView({
                         style={{
                           fontWeight: 700,
                           fontSize: essentialEmpty ? 15 : 12,
-                          color: essentialEmpty ? "#fecaca" : "#e5e7eb",
+                          color: essentialEmpty ? "#fecaca" : "#e6edf3",
                         }}
                       >
                         {row.name}
                       </span>
-                      <span style={{ fontSize: 11, color: "#9ca3af" }}>
+                      <span style={{ fontSize: 11, color: "#8b949e" }}>
                         {row.question}
                       </span>
                       <span
@@ -238,7 +238,7 @@ export default function StandardView({
                         flexWrap: "wrap",
                         gap: 12,
                         fontSize: 11,
-                        color: "#9ca3af",
+                        color: "#8b949e",
                         marginBottom: 6,
                       }}
                     >
@@ -255,7 +255,7 @@ export default function StandardView({
                       </span>
                       <span>
                         Status:{" "}
-                        <span style={{ color: "#e5e7eb" }}>
+                        <span style={{ color: "#e6edf3" }}>
                           {row.status}
                           {row.componentCount > 0
                             ? ` (${row.componentCount})`
@@ -263,7 +263,7 @@ export default function StandardView({
                         </span>
                       </span>
                     </div>
-                    <div style={{ fontSize: 11, color: "#6b7280", lineHeight: 1.45 }}>
+                    <div style={{ fontSize: 11, color: "#7d8590", lineHeight: 1.45 }}>
                       <div>
                         <span style={{ color: "#8b9cb3" }}>Fills it: </span>
                         {row.whatFillsIt}

@@ -780,7 +780,7 @@ export function Arch3DView({
             borderRadius: 4,
             border: "1px solid #1e293b",
             fontFamily: "monospace",
-            color: "#e5e7eb",
+            color: "#e6edf3",
             pointerEvents: "none",
           }}
         >
@@ -810,7 +810,7 @@ export function Arch3DView({
           backdropFilter: "blur(10px)",
           fontFamily: "monospace",
           fontSize: 10,
-          color: "#9ca3af",
+          color: "#8b949e",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -829,7 +829,7 @@ export function Arch3DView({
                   gridDensity === d ? "1px solid #38bdf8" : "1px solid transparent",
                 background:
                   gridDensity === d ? "rgba(56,189,248,0.16)" : "transparent",
-                color: gridDensity === d ? "#e0f2fe" : "#64748b",
+                color: gridDensity === d ? "#e0f2fe" : "#7d8590",
                 cursor: "pointer",
               }}
             >

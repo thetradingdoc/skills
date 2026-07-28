@@ -242,7 +242,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
 
   if (!agents) {
     return (
-      <div style={{ padding: 32, color: "#9ca3af", fontFamily: "ui-monospace, monospace" }}>
+      <div style={{ padding: 32, color: "#8b949e", fontFamily: "ui-monospace, monospace" }}>
         No agent inventory — scan a repository first.
       </div>
     );
@@ -260,7 +260,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
         overflow: "hidden",
         background: "rgba(6,12,26,0.35)",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        color: "#d1d5db",
+        color: "#e6edf3",
       }}
     >
       <div
@@ -279,7 +279,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
             ? ` · showing ${visible.length} unclassified`
             : ` · showing ${visible.length}`}
         </div>
-        <label style={{ fontSize: 11, color: "#9ca3af", display: "flex", gap: 6, alignItems: "center" }}>
+        <label style={{ fontSize: 11, color: "#8b949e", display: "flex", gap: 6, alignItems: "center" }}>
           <input
             type="checkbox"
             checked={unclassifiedOnly}
@@ -289,7 +289,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
         </label>
         {selected.size > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "#93c5fd" }}>{selected.size} selected →</span>
+            <span style={{ fontSize: 11, color: "#58a6ff" }}>{selected.size} selected →</span>
             {CLASS_BTNS.map((c) => (
               <button
                 key={c}
@@ -301,8 +301,8 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
                   padding: "3px 8px",
                   borderRadius: 6,
                   border: "1px solid #30363d",
-                  background: "#1f2937",
-                  color: "#e5e7eb",
+                  background: "#161b22",
+                  color: "#e6edf3",
                   cursor: "pointer",
                 }}
               >
@@ -317,7 +317,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
       <div style={{ flex: 1, overflow: "auto", padding: "8px 12px 32px" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
           <thead>
-            <tr style={{ color: "#6b7280", textAlign: "left" }}>
+            <tr style={{ color: "#7d8590", textAlign: "left" }}>
               <th style={{ padding: "6px 8px", width: 28 }} />
               <th style={{ padding: "6px 8px" }}>Resource</th>
               <th style={{ padding: "6px 8px", width: 70 }}>Tools</th>
@@ -336,17 +336,17 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
                     onChange={() => toggle(row.key)}
                   />
                 </td>
-                <td style={{ padding: "6px 8px", color: "#e5e7eb" }}>
-                  <span style={{ color: "#93c5fd" }}>{row.kind}</span>:{row.name}
+                <td style={{ padding: "6px 8px", color: "#e6edf3" }}>
+                  <span style={{ color: "#58a6ff" }}>{row.kind}</span>:{row.name}
                 </td>
-                <td style={{ padding: "6px 8px", color: "#fbbf24", fontWeight: 600 }}>
+                <td style={{ padding: "6px 8px", color: "#d29922", fontWeight: 600 }}>
                   {row.toolCount}
                 </td>
-                <td style={{ padding: "6px 8px", color: "#6b7280", maxWidth: 280 }}>
+                <td style={{ padding: "6px 8px", color: "#7d8590", maxWidth: 280 }}>
                   {row.locations.slice(0, 3).join(" · ") || "—"}
                 </td>
                 <td style={{ padding: "6px 8px" }}>
-                  <span style={{ color: row.isDecision ? "#86efac" : row.isGuess ? "#fbbf24" : "#a78bfa" }}>
+                  <span style={{ color: row.isDecision ? "#86efac" : row.isGuess ? "#d29922" : "#a78bfa" }}>
                     {row.class}
                     {row.isGuess ? " (guess)" : row.isDecision ? "" : ""}
                   </span>
@@ -368,11 +368,11 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
                           borderRadius: 4,
                           border:
                             row.class === c
-                              ? "1px solid #60a5fa"
+                              ? "1px solid #58a6ff"
                               : "1px solid #30363d",
                           background:
                             row.class === c ? "rgba(29,78,216,0.25)" : "transparent",
-                          color: "#d1d5db",
+                          color: "#e6edf3",
                           cursor: busy ? "wait" : "pointer",
                         }}
                       >
@@ -386,7 +386,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
           </tbody>
         </table>
         {visible.length === 0 && (
-          <div style={{ padding: 24, color: "#6b7280" }}>
+          <div style={{ padding: 24, color: "#7d8590" }}>
             {unclassifiedOnly ? "Nothing left to classify." : "No resources found."}
           </div>
         )}

@@ -20,10 +20,10 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
           justifyContent: "center",
           background: "#020617",
           borderRadius: 8,
-          border: "1px solid #1f2937",
+          border: "1px solid #161b22",
           padding: 16,
           fontSize: 12,
-          color: "#6b7280",
+          color: "#7d8590",
         }}
       >
         No file selected. Click a node in the graph to view its code context.
@@ -68,7 +68,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
         minHeight: 0,
         background: "#020617",
         borderRadius: 8,
-        border: "1px solid #1f2937",
+        border: "1px solid #161b22",
         overflow: "hidden",
       }}
     >
@@ -80,7 +80,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
           gap: 8,
           padding: "8px 12px",
           background: "#0b1120",
-          borderBottom: "1px solid #111827",
+          borderBottom: "1px solid #0d1117",
           flexShrink: 0,
         }}
       >
@@ -117,7 +117,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
           style={{
             fontSize: 10,
             fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-            color: "#9ca3af",
+            color: "#8b949e",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -130,7 +130,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
         <span
           style={{
             fontSize: 10,
-            color: "#6b7280",
+            color: "#7d8590",
             marginLeft: 8,
           }}
         >
@@ -149,7 +149,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
               borderRadius: 6,
               border: "1px solid #30363d",
               background: "transparent",
-              color: "#93c5fd",
+              color: "#58a6ff",
               cursor: "pointer",
               fontFamily:
                 "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
@@ -189,7 +189,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
           <div
             style={{
               fontSize: 12,
-              color: "#9ca3af",
+              color: "#8b949e",
               lineHeight: 1.5,
             }}
           >
@@ -244,7 +244,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
                   borderRadius: 8,
                   padding: 8,
                   fontSize: 12,
-                  color: "#e5e7eb",
+                  color: "#e6edf3",
                   lineHeight: 1.5,
                 }}
               >
@@ -291,7 +291,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
                     complexity === "complex"
                       ? "#fca5a5"
                       : complexity === "moderate"
-                      ? "#fbbf24"
+                      ? "#d29922"
                       : "#a5b4fc",
                   backgroundColor:
                     complexity === "complex"
@@ -336,7 +336,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
                         borderRadius: 999,
                         background: "rgba(31,41,55,0.9)",
                         border: "1px solid #30363d",
-                        color: "#9ca3af",
+                        color: "#8b949e",
                       }}
                     >
                       {tag}
@@ -366,7 +366,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
             <div
               style={{
                 fontSize: 11,
-                color: "#6b7280",
+                color: "#7d8590",
               }}
             >
               This node has no direct connections in the current graph view.
@@ -404,9 +404,9 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
                       padding: "6px 8px",
                       borderRadius: 6,
                       background: "#020617",
-                      border: "1px solid #111827",
+                      border: "1px solid #0d1117",
                       fontSize: 11,
-                      color: "#9ca3af",
+                      color: "#8b949e",
                     }}
                   >
                     <span
@@ -426,7 +426,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
                     </span>
                     <span
                       style={{
-                        color: "#e5e7eb",
+                        color: "#e6edf3",
                         whiteSpace: "nowrap",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
@@ -447,7 +447,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
           style={{
             marginTop: 4,
             fontSize: 11,
-            color: "#6b7280",
+            color: "#7d8590",
             fontStyle: "italic",
           }}
         >
