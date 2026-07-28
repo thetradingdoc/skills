@@ -57,6 +57,7 @@ export type ScorecardRow = {
 
 export type Scorecard = {
   sensitive: boolean;
+  verdict: SensitivityVerdict;
   calibration: string;
   passCount: number;
   total: number;
@@ -75,21 +76,45 @@ export function meetsRequirement(
   return status === "filled" || status === "thin" || status === "empty";
 }
 
-export function agentReachesSensitive(agent: AgentLike): boolean {
-  for (const t of agent.tools ?? []) {
-    if (t.name === "(hosted)") continue;
-    const p = t.reach?.cells?.patient?.state;
-    const m = t.reach?.cells?.money?.state;
-    if (p === "reaches" || m === "reaches") return true;
+export type SensitivityVerdict = "sensitive" | "clear" | "unknown";
+
+/**
+ * Three answers, not two. A tracer that could not resolve an agent's reach has
+ * not established that the agent is safe — and an unknown must never earn the
+ * mild requirement tier, or a gap in tracing silently lowers the bar.
+ */
+export function agentSensitivity(agent: AgentLike): SensitivityVerdict {
+  const tools = (agent.tools ?? []).filter((t) => t.name !== "(hosted)");
+  let untraced = 0;
+  let cells = 0;
+  for (const t of tools) {
+    const c = t.reach?.cells ?? {};
+    for (const k of ["patient", "money", "external", "internal"]) {
+      const st = (c as any)[k]?.state;
+      if (!st) continue;
+      cells++;
+      if (st === "reaches" && (k === "patient" || k === "money")) return "sensitive";
+      if (st === "not-traced") untraced++;
+    }
   }
-  return false;
+  if (tools.length === 0) return "unknown";
+  if (cells === 0) return "unknown";
+  // A quarter of the scope unresolved is too much to call an agent clear.
+  if (untraced / cells > 0.25) return "unknown";
+  return "clear";
+}
+
+/** @deprecated prefer agentSensitivity — this collapses clear and unknown. */
+export function agentReachesSensitive(agent: AgentLike): boolean {
+  return agentSensitivity(agent) === "sensitive";
 }
 
 export function buildScorecard(
   model: ReferenceModelDoc,
   agent: AgentLike
 ): Scorecard {
-  const sensitive = agentReachesSensitive(agent);
+  const verdict = agentSensitivity(agent);
+  const sensitive = verdict !== "clear"; // unknown takes the strict tier
   const layerById = new Map((agent.layers ?? []).map((l) => [l.id, l]));
 
   const rows: ScorecardRow[] = (model.layers ?? []).map((spec) => {
@@ -113,12 +138,16 @@ export function buildScorecard(
   });
 
   const passCount = rows.filter((r) => r.pass).length;
-  const calibration = sensitive
-    ? "This agent reaches patient records and/or payment rails, so observability, evaluation and safety are treated as essential where the reference model marks them so."
-    : "This agent has no high-sensitivity patient/money reach in the current scan, so the milder (whenNotSensitive) requirement tiers apply.";
+  const calibration =
+    verdict === "sensitive"
+      ? "This agent reaches patient records and/or payment rails, so observability, evaluation and safety are treated as essential where the reference model marks them so."
+      : verdict === "unknown"
+        ? "Reach could not be established for this agent - too much of its tool surface is untraced to call it clear. The strict requirement tiers apply: an untraced agent does not earn an easier bar."
+        : "Reach was traced and this agent touches no patient records or payment rails, so the milder requirement tiers apply.";
 
   return {
     sensitive,
+    verdict,
     calibration,
     passCount,
     total: rows.length,

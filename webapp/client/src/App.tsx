@@ -978,7 +978,7 @@ export default function App() {
     if (n && !/^arch-viz-[0-9a-f-]{8,}/i.test(n) && n !== "My workspace") return n;
     const url = graph?.projectRoot || repoUrl || "";
     const m = String(url).match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i);
-    i(m) return m[2];
+    if (m) return m[2];
     return n || "My workspace";
   })();
 
@@ -1013,8 +1013,8 @@ export default function App() {
     const inv = graph?.agents;
     const list = inv?.agents ?? [];
     const catalogs = inv?.toolCatalogs ?? {};
-    const toolsOf = (a) => Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
-    const agents = list.filter((a) => a.kind === 'agent');
+    const toolsOf = (a: any) => Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
+    const agents = list.filter((a: any) => a.kind === 'agent');
     let noAuth = 0, patientTools = 0, moneyTools = 0;
     for (const a of agents) {
       if (!a.auth?.found) noAuth++;
