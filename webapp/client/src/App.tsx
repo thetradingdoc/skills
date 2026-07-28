@@ -1111,7 +1111,7 @@ export default function App() {
         setError(data.error ?? "Failed to run npm audit.");
       }
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to run npm audit.");
+      setError(e instanceof Error ? e.message : "Failed to run npm audit.");
     } finally {
       setNpmAuditRunning(false);
     }
@@ -4329,6 +4329,7 @@ export default function App() {
         )}
 
         {/* Sidebar tabs: Dashboard / Chat / Code */}
+        {!leftPanelCollapsed && (
         <div
           style={{
             display: "flex",
@@ -4422,6 +4423,7 @@ export default function App() {
             Code
           </button>
         </div>
+        )}
 
         {/* Dashboard content: project overview, health, execution, violations, governance, proposed nodes */}
         {sidebarTab === "dashboard" && (
