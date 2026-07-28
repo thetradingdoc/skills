@@ -990,6 +990,25 @@ export default function App() {
   const [isResizing, setIsResizing] = useState(false);
   /** What a scan found, as four numbers. Module and connection counts say
    *  nothing about risk; these do. */
+  /** Resources still needing a human decision. Shown as a count on the menu
+   *  entry, since an unclassified resource is outstanding work rather than a
+   *  view someone would browse to. */
+  const unclassifiedCount = (() => {
+    const inv = graph?.agents;
+    const list = inv?.agents ?? [];
+    const catalogs = inv?.toolCatalogs ?? {};
+    const seen = new Set();
+    for (const a of list) {
+      const tools = Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
+      for (const t of tools) {
+        for (const r of (t?.reach?.resources ?? [])) {
+          if (r?.class === 'unclassified' && r?.name) seen.add(r.kind + ':' + r.name);
+        }
+      }
+    }
+    return seen.size;
+  })();
+
   const agentSummaryStats = (() => {
     const inv = graph?.agents;
     const list = inv?.agents ?? [];
@@ -7055,8 +7074,8 @@ export default function App() {
               )}
               <button
                 type="button"
-                disabled={saveLoading || !activeWorkspaceId || !accessToken || graph.nodes.length === 0}
-                title={activeWorkspaceId && accessToken ? (saveStatus === "saved" ? "Saved" : "Save workspace") : "Sign in to save"}
+                disabled={saveLoading || graph.nodes.length === 0}
+                title={accessToken ? (saveStatus === "saved" ? "Saved" : "Save workspace") : "Sign in to save · free to read, account to keep"}
                 onClick={async () => {
                   if (saveLoading || !activeWorkspaceId || !accessToken) return;
                   setSaveLoading(true);
@@ -7085,14 +7104,14 @@ export default function App() {
                   opacity: saveLoading || !activeWorkspaceId || !accessToken ? 0.5 : 1,
                 }}
               >
-                {saveLoading ? "…" : saveStatus === "saved" ? "Saved" : "Save"}
+                {saveLoading ? "…" : saveStatus === "saved" ? "Saved" : accessToken ? "Save" : "Save 🔒"}
               </button>
               <button
                 type="button"
-                disabled={shareLoading || !activeWorkspaceId || !accessToken}
+                disabled={shareLoading}
                 title={activeWorkspaceId && accessToken ? "Get share link" : "Sign in to share"}
                 onClick={async () => {
-                  if (shareLoading || !activeWorkspaceId || !accessToken) return;
+                  if (shareLoading) return;
                   setShareLoading(true);
                   try {
                     const r = await handleShare();
@@ -7113,11 +7132,11 @@ export default function App() {
                   border: "1px solid #1f6feb",
                   background: shareCopied ? "#238636" : "#1f6feb",
                   color: "white",
-                  cursor: shareLoading || !activeWorkspaceId || !accessToken ? "not-allowed" : "pointer",
-                  opacity: shareLoading || !activeWorkspaceId || !accessToken ? 0.5 : 1,
+                  cursor: shareLoading ? "not-allowed" : "pointer",
+                  opacity: shareLoading ? 0.5 : 1,
                 }}
               >
-                {shareLoading ? "…" : shareCopied ? "Copied" : "Share"}
+                {shareLoading ? "…" : shareCopied ? "Copied" : accessToken ? "Share" : "Share \uD83D\uDD12"}
               </button>
               <div
                 style={{
@@ -7269,6 +7288,26 @@ export default function App() {
                         }}
                       >
                         Activity log
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setGraphViewMode("resources");
+                          setShowWorkspaceMenu(false);
+                        }}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          padding: "6px 8px",
+                          fontSize: 11,
+                          background: "none",
+                          border: "none",
+                          color: unclassifiedCount > 0 ? "#d29922" : "#e6edf3",
+                          cursor: "pointer",
+                          textAlign: "left",
+                        }}
+                      >
+                        Classify resources{unclassifiedCount > 0 ? ` (${unclassifiedCount} undecided)` : ""}
                       </button>
                       <button
                         type="button"
@@ -7710,142 +7749,135 @@ export default function App() {
                   backdropFilter: "blur(10px)",
                 }}
               >
-                <button
-                  type="button"
-                  title="2D view"
-                  onClick={() => setGraphViewMode("2d")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "2d" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "2d" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "2d" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  2D
-                </button>
-                <button
-                  type="button"
-                  title="3D view"
-                  onClick={() => setGraphViewMode("3d")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "3d" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "3d" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "3d" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  3D
-                </button>
-                <button
-                  type="button"
-                  title="Layers canvas"
-                  onClick={() => setGraphViewMode("layers")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "layers" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "layers" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "layers" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Layers
-                </button>
-                <button
-                  type="button"
-                  title="Standard scorecard"
-                  onClick={() => setGraphViewMode("standard")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "standard" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "standard" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "standard" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Standard
-                </button>
-                <button
-                  type="button"
-                  title="Agents view"
-                  onClick={() => setGraphViewMode("agents")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "agents" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "agents" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "agents" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Agents
-                </button>
-                <button
-                  type="button"
-                  title="Reach matrix"
-                  onClick={() => setGraphViewMode("reach")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "reach" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "reach" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "reach" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Reach
-                </button>
-                <button
-                  type="button"
-                  title="Resource classification"
-                  onClick={() => setGraphViewMode("resources")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "resources" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "resources" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "resources" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Resources
-                </button>
-                <button
-                  type="button"
-                  title="Guard rules"
-                  onClick={() => setGraphViewMode("guard")}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: 10,
-                    fontFamily: "monospace",
-                    border: graphViewMode === "guard" ? "1px solid #58a6ff" : "1px solid transparent",
-                    borderRadius: 8,
-                    background: graphViewMode === "guard" ? "rgba(29,78,216,0.2)" : "transparent",
-                    color: graphViewMode === "guard" ? "#58a6ff" : "#8b949e",
-                    cursor: "pointer",
-                  }}
-                >
-                  Guard
-                </button>
+                {/* Narrative order: what was found, what it reaches, how
+                    complete it is, whether it meets the bar, what is enforced. */}
+                  <button
+                    key="agents"
+                    type="button"
+                    title="Agent surfaces found in this repository"
+                    onClick={() => setGraphViewMode("agents")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "agents" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "agents" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "agents" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Agents
+                  </button>
+                  <button
+                    key="reach"
+                    type="button"
+                    title="What each tool can touch"
+                    onClick={() => setGraphViewMode("reach")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "reach" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "reach" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "reach" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Reach
+                  </button>
+                  <button
+                    key="layers"
+                    type="button"
+                    title="The eleven layers of this agent"
+                    onClick={() => setGraphViewMode("layers")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "layers" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "layers" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "layers" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Layers
+                  </button>
+                  <button
+                    key="standard"
+                    type="button"
+                    title="This agent against the reference model"
+                    onClick={() => setGraphViewMode("standard")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "standard" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "standard" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "standard" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Standard
+                  </button>
+                  <button
+                    key="guard"
+                    type="button"
+                    title="Rules and what would block a merge"
+                    onClick={() => setGraphViewMode("guard")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "guard" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "guard" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "guard" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Guard
+                  </button>
+                  <span style={{ width: 1, background: "#30363d", margin: "0 6px", alignSelf: "stretch" }} />
+                  <button
+                    key="2d"
+                    type="button"
+                    title="Module dependency graph (legacy)"
+                    onClick={() => setGraphViewMode("2d")}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "2d" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "2d" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "2d" ? "#58a6ff" : "#6e7681",
+                      cursor: "pointer",
+                    }}
+                  >
+                    2D
+                  </button>
+                  <button
+                    key="3d"
+                    type="button"
+                    title="Module dependency graph in 3D (legacy)"
+                    onClick={() => setGraphViewMode("3d")}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "3d" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "3d" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "3d" ? "#58a6ff" : "#6e7681",
+                      cursor: "pointer",
+                    }}
+                  >
+                    3D
+                  </button>
                 {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && graphViewMode !== "layers" && graphViewMode !== "standard" && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
