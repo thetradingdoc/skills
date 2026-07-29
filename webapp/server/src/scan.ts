@@ -274,7 +274,7 @@ router.post("/scan", optionalUser, async (req, res) => {
       }
 
       // Success: signed-in scan with persisted workspace.
-      res.json({ ...graph, workspaceId, jiraProjectKey, persistError: null });
+      res.json({ ...graph, repoUrl: trimmed, workspaceId, jiraProjectKey, persistError: null });
       return;
     }
 
@@ -282,7 +282,7 @@ router.post("/scan", optionalUser, async (req, res) => {
     const anonError = !ownerId
       ? "Sign up to save your workspaces."
       : "Auth service not configured.";
-    res.json({ ...graph, workspaceId: null, persistError: anonError });
+    res.json({ ...graph, repoUrl: trimmed, workspaceId: null, persistError: anonError });
   } catch (err: unknown) {
     if (scanHistoryId) {
       const msg = err instanceof Error ? err.message : String(err);

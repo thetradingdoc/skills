@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { buildAssessment } from "./assessment";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
@@ -7999,6 +8000,7 @@ export default function App() {
                     }}
                   >
                     {[
+                      { id: "assessment", label: "Assessment", fn: () => buildAssessment, file: "assessment.md", mime: "text/markdown" },
                       { id: "svg", label: "SVG", fn: () => exportArchitectureSvg, file: "architecture.svg", mime: "image/svg+xml" },
                       { id: "doc", label: "Doc", fn: () => exportArchitectureMarkdown, file: "architecture.md", mime: "text/markdown" },
                       { id: "c4", label: "C4", fn: () => exportC4PlantUml, file: "architecture-c4.puml", mime: "text/plain" },
