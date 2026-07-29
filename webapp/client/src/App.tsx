@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { buildAssessment } from "./assessment";
+import { AssessmentView } from "./AssessmentView";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
@@ -830,7 +831,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard" | "assessment">("2d");
   const [layersAgentFile, setLayersAgentFile] = useState<string | null>(null);
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
@@ -7750,6 +7751,24 @@ export default function App() {
                 {/* Narrative order: what was found, what it reaches, how
                     complete it is, whether it meets the bar, what is enforced. */}
                   <button
+                    key="assessment"
+                    type="button"
+                    title="What this system is, and what matters"
+                    onClick={() => setGraphViewMode("assessment")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "assessment" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "assessment" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "assessment" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Assessment
+                  </button>
+                  <button
                     key="agents"
                     type="button"
                     title="Agent surfaces found in this repository"
@@ -8063,6 +8082,8 @@ export default function App() {
                 selectedAgentFile={layersAgentFile}
                 onSelectAgent={setLayersAgentFile}
               />
+            ) : graphViewMode === "assessment" ? (
+              <AssessmentView graph={graph} />
             ) : graphViewMode === "agents" ? (
               <AgentsView agents={graph?.agents} />
             ) : graphViewMode === "reach" ? (
