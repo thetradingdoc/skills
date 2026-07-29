@@ -1015,14 +1015,23 @@ export default function App() {
     const catalogs = inv?.toolCatalogs ?? {};
     const toolsOf = (a: any) => Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
     const agents = list.filter((a: any) => a.kind === 'agent');
-    let noAuth = 0, patientTools = 0, moneyTools = 0;
+    // Five Retell surfaces share one catalog, so a tool must be counted once
+    // no matter how many agents hold it. Key on catalog + name.
+    const patientSet = new Set(), moneySet = new Set();
+    let noAuth = 0;
     for (const a of agents) {
-      if (!a.auth?.found) noAuth++;
+      const sensitive = toolsOf(a).some((t: any) =>
+        t?.reach?.cells?.patient?.state === 'reaches' ||
+        t?.reach?.cells?.money?.state === 'reaches');
+      if (sensitive && !a.auth?.found) noAuth++;
+      const key = a.catalogId || a.file;
       for (const t of toolsOf(a)) {
-        if (t?.reach?.cells?.patient?.state === 'reaches') patientTools++;
-        if (t?.reach?.cells?.money?.state === 'reaches') moneyTools++;
+        const id = key + '::' + t?.name;
+        if (t?.reach?.cells?.patient?.state === 'reaches') patientSet.add(id);
+        if (t?.reach?.cells?.money?.state === 'reaches') moneySet.add(id);
       }
     }
+    const patientTools = patientSet.size, moneyTools = moneySet.size;
     return { agents: agents.length, noAuth, patientTools, moneyTools };
   })();
 
@@ -4536,81 +4545,69 @@ export default function App() {
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                    {(graph?.agents?.agents ?? []).map((a) => {
-                      const selected = selectedAgentFile === a.file;
-                      const base = a.file.split("/").pop() ?? a.file;
+                    {(() => {
+                      const all = graph?.agents?.agents ?? [];
+                      const catalogs: any = (graph?.agents as any)?.toolCatalogs ?? {};
+                      const toolsOf = (a: any) => Array.isArray(a.tools) ? a.tools : (a.catalogId ? (catalogs[a.catalogId] ?? []) : []);
+                      const reach = (a: any, cls: string) =>
+                        toolsOf(a).filter((t: any) => t?.reach?.cells?.[cls]?.state === "reaches").length;
+                      // Only agents belong in a risk list. Helpers have no tools and
+                      // no reach, so 20 of them buried the 8 that matter.
+                      const agents = all.filter((a: any) => a.kind === "agent")
+                        .sort((x: any, y: any) => reach(y, "patient") - reach(x, "patient"));
+                      const others = all.length - agents.length;
                       return (
-                        <button
-                          key={a.file}
-                          type="button"
-                          onClick={() =>
-                            setSelectedAgentFile((prev) =>
-                              prev === a.file ? null : a.file
-                            )
-                          }
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "minmax(0, 1.4fr) 88px minmax(0, 1fr) minmax(0, 1fr) 36px",
-                            gap: 8,
-                            alignItems: "center",
-                            width: "100%",
-                            textAlign: "left",
-                            background: selected ? "rgba(88,166,255,0.1)" : "transparent",
-                            border: "0",
-                            borderBottom: "1px solid #22272e",
-                            borderLeft: selected
-                              ? "2px solid #58a6ff"
-                              : "2px solid transparent",
-                            padding: "8px 6px",
-                            cursor: "pointer",
-                            color: "#e6edf3",
-                          }}
-                          title={a.evidence}
-                        >
-                          <span
-                            style={{
-                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
-                              fontSize: 11.5,
-                              color: selected ? "#58a6ff" : "#e6edf3",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                              whiteSpace: "nowrap",
-                            }}
-                            title={a.file}
-                          >
-                            {base}
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
-                              fontSize: 11,
-                              color: "#8b949e",
-                            }}
-                          >
-                            {a.provider}
-                          </span>
-                          <span style={{ fontSize: 11.5, color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {a.model ?? "model not determinable"}
-                          </span>
-                          <span style={{ fontSize: 11.5, color: "#8b949e", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {a.toolCandidates.length > 0
-                              ? `${a.toolCandidates.length} tool${a.toolCandidates.length === 1 ? "" : "s"}`
-                              : "tools not declared in repo"}
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: "JetBrains Mono, ui-monospace, monospace",
-                              fontSize: 10,
-                              color: a.confidence === "low" ? "#d29922" : "#3fb950",
-                              textAlign: "right",
-                            }}
-                            title={a.confidence === "low" ? "Low confidence — import/URL only" : "High confidence — construction + provider"}
-                          >
-                            {a.confidence === "low" ? "low" : ""}
-                          </span>
-                        </button>
+                        <>
+                          {agents.map((a: any) => {
+                            const selected = selectedAgentFile === a.file;
+                            const base = a.file.split("/").pop() ?? a.file;
+                            const pt = reach(a, "patient");
+                            const mn = reach(a, "money");
+                            const noAuth = !a.auth?.found;
+                            return (
+                              <button
+                                key={a.file}
+                                type="button"
+                                onClick={() => setSelectedAgentFile((prev) => prev === a.file ? null : a.file)}
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "minmax(0, 2.2fr) 74px minmax(0, 1.5fr)",
+                                  gap: 8,
+                                  alignItems: "center",
+                                  width: "100%",
+                                  textAlign: "left",
+                                  background: selected ? "rgba(88,166,255,0.1)" : "transparent",
+                                  border: 0,
+                                  borderBottom: "1px solid #22272e",
+                                  borderLeft: selected ? "2px solid #58a6ff" : "2px solid transparent",
+                                  padding: "8px 6px",
+                                  cursor: "pointer",
+                                  color: "#e6edf3",
+                                }}
+                                title={a.file}
+                              >
+                                <span style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 11.5, color: selected ? "#58a6ff" : "#e6edf3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                  {base}
+                                </span>
+                                <span style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 11, color: "#8b949e" }}>
+                                  {toolsOf(a).length} tool{toolsOf(a).length === 1 ? "" : "s"}
+                                </span>
+                                <span style={{ fontSize: 11, display: "flex", gap: 8, justifyContent: "flex-end", fontFamily: "JetBrains Mono, ui-monospace, monospace" }}>
+                                  {noAuth && <span style={{ color: "#f85149" }} title="No authentication before tool execution">no auth</span>}
+                                  {pt > 0 && <span style={{ color: "#f85149" }} title="Tools reaching patient data">{pt}p</span>}
+                                  {mn > 0 && <span style={{ color: "#d29922" }} title="Tools reaching payment rails">{mn}m</span>}
+                                </span>
+                              </button>
+                            );
+                          })}
+                          {others > 0 && (
+                            <div style={{ padding: "8px 6px", fontSize: 11, color: "#6e7681", fontFamily: "JetBrains Mono, ui-monospace, monospace" }}>
+                              + {others} LLM helper{others === 1 ? "" : "s"} with no tools and no reach
+                            </div>
+                          )}
+                        </>
                       );
-                    })}
+                    })()}
                   </div>
                 )}
               </DashboardCard>
