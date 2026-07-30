@@ -114,14 +114,28 @@ Static analysis findings:
 ${findingsSummary}
 
 Evaluate the proposed answer ONLY on:
+- Whether it is TRUE of this codebase,
 - Architectural fit (layers, boundaries, dependencies),
-- Code correctness and safety at a high level (given the description),
-- Completeness with respect to the question.
+- Code correctness and safety at a high level (given the description).
+
+A correct refusal is a good answer. If the question assumes something that
+does not exist in this codebase, and the answer says so plainly, that is a
+10 — not an incomplete response. Do not penalise an answer for being short,
+for declining to speculat or for saying it could not determine something.
+An answer that admits uncertainty is better than one that sounds complete
+and is wrong.
+
+Score what the answer claims, not how much it says.
 
 Your task:
 - Judge whether the assistant's answer is acceptable.
 - Assign a numeric score from 1-10.
-- Extract any concrete architecture violations as structured JSON.
+- Extract architecture violations ONLY where the graph or the static findings
+  above show one. A violation is something the scan established, not something
+  you think would be an improvement. Do not raise a violation because a feature
+  is missing, because you would have structured the code differently, or
+  because the answer could have said more. If nothing in the supplied
+  architecture or findings evidences a violation, return an empty array.
 
 Respond with STRICT JSON (no markdown) in this shape:
 {
