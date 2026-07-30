@@ -12,11 +12,14 @@
  */
 import { useMemo, useState } from "react";
 import { buildAssessment, type EvalRow } from "./assessment";
-import { rankFindings, severityColor } from "./findings";
+import { FindingsList } from "./FindingsList";
 
 type Props = {
   graph: any;
   evaluations?: EvalRow[];
+  apiBase: string;
+  accessToken: string | null;
+  workspaceId: string | null;
 };
 
 /** Minimal markdown rendering — headings, bold, bullets, ordered items, rules. */
@@ -164,7 +167,7 @@ function renderLine(line: string, i: number) {
 
 const MONO_F = "JetBrains Mono, ui-monospace, monospace";
 
-export function AssessmentView({ graph, evaluations = [] }: Props) {
+export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, workspaceId }: Props) {
   const [copied, setCopied] = useState(false);
 
   const markdown = useMemo(
@@ -173,7 +176,6 @@ export function AssessmentView({ graph, evaluations = [] }: Props) {
   );
 
   const lines = markdown.split("\n");
-  const findings = useMemo(() => rankFindings(graph, evaluations), [graph, evaluations]);
 
   const copy = async () => {
     try {
@@ -228,24 +230,8 @@ export function AssessmentView({ graph, evaluations = [] }: Props) {
         </button>
       </div>
 
-      {findings.length > 0 && (
-        <div style={{ maxWidth: 820, marginBottom: 30 }}>
-          <div style={{ fontFamily: MONO_F, fontSize: 10, letterSpacing: "0.09em", color: "#6e7681", marginBottom: 10 }}>
-            FINDINGS, RANKED
-          </div>
-          {findings.map((x) => (
-            <div key={x.id} style={{ display: "grid", gridTemplateColumns: "62px 1fr", gap: 12, padding: "9px 0", borderBottom: "1px solid #21262d" }}>
-              <span style={{ fontFamily: MONO_F, fontSize: 9.5, color: severityColor(x.severity), textTransform: "uppercase", letterSpacing: "0.06em", paddingTop: 3 }}>
-                {x.severity}
-              </span>
-              <span>
-                <span style={{ fontSize: 13, color: "#e6edf3", display: "block" }}>{x.title}</span>
-                <span style={{ fontSize: 12, color: "#8b949e", display: "block", marginTop: 3, lineHeight: 1.55 }}>{x.detail}</span>
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
+      <FindingsList graph={graph} evaluations={evaluations} apiBase={apiBase} accessToken={accessToken} workspaceId={workspaceId} />
+
       <article style={{ maxWidth: 820 }}>
         {lines.map((line, i) => renderLine(line, i))}
       </article>

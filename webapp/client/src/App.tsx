@@ -8102,7 +8102,7 @@ export default function App() {
                 onSelectAgent={setLayersAgentFile}
               />
             ) : graphViewMode === "assessment" ? (
-              <AssessmentView graph={graph} />
+              <AssessmentView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
             ) : graphViewMode === "flow" ? (
               <FlowView agents={graph?.agents} selectedAgentFile={layersAgentFile} onSelectAgent={setLayersAgentFile} />
             ) : graphViewMode === "agents" ? (

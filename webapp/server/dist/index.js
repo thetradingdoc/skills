@@ -2487,11 +2487,11 @@ router3.post("/scan", optionalUser, async (req, res) => {
         res.status(500).json({ error: persistError || "Failed to persist workspace.", workspaceId: null });
         return;
       }
-      res.json({ ...graph, workspaceId, jiraProjectKey, persistError: null });
+      res.json({ ...graph, repoUrl: trimmed, workspaceId, jiraProjectKey, persistError: null });
       return;
     }
     const anonError = !ownerId ? "Sign up to save your workspaces." : "Auth service not configured.";
-    res.json({ ...graph, workspaceId: null, persistError: anonError });
+    res.json({ ...graph, repoUrl: trimmed, workspaceId: null, persistError: anonError });
   } catch (err) {
     if (scanHistoryId) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -13953,8 +13953,198 @@ router23.post("/violations/:id/dismiss", requireUser, async (req, res) => {
   res.json({ success: true });
 });
 
-// src/railsRoutes.ts
+// src/findingsRoutes.ts
 import { Router as Router22 } from "express";
+var router24 = Router22();
+async function ownsWorkspace(workspaceId, userId) {
+  if (!supabaseAdmin) return false;
+  const { data } = await supabaseAdmin.from("workspaces").select("id").eq("id", workspaceId).eq("owner_id", userId).maybeSingle();
+  return !!data;
+}
+async function appendLog(workspaceId, findingId, entry) {
+  if (!supabaseAdmin) return;
+  await supabaseAdmin.rpc("append_finding_log", {
+    p_workspace_id: workspaceId,
+    p_finding_id: findingId,
+    p_entry: entry
+  });
+}
+router24.get("/findings", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = String(req.query.workspaceId ?? "").trim();
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required." });
+    return;
+  }
+  if (!await ownsWorkspace(workspaceId, req.user.id)) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const { data, error } = await supabaseAdmin.from("workspace_findings").select("*").eq("workspace_id", workspaceId).order("updated_at", { ascending: false });
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ findings: data ?? [] });
+});
+router24.post("/findings/sync", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const { workspaceId, findings } = req.body;
+  if (!workspaceId || !Array.isArray(findings)) {
+    res.status(400).json({ error: "workspaceId and findings are required." });
+    return;
+  }
+  if (!await ownsWorkspace(workspaceId, req.user.id)) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const errors = [];
+  for (const f of findings) {
+    if (!f?.id || !f?.severity || !f?.title) continue;
+    const { error } = await supabaseAdmin.rpc("upsert_finding_from_scan", {
+      p_workspace_id: workspaceId,
+      p_finding_id: f.id,
+      p_severity: f.severity,
+      p_title: f.title,
+      p_detail: f.detail ?? null,
+      p_source: f.source ?? null,
+      p_agent_file: f.agent ?? null
+    });
+    if (error) errors.push(f.id + ": " + error.message);
+  }
+  const present = findings.map((f) => f.id).filter(Boolean);
+  const { data: absentCount, error: absentErr } = await supabaseAdmin.rpc(
+    "mark_findings_absent",
+    { p_workspace_id: workspaceId, p_present_ids: present }
+  );
+  if (absentErr) errors.push("mark_absent: " + absentErr.message);
+  res.json({
+    synced: present.length,
+    markedAbsent: absentCount ?? 0,
+    errors: errors.length ? errors : void 0
+  });
+});
+router24.patch("/findings/:findingId", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const findingId = decodeURIComponent(req.params.findingId);
+  const { workspaceId, state, assigneeId, rationale, actorName } = req.body;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required." });
+    return;
+  }
+  if (!await ownsWorkspace(workspaceId, req.user.id)) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const { data: row } = await supabaseAdmin.from("workspace_findings").select("id, state, assignee_id, rationale").eq("workspace_id", workspaceId).eq("finding_id", findingId).maybeSingle();
+  if (!row) {
+    res.status(404).json({ error: "Finding not found. Sync a scan first." });
+    return;
+  }
+  const VALID = ["open", "accepted", "waived", "resolved"];
+  if (state && !VALID.includes(state)) {
+    res.status(400).json({ error: "state must be one of " + VALID.join(", ") });
+    return;
+  }
+  if (state === "waived" && !(rationale ?? row.rationale ?? "").trim()) {
+    res.status(400).json({ error: "A rationale is required to waive a finding." });
+    return;
+  }
+  const patch = { updated_at: (/* @__PURE__ */ new Date()).toISOString() };
+  if (state) {
+    patch.state = state;
+    patch.decided_by = req.user.id;
+    patch.decided_at = (/* @__PURE__ */ new Date()).toISOString();
+  }
+  if (assigneeId !== void 0) patch.assignee_id = assigneeId;
+  if (rationale !== void 0) patch.rationale = rationale;
+  const { error } = await supabaseAdmin.from("workspace_findings").update(patch).eq("workspace_id", workspaceId).eq("finding_id", findingId);
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const who = actorName || req.user.email || req.user.id;
+  if (state && state !== row.state) {
+    await appendLog(workspaceId, findingId, {
+      at: now,
+      actor: req.user.id,
+      actor_name: who,
+      kind: "state",
+      from: row.state,
+      to: state,
+      text: rationale ?? null
+    });
+  }
+  if (assigneeId !== void 0 && assigneeId !== row.assignee_id) {
+    await appendLog(workspaceId, findingId, {
+      at: now,
+      actor: req.user.id,
+      actor_name: who,
+      kind: "assign",
+      from: row.assignee_id ?? null,
+      to: assigneeId ?? null,
+      text: null
+    });
+  }
+  if (rationale !== void 0 && rationale !== row.rationale && !state) {
+    await appendLog(workspaceId, findingId, {
+      at: now,
+      actor: req.user.id,
+      actor_name: who,
+      kind: "rationale",
+      from: null,
+      to: null,
+      text: rationale
+    });
+  }
+  const { data: updated } = await supabaseAdmin.from("workspace_findings").select("*").eq("workspace_id", workspaceId).eq("finding_id", findingId).maybeSingle();
+  res.json({ finding: updated });
+});
+router24.post("/findings/:findingId/comment", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const findingId = decodeURIComponent(req.params.findingId);
+  const { workspaceId, text, actorName } = req.body;
+  if (!workspaceId || !text?.trim()) {
+    res.status(400).json({ error: "workspaceId and text are required." });
+    return;
+  }
+  if (!await ownsWorkspace(workspaceId, req.user.id)) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+  const { data: row } = await supabaseAdmin.from("workspace_findings").select("id").eq("workspace_id", workspaceId).eq("finding_id", findingId).maybeSingle();
+  if (!row) {
+    res.status(404).json({ error: "Finding not found. Sync a scan first." });
+    return;
+  }
+  await appendLog(workspaceId, findingId, {
+    at: (/* @__PURE__ */ new Date()).toISOString(),
+    actor: req.user.id,
+    actor_name: actorName || req.user.email || req.user.id,
+    kind: "comment",
+    from: null,
+    to: null,
+    text: text.trim()
+  });
+  const { data: updated } = await supabaseAdmin.from("workspace_findings").select("*").eq("workspace_id", workspaceId).eq("finding_id", findingId).maybeSingle();
+  res.json({ finding: updated });
+});
+
+// src/railsRoutes.ts
+import { Router as Router23 } from "express";
 import * as path40 from "path";
 
 // src/apiError.ts
@@ -13994,7 +14184,7 @@ async function writeRailCompletionMemory(workspaceId, rail) {
   } catch {
   }
 }
-var router24 = Router22();
+var router25 = Router23();
 var railEventClients = [];
 function broadcastRailEvent(workspaceId, payload) {
   const data = `data: ${JSON.stringify(payload)}
@@ -14089,7 +14279,7 @@ async function resolveRootAndWorkspace(req) {
   }
   return { root, workspaceId };
 }
-router24.get("/rails", optionalUser, async (req, res) => {
+router25.get("/rails", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
@@ -14140,7 +14330,7 @@ router24.get("/rails", optionalUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
-router24.post("/rails/from-violation", requireUser, async (req, res) => {
+router25.post("/rails/from-violation", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     sendError(res, 503, "Auth service not configured.");
     return;
@@ -14251,7 +14441,7 @@ router24.post("/rails/from-violation", requireUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_FROM_VIOLATION_ERROR");
   }
 });
-router24.get("/rails/events", requireUser, async (req, res) => {
+router25.get("/rails/events", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId) {
     sendError(res, 400, "workspaceId is required.", "WORKSPACE_REQUIRED");
@@ -14272,7 +14462,7 @@ data: "connected"
     if (idx >= 0) railEventClients.splice(idx, 1);
   });
 });
-router24.get("/rails/:railId", optionalUser, async (req, res) => {
+router25.get("/rails/:railId", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
@@ -14331,7 +14521,7 @@ router24.get("/rails/:railId", optionalUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_READ_ERROR");
   }
 });
-router24.post("/rails/:railId/state", optionalUser, async (req, res) => {
+router25.post("/rails/:railId/state", optionalUser, async (req, res) => {
   const rootPath = req.query.rootPath?.trim();
   const workspaceId = req.query.workspaceId?.trim();
   let resolved;
@@ -14409,7 +14599,7 @@ router24.post("/rails/:railId/state", optionalUser, async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
-router24.post("/rails/:railId/execute", requireUser, async (req, res) => {
+router25.post("/rails/:railId/execute", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     sendError(res, 400, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
@@ -14651,7 +14841,7 @@ router24.post("/rails/:railId/execute", requireUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_EXECUTE_ERROR");
   }
 });
-router24.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
+router25.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     sendError(res, 401, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
@@ -14686,7 +14876,7 @@ router24.get("/rails/:railId/sandbox/files", requireUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_READ_ERROR");
   }
 });
-router24.get("/rails/:railId/diff", requireUser, async (req, res) => {
+router25.get("/rails/:railId/diff", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     sendError(res, 401, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
@@ -14740,7 +14930,7 @@ router24.get("/rails/:railId/diff", requireUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_READ_ERROR");
   }
 });
-router24.get("/rails/:railId/impact", requireUser, async (req, res) => {
+router25.get("/rails/:railId/impact", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     sendError(res, 401, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
@@ -14812,7 +15002,7 @@ router24.get("/rails/:railId/impact", requireUser, async (req, res) => {
     sendError(res, 500, msg, "RAIL_READ_ERROR");
   }
 });
-router24.get("/rails/:railId/trace", requireUser, async (req, res) => {
+router25.get("/rails/:railId/trace", requireUser, async (req, res) => {
   const workspaceId = req.query.workspaceId?.trim();
   if (!workspaceId || !req.user?.id) {
     sendError(res, 401, "workspaceId and auth required.", "WORKSPACE_REQUIRED");
@@ -14850,7 +15040,7 @@ router24.get("/rails/:railId/trace", requireUser, async (req, res) => {
     sendError(res, 500, msg);
   }
 });
-router24.post("/rails/:railId/cancel", requireUser, async (req, res) => {
+router25.post("/rails/:railId/cancel", requireUser, async (req, res) => {
   const resolved = await resolveRootAndWorkspace(req);
   if ("error" in resolved) {
     sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
@@ -14896,7 +15086,7 @@ router24.post("/rails/:railId/cancel", requireUser, async (req, res) => {
     sendError(res, 500, msg, { code: "RAIL_CANCEL_ERROR", railId });
   }
 });
-router24.post("/rails/:railId/materialize", requireUser, async (req, res) => {
+router25.post("/rails/:railId/materialize", requireUser, async (req, res) => {
   const resolved = await resolveRootAndWorkspace(req);
   if ("error" in resolved) {
     sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
@@ -14989,7 +15179,7 @@ router24.post("/rails/:railId/materialize", requireUser, async (req, res) => {
     sendError(res, 500, msg, { code: "RAIL_MATERIALIZE_ERROR", railId });
   }
 });
-router24.post("/rails/:railId/rollback", requireUser, async (req, res) => {
+router25.post("/rails/:railId/rollback", requireUser, async (req, res) => {
   const resolved = await resolveRootAndWorkspace(req);
   if ("error" in resolved) {
     sendError(res, resolved.status, resolved.error, "WORKSPACE_REQUIRED");
@@ -15040,7 +15230,7 @@ router24.post("/rails/:railId/rollback", requireUser, async (req, res) => {
 });
 
 // src/greenfieldRoutes.ts
-import { Router as Router23 } from "express";
+import { Router as Router24 } from "express";
 import { randomUUID as randomUUID3 } from "node:crypto";
 function computeTopologicalOrder(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -15075,7 +15265,7 @@ function computeTopologicalOrder(nodes, edges) {
   }
   return ordered;
 }
-var router25 = Router23();
+var router26 = Router24();
 async function resolveImplementRoot(workspaceId, targetRoot, userId) {
   if (!supabaseAdmin) return { rootPath: "", error: "Auth service not configured." };
   const { data: ws } = await supabaseAdmin.from("workspaces").select("project_root").eq("id", workspaceId).eq("owner_id", userId).maybeSingle();
@@ -15092,13 +15282,13 @@ async function resolveImplementRoot(workspaceId, targetRoot, userId) {
     error: "Workspace has no project root and no targetRoot provided. Scan a repository or provide targetRoot (path to project directory) for Implement."
   };
 }
-router25.post("/greenfield/session", requireUser, (req, res) => {
+router26.post("/greenfield/session", requireUser, (req, res) => {
   const sessionId2 = randomUUID3();
   const { workspaceId } = req.body ?? {};
   saveDraft(sessionId2, { nodes: [], edges: [], workspaceId });
   res.status(201).json({ sessionId: sessionId2, mode: "greenfield" });
 });
-router25.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router26.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   if (!sessionId2) {
     res.status(400).json({ error: "sessionId is required." });
@@ -15111,7 +15301,7 @@ router25.get("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router25.get("/greenfield/draft/:sessionId/preview", requireUser, (req, res) => {
+router26.get("/greenfield/draft/:sessionId/preview", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   if (!sessionId2) {
     res.status(400).json({ error: "sessionId is required." });
@@ -15131,7 +15321,7 @@ router25.get("/greenfield/draft/:sessionId/preview", requireUser, (req, res) => 
   }));
   res.json({ nodes: ordered, folderTree: tree });
 });
-router25.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router26.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   const body = req.body;
   if (!sessionId2) {
@@ -15145,7 +15335,7 @@ router25.put("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   });
   res.json(draft);
 });
-router25.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
+router26.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const sessionId2 = req.params.sessionId;
   if (!sessionId2) {
     res.status(400).json({ error: "sessionId is required." });
@@ -15154,7 +15344,7 @@ router25.delete("/greenfield/draft/:sessionId", requireUser, (req, res) => {
   const deleted = deleteDraft(sessionId2);
   res.json({ deleted });
 });
-router25.post("/greenfield/nodes", requireUser, (req, res) => {
+router26.post("/greenfield/nodes", requireUser, (req, res) => {
   const { sessionId: sessionId2, node } = req.body;
   if (!sessionId2 || !node?.id) {
     res.status(400).json({ error: "sessionId and node (with id) are required." });
@@ -15163,7 +15353,7 @@ router25.post("/greenfield/nodes", requireUser, (req, res) => {
   const draft = appendDraftNode(sessionId2, node);
   res.status(201).json({ draftNodeId: node.id, draft });
 });
-router25.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
+router26.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   const nodeId = req.params.nodeId;
   const { sessionId: sessionId2, ...updates } = req.body;
   if (!sessionId2 || !nodeId) {
@@ -15177,7 +15367,7 @@ router25.patch("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router25.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
+router26.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   const nodeId = req.params.nodeId;
   const sessionId2 = req.query.sessionId?.trim();
   if (!sessionId2 || !nodeId) {
@@ -15191,7 +15381,7 @@ router25.delete("/greenfield/nodes/:nodeId", requireUser, (req, res) => {
   }
   res.json(draft);
 });
-router25.post("/greenfield/edges", requireUser, (req, res) => {
+router26.post("/greenfield/edges", requireUser, (req, res) => {
   const { sessionId: sessionId2, edge } = req.body;
   if (!sessionId2 || !edge?.source || !edge?.target) {
     res.status(400).json({ error: "sessionId and edge (source, target) are required." });
@@ -15200,7 +15390,7 @@ router25.post("/greenfield/edges", requireUser, (req, res) => {
   const draft = appendDraftEdge(sessionId2, edge);
   res.status(201).json({ draft });
 });
-router25.post("/greenfield/nodes/:nodeId/to-todo", requireUser, async (req, res) => {
+router26.post("/greenfield/nodes/:nodeId/to-todo", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15244,7 +15434,7 @@ router25.post("/greenfield/nodes/:nodeId/to-todo", requireUser, async (req, res)
   }
   res.status(201).json({ todo: data });
 });
-router25.post("/greenfield/nodes/:nodeId/to-rail", requireUser, async (req, res) => {
+router26.post("/greenfield/nodes/:nodeId/to-rail", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15295,7 +15485,7 @@ router25.post("/greenfield/nodes/:nodeId/to-rail", requireUser, async (req, res)
     res.status(500).json({ error: msg });
   }
 });
-router25.post("/greenfield/implement", requireUser, async (req, res) => {
+router26.post("/greenfield/implement", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15410,10 +15600,10 @@ ${designerCtx.join("\n")}`;
 });
 
 // src/chatThreads.ts
-import { Router as Router24 } from "express";
-var router26 = Router24();
+import { Router as Router25 } from "express";
+var router27 = Router25();
 var MESSAGES_LIMIT = 100;
-router26.get("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
+router27.get("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15431,7 +15621,7 @@ router26.get("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAc
   }
   res.json({ threads: data ?? [] });
 });
-router26.post("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
+router27.post("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15445,7 +15635,7 @@ router26.post("/workspaces/:workspaceId/threads", requireUser, requireWorkspaceA
   }
   res.status(201).json(data);
 });
-router26.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
+router27.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15469,7 +15659,7 @@ router26.get("/workspaces/:workspaceId/threads/:threadId/messages", requireUser,
   }
   res.json({ messages: data ?? [] });
 });
-router26.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
+router27.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15507,7 +15697,7 @@ router26.post("/workspaces/:workspaceId/threads/:threadId/messages", requireUser
   await supabaseAdmin.from("chat_threads").update({ updated_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", threadId);
   res.status(201).json({ messages: data ?? [] });
 });
-router26.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, requireWorkspaceAccess, async (req, res) => {
+router27.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15526,13 +15716,13 @@ router26.patch("/workspaces/:workspaceId/threads/:threadId", requireUser, requir
   }
   res.json(data);
 });
-var chatThreadRoutes = router26;
+var chatThreadRoutes = router27;
 
 // src/userMemories.ts
-import { Router as Router25 } from "express";
-var router27 = Router25();
+import { Router as Router26 } from "express";
+var router28 = Router26();
 var CONTENT_MAX = 2e3;
-router27.get("/user/memories", requireUser, async (req, res) => {
+router28.get("/user/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15546,7 +15736,7 @@ router27.get("/user/memories", requireUser, async (req, res) => {
   }
   res.json({ memories: data ?? [] });
 });
-router27.post("/user/memories", requireUser, async (req, res) => {
+router28.post("/user/memories", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15573,7 +15763,7 @@ router27.post("/user/memories", requireUser, async (req, res) => {
   }
   res.status(201).json(data);
 });
-router27.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
+router28.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15595,12 +15785,12 @@ router27.delete("/user/memories/:memoryId", requireUser, async (req, res) => {
   }
   res.status(204).send();
 });
-var userMemoriesRoutes = router27;
+var userMemoriesRoutes = router28;
 
 // src/annotationComments.ts
-import { Router as Router26 } from "express";
-var router28 = Router26();
-router28.get("/workspaces/:workspaceId/annotations/:annotationId/comments", requireUser, requireWorkspaceAccess, async (req, res) => {
+import { Router as Router27 } from "express";
+var router29 = Router27();
+router29.get("/workspaces/:workspaceId/annotations/:annotationId/comments", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15618,7 +15808,7 @@ router28.get("/workspaces/:workspaceId/annotations/:annotationId/comments", requ
   }
   res.json({ comments: data ?? [] });
 });
-router28.post("/workspaces/:workspaceId/annotations/:annotationId/comments", requireUser, requireWorkspaceAccess, async (req, res) => {
+router29.post("/workspaces/:workspaceId/annotations/:annotationId/comments", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15651,7 +15841,7 @@ router28.post("/workspaces/:workspaceId/annotations/:annotationId/comments", req
   }
   res.status(201).json({ comment: data });
 });
-router28.delete("/workspaces/:workspaceId/annotations/:annotationId/comments/:commentId", requireUser, requireWorkspaceAccess, async (req, res) => {
+router29.delete("/workspaces/:workspaceId/annotations/:annotationId/comments/:commentId", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15675,9 +15865,9 @@ router28.delete("/workspaces/:workspaceId/annotations/:annotationId/comments/:co
 });
 
 // src/workspaceMembers.ts
-import { Router as Router27 } from "express";
-var router29 = Router27();
-router29.get("/workspaces/:workspaceId/members", requireUser, requireWorkspaceAccess, async (req, res) => {
+import { Router as Router28 } from "express";
+var router30 = Router28();
+router30.get("/workspaces/:workspaceId/members", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15697,7 +15887,7 @@ router29.get("/workspaces/:workspaceId/members", requireUser, requireWorkspaceAc
   }));
   res.json({ members });
 });
-router29.post("/workspaces/:workspaceId/members", requireUser, requireWorkspaceAccess, async (req, res) => {
+router30.post("/workspaces/:workspaceId/members", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15742,7 +15932,7 @@ router29.post("/workspaces/:workspaceId/members", requireUser, requireWorkspaceA
   }
   res.status(201).json({ ok: true, userId: targetUserId, role: roleVal });
 });
-router29.patch("/workspaces/:workspaceId/members/:memberId", requireUser, requireWorkspaceAccess, async (req, res) => {
+router30.patch("/workspaces/:workspaceId/members/:memberId", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15765,7 +15955,7 @@ router29.patch("/workspaces/:workspaceId/members/:memberId", requireUser, requir
   }
   res.json({ ok: true, role });
 });
-router29.delete("/workspaces/:workspaceId/members/:memberId", requireUser, requireWorkspaceAccess, async (req, res) => {
+router30.delete("/workspaces/:workspaceId/members/:memberId", requireUser, requireWorkspaceAccess, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -15797,13 +15987,13 @@ router29.delete("/workspaces/:workspaceId/members/:memberId", requireUser, requi
 
 // src/githubWebhook.ts
 import crypto7 from "crypto";
-import { Router as Router28 } from "express";
+import { Router as Router29 } from "express";
 import * as path41 from "path";
 import { fileURLToPath as fileURLToPath6 } from "url";
 var __dirname7 = path41.dirname(fileURLToPath6(import.meta.url));
 var projectRoot3 = process.env.PROJECT_ROOT?.trim() || scanProjectRoot || path41.resolve(__dirname7, "../../..");
 var WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET?.trim() || null;
-var router30 = Router28();
+var router31 = Router29();
 function verifySignature(payload, signature) {
   if (!WEBHOOK_SECRET || !signature) return false;
   const expected = "sha256=" + crypto7.createHmac("sha256", WEBHOOK_SECRET).update(payload).digest("hex");
@@ -15814,7 +16004,7 @@ function fullNameFromPayload(payload) {
   const name = repo?.full_name;
   return typeof name === "string" ? name : null;
 }
-router30.post("/", async (req, res) => {
+router31.post("/", async (req, res) => {
   if (!WEBHOOK_SECRET) {
     res.status(503).json({ error: "GitHub webhook not configured." });
     return;
@@ -15917,9 +16107,9 @@ router30.post("/", async (req, res) => {
 });
 
 // src/graphSnapshots.ts
-import { Router as Router29 } from "express";
-var router31 = Router29();
-router31.get(
+import { Router as Router30 } from "express";
+var router32 = Router30();
+router32.get(
   "/workspaces/:workspaceId/graph-snapshots",
   requireUser,
   requireWorkspaceAccess,
@@ -15946,7 +16136,7 @@ router31.get(
     res.json({ snapshots: summaries });
   }
 );
-router31.get(
+router32.get(
   "/workspaces/:workspaceId/graph-diff",
   requireUser,
   requireWorkspaceAccess,
@@ -15995,7 +16185,7 @@ router31.get(
     });
   }
 );
-router31.get(
+router32.get(
   "/workspaces/:workspaceId/graphs/:graphId",
   requireUser,
   requireWorkspaceAccess,
@@ -16020,12 +16210,12 @@ router31.get(
 );
 
 // src/repoDiff.ts
-import { Router as Router30 } from "express";
+import { Router as Router31 } from "express";
 import * as path42 from "path";
 import { fileURLToPath as fileURLToPath7 } from "url";
 var __dirname8 = path42.dirname(fileURLToPath7(import.meta.url));
 var projectRoot4 = process.env.PROJECT_ROOT?.trim() || scanProjectRoot || path42.resolve(__dirname8, "../../..");
-var router32 = Router30();
+var router33 = Router31();
 function computeDiff(base, head) {
   const baseNodeIds = new Set((base.nodes ?? []).map((n) => n.id));
   const headNodeIds = new Set((head.nodes ?? []).map((n) => n.id));
@@ -16056,7 +16246,7 @@ function computeDiff(base, head) {
     }
   };
 }
-router32.get(
+router33.get(
   "/workspaces/:workspaceId/diff",
   requireUser,
   requireWorkspaceAccess,
@@ -16101,8 +16291,8 @@ router32.get(
 );
 
 // src/githubPrComments.ts
-import { Router as Router31 } from "express";
-var router33 = Router31();
+import { Router as Router32 } from "express";
+var router34 = Router32();
 var GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim() || process.env.GITHUB_ACCESS_TOKEN?.trim() || null;
 async function resolveLineForComment(owner, repo, filePath, commitId, headers, node, violation) {
   try {
@@ -16145,7 +16335,7 @@ async function resolveLineForComment(owner, repo, filePath, commitId, headers, n
 function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-router33.post(
+router34.post(
   "/workspaces/:workspaceId/pr-comment",
   requireUser,
   requireWorkspaceAccess,
@@ -16294,11 +16484,11 @@ router33.post(
 );
 
 // src/githubConnect.ts
-import { Router as Router32 } from "express";
-var router34 = Router32();
+import { Router as Router33 } from "express";
+var router35 = Router33();
 var SUPABASE_URL = process.env.SUPABASE_URL?.trim();
 var APP_URL = process.env.APP_URL?.trim() || "http://localhost:5174";
-router34.get("/auth/github-connect", requireUser, (req, res) => {
+router35.get("/auth/github-connect", requireUser, (req, res) => {
   const workspaceId = String(req.query.workspaceId ?? "").trim();
   if (!workspaceId) {
     res.status(400).json({ error: "workspaceId is required." });
@@ -16312,7 +16502,7 @@ router34.get("/auth/github-connect", requireUser, (req, res) => {
   const authorizeUrl = `${SUPABASE_URL}/auth/v1/authorize?provider=github&redirect_to=${encodeURIComponent(redirectTo)}&response_type=code&scope=read:user user:email repo`;
   res.redirect(302, authorizeUrl);
 });
-router34.get(
+router35.get(
   "/github/repos",
   requireUser,
   async (req, res) => {
@@ -16356,9 +16546,9 @@ router34.get(
 );
 
 // src/soloWorkspace.ts
-import { Router as Router33 } from "express";
-var router35 = Router33();
-router35.get("/solo/workspace", requireUser, async (req, res) => {
+import { Router as Router34 } from "express";
+var router36 = Router34();
+router36.get("/solo/workspace", requireUser, async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
@@ -16382,7 +16572,7 @@ router35.get("/solo/workspace", requireUser, async (req, res) => {
 });
 
 // src/resourceClassify.ts
-import { Router as Router34 } from "express";
+import { Router as Router35 } from "express";
 import fs36 from "fs";
 import path43 from "path";
 import { fileURLToPath as fileURLToPath8 } from "url";
@@ -16433,7 +16623,7 @@ function writeClassify(cfg) {
   } catch {
   }
 }
-var resourceClassifyRoutes = Router34();
+var resourceClassifyRoutes = Router35();
 resourceClassifyRoutes.get("/resources/classify", (_req, res) => {
   try {
     res.json(readClassify());
@@ -16466,7 +16656,7 @@ resourceClassifyRoutes.post("/resources/classify", (req, res) => {
 });
 
 // src/traceDisputes.ts
-import { Router as Router35 } from "express";
+import { Router as Router36 } from "express";
 import fs37 from "fs";
 import path44 from "path";
 import { fileURLToPath as fileURLToPath9 } from "url";
@@ -16506,7 +16696,7 @@ function writeDisputes(file) {
   } catch {
   }
 }
-var traceDisputesRoutes = Router35();
+var traceDisputesRoutes = Router36();
 traceDisputesRoutes.get("/resources/disputes", (_req, res) => {
   try {
     res.json(readDisputes());
@@ -16542,7 +16732,7 @@ traceDisputesRoutes.post("/resources/disputes", (req, res) => {
 });
 
 // src/reachRulesRoutes.ts
-import { Router as Router36 } from "express";
+import { Router as Router37 } from "express";
 import fs39 from "fs";
 import path46 from "path";
 import { fileURLToPath as fileURLToPath10 } from "url";
@@ -17062,7 +17252,7 @@ function generateStarterRules(inventory) {
 var __dirname11 = path46.dirname(fileURLToPath10(import.meta.url));
 var REPO_ROOT3 = path46.resolve(__dirname11, "../../..");
 var RULES_PATH = path46.join(REPO_ROOT3, "reach.rules");
-var reachRulesRoutes = Router36();
+var reachRulesRoutes = Router37();
 reachRulesRoutes.get("/reach/rules", (_req, res) => {
   try {
     const text = fs39.existsSync(RULES_PATH) ? fs39.readFileSync(RULES_PATH, "utf8") : "";
@@ -17151,7 +17341,7 @@ app.use(cors());
 app.use(
   "/api/webhooks/github",
   express3.raw({ type: "application/json", limit: "1mb" }),
-  router30
+  router31
 );
 app.use(
   express3.json({
@@ -17170,6 +17360,7 @@ app.use("/api", router4);
 app.use("/api", router5);
 app.use("/api", router11);
 app.use("/api", router23);
+app.use("/api", router24);
 app.use("/api", router12);
 app.use("/api", router13);
 app.use("/api", router14);
@@ -17180,22 +17371,22 @@ app.use("/api", chatThreadRoutes);
 app.use("/api", userMemoriesRoutes);
 app.use("/api", router18);
 app.use("/api", router15);
-app.use("/api", router28);
 app.use("/api", router29);
+app.use("/api", router30);
 app.use("/api", router2);
-app.use("/api", router31);
-app.use("/api", router);
 app.use("/api", router32);
+app.use("/api", router);
 app.use("/api", router33);
 app.use("/api", router34);
+app.use("/api", router35);
 app.use("/api", router19);
 app.use("/api", router22);
+app.use("/api", router26);
 app.use("/api", router25);
-app.use("/api", router24);
 app.use("/api", router7);
 app.use("/api", router20);
 app.use("/api", router21);
-app.use("/api", router35);
+app.use("/api", router36);
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
