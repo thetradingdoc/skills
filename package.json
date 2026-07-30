@@ -151,6 +151,7 @@
     "concurrently": "^9.1.0",
     "esbuild": "^0.24.0",
     "playwright": "^1.58.2",
+    "supabase": "^2.110.0",
     "supertest": "^7.2.2",
     "tsx": "^4.21.0",
     "vitest": "^2.1.0"

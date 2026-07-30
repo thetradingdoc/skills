@@ -130,7 +130,11 @@ export function rankFindings(
       ? " Reachable through " + g.length + " entry points: " + g.map((x: any) => fileName(x.file)).join(", ") + "."
       : "";
     out.push({
-      id: "auth:" + lead.catalog,
+      // Keyed on the lead file, not the catalog hash: the hash changes when
+      // any tool is added, which would orphan every decision attached to this
+      // finding. A file path survives that. It does not survive a rename —
+      // that is the identity problem this inherits knowingly.
+      id: "auth:" + lead.file,
       severity: "critical",
       title: "No authentication before tool execution" + (g.length > 1 ? " (" + g.length + " entry points)" : ""),
       detail: fileName(lead.file) + " runs " + lead.tools + " tools, " + lead.parts.join(" and ") + ", with no identity check on the path into tool execution." + doors,
