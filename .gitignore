@@ -27,3 +27,5 @@ webapp/server/.agent/greenfield/
 tmp-audit-empty-repo/
 test-results/
 logs/
+
+webapp/server/dist/

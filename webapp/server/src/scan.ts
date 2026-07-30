@@ -140,12 +140,30 @@ router.post("/scan", optionalUser, async (req, res) => {
       if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
     }
     if (!workspaceIdForScan) {
+      // Reuse an existing workspace for this repo rather than creating a new
+      // one on every scan. Without this each scan produced a fresh workspace,
+      // so findings and decisions were written to one and read back from the
+      // next — and the scan diff never had a previous scan to compare against.
+      const { data: existing } = await supabaseAdmin
+        .from("workspaces")
+        .select("id")
+        .eq("owner_id", ownerId)
+        .eq("name", defaultName)
+        .is("archived_at", null)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (existing?.id) {
+        workspaceIdForScan = existing.id;
+      } else {
       const { data: ws, error: wsErr } = await supabaseAdmin
         .from("workspaces")
         .insert({ owner_id: ownerId, name: defaultName })
         .select("id")
         .single();
       if (!wsErr && ws?.id) workspaceIdForScan = ws.id;
+      }
     }
   }
 
