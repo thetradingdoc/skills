@@ -7736,7 +7736,10 @@ export default function App() {
               )}
             </div>
           )}
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {/* The tabs are the most-used control here, so they anchor the row
+              rather than floating at its right edge where anything appearing
+              to their left shifts them. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
             {graph && (
               <div
                 style={{
@@ -7933,7 +7936,10 @@ export default function App() {
                   >
                     3D
                   </button>
-                {graphViewMode !== "agents" && graphViewMode !== "reach" && graphViewMode !== "resources" && graphViewMode !== "guard" && graphViewMode !== "layers" && graphViewMode !== "standard" && (
+                {/* Layout and canvas-mode controls act on the module graph only. An
+                    exclusion list meant every new view had to be remembered, and
+                    none were — assessment, flow and changes all leaked through. */}
+                {isCanvasView && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -8013,7 +8019,7 @@ export default function App() {
               </button>
             </div>
             )}
-            <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+            <div style={{ position: "relative", display: "flex", alignItems: "center", marginLeft: "auto" }}>
               <button
                 type="button"
                 onClick={() => setShowExportMenu((v) => !v)}

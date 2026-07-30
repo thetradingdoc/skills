@@ -129,9 +129,14 @@ export function executeRunCommand(
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     return { error: "Invalid project root" };
   }
-  const allowed = RUN_COMMAND_ALLOWLIST.some(
-    (prefix) => trimmed === prefix || trimmed.startsWith(prefix)
-  );
+  // Prefix matching with shell:true is not a guard: "npm test" passes and so
+  // does "npm test --x=$(rm -rf ~)", since the prefix matches and $() is not in
+  // SHELL_META. Match argv segments instead, and run without a shell.
+  const argv = trimmed.split(/\s+/).filter(Boolean);
+  const allowed = RUN_COMMAND_ALLOWLIST.some((prefix) => {
+    const p = prefix.trim().split(/\s+/).filter(Boolean);
+    return p.every((seg, i) => argv[i] === seg);
+  });
   if (!allowed) {
     return { error: "Command not allowed. Use: npx tsc --noEmit, npx eslint, npm test, etc." };
   }
@@ -139,8 +144,9 @@ export function executeRunCommand(
     return { error: "Command contains disallowed characters. No &&, |, ;, or shell metacharacters." };
   }
   try {
-    const result = spawnSync(trimmed, {
-      shell: true,
+    // no shell means no substitution to exploit
+    const result = spawnSync(argv[0], argv.slice(1), {
+      shell: false,
       cwd: rootPath,
       encoding: "utf-8",
       timeout: 60000,

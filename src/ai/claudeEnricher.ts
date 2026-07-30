@@ -1200,7 +1200,7 @@ export async function askAboutArchitecture(
   // Phase 1 chat needs retrieval and answering only. The full set (Jira,
   // scaffold, run_command, propose_architecture, skills) is phase 2 machinery
   // and made the model exhaust its step budget exploring instead of answering.
-  const CHAT_TOOL_NAMES = new Set(["retrieve_files", "grep_codebase", "read_file", "answer"]);
+  const CHAT_TOOL_NAMES = new Set(["retrieve_files", "grep_codebase", "read_file", "run_command", "answer"]);
   const CHAT_TOOLS = TOOLS.filter((t) => CHAT_TOOL_NAMES.has(t.name));
   let finalAnswer = "";
   let finalGraphCommand: GraphCommand | undefined;
