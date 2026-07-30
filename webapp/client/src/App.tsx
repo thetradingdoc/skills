@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { chatToMarkdown, chatFilename } from "./chatExport";
 import { buildAssessment } from "./assessment";
 import { AssessmentView } from "./AssessmentView";
 import { FlowView } from "./FlowView";
@@ -5145,11 +5146,41 @@ export default function App() {
           >
             Analysis
           </span>
+          {/* A conversation you cannot take anywhere is scrollback, not a
+              record. Several sessions here have produced findings worth
+              keeping — markdown pastes into a PR, an issuer a document. */}
+          <button
+            type="button"
+            title="Download this conversation as markdown"
+            disabled={chatHistory.length === 0}
+            onClick={() => {
+              const label = chatTabs.find((t) => t.id === activeChatId)?.label;
+              downloadText(
+                chatFilename(label, graph?.projectName),
+                "text/markdown",
+                chatToMarkdown(chatHistory as never[], {
+                  title: label,
+                  repo: graph?.projectName,
+                })
+              );
+            }}
+            style={{
+              marginLeft: "auto",
+              padding: "2px 8px",
+              borderRadius: 999,
+              border: "1px solid #30363d",
+              background: "transparent",
+              color: chatHistory.length === 0 ? "#484f58" : "#8b949e",
+              fontSize: 10,
+              cursor: chatHistory.length === 0 ? "default" : "pointer",
+            }}
+          >
+            Export
+          </button>
           <button
             type="button"
             onClick={() => setShowThinkingPanel((v) => !v)}
             style={{
-              marginLeft: "auto",
               padding: "2px 8px",
               borderRadius: 999,
               border: "1px solid #30363d",
