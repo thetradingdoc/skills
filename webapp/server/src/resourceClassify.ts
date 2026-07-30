@@ -2,6 +2,8 @@
  * Persist resource classification decisions to resources.classify.json.
  */
 import { Router, type Request, type Response } from "express";
+import { optionalUser } from "./middleware/optionalUser.js";
+import { supabaseAdmin } from "./supabaseAdmin.js";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -78,7 +80,51 @@ resourceClassifyRoutes.get("/resources/classify", (_req: Request, res: Response)
   }
 });
 
-resourceClassifyRoutes.post("/resources/classify", (req: Request, res: Response) => {
+/**
+ * A classification is a judgement, and a judgement without an author is not
+ * reviewable. The JSON file stays the source of truth for the scanner; this
+ * additionally records who decided, when, and why in the same log findings
+ * use, so one query answers "what has anyone decided about this system".
+ */
+async function logClassification(
+  workspaceId: string | undefined,
+  key: string,
+  cls: string,
+  rationale: string | undefined,
+  actorId: string | undefined,
+  actorName: string | undefined
+): Promise<void> {
+  if (!workspaceId || !supabaseAdmin) return;
+  const findingId = "resource:" + key;
+  try {
+    await supabaseAdmin.rpc("upsert_finding_from_scan", {
+      p_workspace_id: workspaceId,
+      p_finding_id: findingId,
+      p_severity: cls === "patient" || cls === "money" ? "medium" : "low",
+      p_title: key + " classified as " + cls,
+      p_detail: rationale ?? null,
+      p_source: "resources",
+      p_agent_file: null,
+    });
+    await supabaseAdmin.rpc("append_finding_log", {
+      p_workspace_id: workspaceId,
+      p_finding_id: findingId,
+      p_entry: {
+        at: new Date().toISOString(),
+        actor: actorId ?? null,
+        actor_name: actorName ?? "unknown",
+        kind: "state",
+        from: null,
+        to: cls,
+        text: rationale ?? null,
+      },
+    });
+  } catch {
+    // Classification must not fail because the log is unavailable.
+  }
+}
+
+resourceClassifyRoutes.post("/resources/classify", optionalUser, async (req: Request, res: Response) => {
   try {
     const updates = req.body?.updates;
     if (!Array.isArray(updates) || updates.length === 0) {
@@ -96,6 +142,15 @@ resourceClassifyRoutes.post("/resources/classify", (req: Request, res: Response)
       cfg.unclassified = cfg.unclassified.filter((k) => k !== key);
     }
     writeClassify(cfg);
+
+    const workspaceId = req.body?.workspaceId;
+    const rationale = req.body?.rationale;
+    const user = (req as any).user;
+    for (const u of updates) {
+      const key = typeof u?.key === "string" ? u.key.toLowerCase() : "";
+      if (!key || !CLASSES.has(u?.class)) continue;
+      await logClassification(workspaceId, key, u.class, rationale, user?.id, user?.email);
+    }
     res.json({ ok: true, classify: cfg });
   } catch (e) {
     res.status(500).json({ error: String(e) });

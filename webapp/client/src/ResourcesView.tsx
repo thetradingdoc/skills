@@ -12,6 +12,7 @@ type Props = {
   agents: AgentInventoryResult | undefined;
   apiBase: string;
   onGraphPatch?: (patch: (g: ArchGraph) => ArchGraph) => void;
+  workspaceId?: string | null;
 };
 
 type ClassifyFile = {
@@ -87,7 +88,7 @@ function applyClassToGraph(graph: ArchGraph, key: string, cls: ResourceClass): A
   };
 }
 
-export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) {
+export default function ResourcesView({ agents, apiBase, onGraphPatch, workspaceId }: Props) {
   const [classify, setClassify] = useState<ClassifyFile | null>(null);
   const [unclassifiedOnly, setUnclassifiedOnly] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -198,6 +199,16 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
 
   async function classifyKeys(keys: string[], cls: ResourceClass) {
     if (!keys.length) return;
+    // Calling something patient or money is a judgement someone will later be
+    // asked to defend, so ask for the reason while it is still in mind.
+    let rationale: string | undefined;
+    if (cls === "patient" || cls === "money") {
+      const why = window.prompt(
+        "Why is " + (keys.length === 1 ? keys[0] : keys.length + " resources") +
+        " classified as " + cls + "? (optional, but this is what makes the decision reviewable)"
+      );
+      rationale = why?.trim() || undefined;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -206,6 +217,8 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch }: Props) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           updates: keys.map((key) => ({ key, class: cls })),
+          workspaceId,
+          rationale,
         }),
       });
       const data = await res.json();

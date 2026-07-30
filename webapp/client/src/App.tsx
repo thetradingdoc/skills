@@ -8134,6 +8134,7 @@ export default function App() {
               <ResourcesView
                 agents={graph?.agents}
                 apiBase={API_BASE}
+                workspaceId={activeWorkspaceId}
                 onGraphPatch={(patch) => setGraph((g) => (g ? patch(g) : g))}
               />
             ) : graphViewMode === "guard" ? (
