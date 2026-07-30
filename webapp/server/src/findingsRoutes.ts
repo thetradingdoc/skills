@@ -313,4 +313,47 @@ router.post("/findings/:findingId/comment", requireUser, async (req, res) => {
   res.json({ finding: updated });
 });
 
+/**
+ * The scan before the current one, for the same workspace. Returns null when
+ * there is only one — a first scan has nothing to be compared against, and
+ * saying so is better than inventing a baseline.
+ */
+router.get("/scans/previous", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const workspaceId = String(req.query.workspaceId ?? "").trim();
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required." });
+    return;
+  }
+  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
+    res.status(403).json({ error: "Access denied." });
+    return;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from("graphs")
+    .select("id, created_at, graph_json")
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false })
+    .limit(2);
+
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  if (!data || data.length < 2) {
+    res.json({ previous: null, reason: "Only one scan stored for this workspace." });
+    return;
+  }
+
+  res.json({
+    previous: data[1].graph_json,
+    previousDate: data[1].created_at,
+    currentDate: data[0].created_at,
+  });
+});
+
 export { router as findingsRoutes };
