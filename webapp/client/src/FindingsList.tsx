@@ -415,7 +415,9 @@ export function FindingsList({
                     cursor: "pointer",
                   }}
                 >
-                  {comments > 0 ? comments + " ▾" : isOpen ? "close" : "open"}
+                  {/* Never "open" here — that is the state chip beside it, and two
+                      controls a few pixels apart reading the same word is a bug. */}
+                  {comments > 0 ? comments + (isOpen ? " ▴" : " ▾") : isOpen ? "▴" : "▾"}
                 </button>
               </span>
             </div>
