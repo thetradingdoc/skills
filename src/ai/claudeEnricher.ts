@@ -21,7 +21,7 @@ import { registerSkill, formatSkillSummary } from "../agent/skillStore";
 import { summariseAgentInventory } from "./agentSummary";
 import { routeQuestion } from "./questionRouter";
 import { retrieveFileSnippets } from "./retriever";
-import { executeEditFile, executeCreateFile } from "./fileEdit";
+import { executeEditFile, executeCreateFile, restoreFile, appendWriteLog } from "./fileEdit";
 import {
   executeReadFile,
   executeGrep,
@@ -507,7 +507,30 @@ function buildSystemPrompt(graph: ArchGraph): string {
 
 You reason in layers, understand module boundaries, and use tools to inspect real code before making claims.
 
-When the user asks to build something new, always propose_architecture first before any code is written.
+When the user asks to build something new, describe what you intend to change and why before writing it.
+
+## Editing files
+
+You can change this codebase with edit_file and create_file. Both write to
+real files, so treat them as you would a commit rather than a draft.
+
+- Read the file before editing it. Never guess at contents you have not seen.
+- edit_file replaces text that must appear EXACTLY ONCE. Whitespace, indentation
+  and line breaks are all significant — copy the text verbatim from what you read.
+- If an edit is refused because oldStr matched several times, do not retry the
+  same anchor. Widen it with the surrounding lines until only one occurrence
+  matches, then try again.
+- If an it is refused because oldStr matched nothing, re-read the file. The
+  text you expected is not there, and guessing again will not help.
+- Change one thing at a time. Several small edits are easier to verify and undo
+  than one large replacement.
+- Use create_file only for files that do not exist. It refuses an existing path.
+- Every write is typechecked automatically and the result comes back with the
+  tool response. If the typecheck fails because of your change, fix it before
+  moving on. If it fails for a reason that predates your change, say so plainly
+  rather than claiming success or claiming you broke something you did not.
+- Never report a file as written unless the tool confirmed it. If a write
+  returned an error, say what the error was.
 
 ## Response formatting rules
 - Use **bold** for section titles and emphasis, never ## markdown headers
@@ -779,12 +802,26 @@ async function executeTool(
       // that refuses to write.
       const check = executeRunCommand(basePath, "npx tsc --noEmit");
       const clean = (check.exitCode ?? -1) === 0;
+      // A write that broke the build is put back. Leaving a half-applied change
+      // in place and reporting the failure would make the tree worse than before
+      // the edit, and the model cannot always tell which of its edits caused it.
+      if (!clean && res.written && res.previous !== undefined) {
+        restoreFile(res.written, res.previous);
+        appendWriteLog(basePath, {
+          action: "restore",
+          file: String(toolInput.filePath ?? ""),
+          note: "typecheck failed, change reverted",
+        });
+        return {
+          result:
+            "Edit reverted: it did not typecheck.\n" +
+            (check.result ?? check.error ?? "") +
+            "\nThe file is unchanged. Read it again and try a different edit.",
+        };
+      }
+      appendWriteLog(basePath, { action: "edit", file: String(toolInput.filePath ?? "") });
       return {
-        result:
-          res.result +
-          (clean
-            ? " Typecheck passed."
-            : " Typecheck FAILED after this edit:\n" + (check.result ?? check.error ?? "")),
+        result: res.result + (clean ? " Typecheck passed." : " Typecheck reported errors that predate this edit:\n" + (check.result ?? "")),
       };
     }
     case "create_file": {
@@ -793,14 +830,18 @@ async function executeTool(
         contents: String(toolInput.contents ?? ""),
       });
       if (res.error) return { result: "Error: " + res.error };
+      appendWriteLog(basePath, { action: "create", file: String(toolInput.filePath ?? "") });
       const check = executeRunCommand(basePath, "npx tsc --noEmit");
       const clean = (check.exitCode ?? -1) === 0;
+      // A new file that does not typecheck is usually still wanted — the model
+      // can fix it next turn. Only edits to existing files are reverted, since
+      // those leave the tree worse than before.
       return {
         result:
           res.result +
           (clean
             ? " Typecheck passed."
-            : " Typecheck FAILED after this file was added:\n" + (check.result ?? check.error ?? "")),
+            : " Typecheck reported errors:\n" + (check.result ?? check.error ?? "")),
       };
     }
     case "run_command": {

@@ -13,6 +13,11 @@
  * can widen the anchor and try again — which is a better failure than a
  * confident write into the wrong place.
  *
+ * Undo strategy, decided rather than accumulated: git is the record for
+ * tracked files, .agent/writes.jsonl says what the tool changed and when, and
+ * an edit that fails its typecheck is reverted immediately. No separate backup
+ * mechanism — two overlapping undo systems is worse than either alone.
+ *
  * Paths follow the same guards executeReadFile and executeScaffoldNode use:
  * no traversal, nothing outside the project root, no environment files.
  */
@@ -68,6 +73,34 @@ function resolveWritePath(
   }
 
   return { abs };
+}
+
+/**
+ * A record of every write, in the repository being edited.
+ *
+ * Today a file was written successfully and three separate searches failed to
+ * find it, because the clone lives somewhere other than where I assumed. A log
+ * answers "what did the tool actually change, and where" in one line rather
+ * than by inference.
+ */
+export function appendWriteLog(
+  rootPath: string,
+  entry: { action: "edit" | "create" | "restore"; file: string; note?: string }
+): void {
+  try {
+    const dir = path.join(path.resolve(rootPath), ".agent");
+    fs.mkdirSync(dir, { recursive: true });
+    const line =
+      JSON.stringify({
+        at: new Date().toISOString(),
+        action: entry.action,
+        file: entry.file,
+        note: entry.note ?? null,
+      }) + "\n";
+    fs.appendFileSync(path.join(dir, "writes.jsonl"), line, "utf-8");
+  } catch {
+    // The log must never be the reason a write fails.
+  }
 }
 
 export type EditResult = {
