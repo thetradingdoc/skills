@@ -21,6 +21,7 @@ import { registerSkill, formatSkillSummary } from "../agent/skillStore";
 import { summariseAgentInventory } from "./agentSummary";
 import { routeQuestion } from "./questionRouter";
 import { retrieveFileSnippets } from "./retriever";
+import { executeEditFile, executeCreateFile } from "./fileEdit";
 import {
   executeReadFile,
   executeGrep,
@@ -412,6 +413,37 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "edit_file",
+    description:
+      "Replace text in an existing file. oldStr must match exactly once, " +
+      "including whitespace and line breaks. If it matches zero times or more " +
+      "than once the edit is refused and you are told the count, so widen " +
+      "oldStr with surrounding lines and retry. Use an empty newStr to delete.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Path relative to the project root" },
+        oldStr: { type: "string", description: "Exact text to replace, unique in the file" },
+        newStr: { type: "string", description: "Replacement text, empty to delete" },
+      },
+      required: ["filePath", "oldStr", "newStr"],
+    },
+  },
+  {
+    name: "create_file",
+    description:
+      "Create a file that does not yet exist. Refuses if the path is already " +
+      "taken — use edit_file for existing files.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Path relative to the project root" },
+        contents: { type: "string", description: "Full file contents" },
+      },
+      required: ["filePath", "contents"],
+    },
+  },
+  {
     name: "answer",
     description: "Provide the final answer to the user's question.",
     input_schema: {
@@ -628,6 +660,10 @@ function formatReasoningStep(
       return `Searched codebase for "${String(input.pattern ?? "").slice(0, 40)}"`;
     case "read_file":
       return `Read file ${String(input.path ?? "").slice(-60)}`;
+    case "edit_file":
+      return `Edited file ${String(input.filePath ?? "").slice(-60)}`;
+    case "create_file":
+      return `Created file ${String(input.filePath ?? "").slice(-60)}`;
     case "run_command":
       return `Ran command: ${String(input.command ?? "").slice(0, 50)}`;
     case "run_skill":
@@ -729,6 +765,43 @@ async function executeTool(
       const filePath = toolInput.path as string;
       const res = executeReadFile(basePath, filePath);
       return { result: res.result ?? `Error: ${res.error}` };
+    }
+    case "edit_file": {
+      const res = executeEditFile(basePath, {
+        filePath: String(toolInput.filePath ?? ""),
+        oldStr: String(toolInput.oldStr ?? ""),
+        newStr: String(toolInput.newStr ?? ""),
+      });
+      if (res.error) return { result: "Error: " + res.error };
+      // Verify immediately and hand the result back on the same turn, so a
+      // broken write is visible before the model moves on. A tool that
+      // reports success on a tree that no longer compiles is worse than one
+      // that refuses to write.
+      const check = executeRunCommand(basePath, "npx tsc --noEmit");
+      const clean = (check.exitCode ?? -1) === 0;
+      return {
+        result:
+          res.result +
+          (clean
+            ? " Typecheck passed."
+            : " Typecheck FAILED after this edit:\n" + (check.result ?? check.error ?? "")),
+      };
+    }
+    case "create_file": {
+      const res = executeCreateFile(basePath, {
+        filePath: String(toolInput.filePath ?? ""),
+        contents: String(toolInput.contents ?? ""),
+      });
+      if (res.error) return { result: "Error: " + res.error };
+      const check = executeRunCommand(basePath, "npx tsc --noEmit");
+      const clean = (check.exitCode ?? -1) === 0;
+      return {
+        result:
+          res.result +
+          (clean
+            ? " Typecheck passed."
+            : " Typecheck FAILED after this file was added:\n" + (check.result ?? check.error ?? "")),
+      };
     }
     case "run_command": {
       const command = toolInput.command as string;
@@ -1200,7 +1273,7 @@ export async function askAboutArchitecture(
   // Phase 1 chat needs retrieval and answering only. The full set (Jira,
   // scaffold, run_command, propose_architecture, skills) is phase 2 machinery
   // and made the model exhaust its step budget exploring instead of answering.
-  const CHAT_TOOL_NAMES = new Set(["retrieve_files", "grep_codebase", "read_file", "run_command", "answer"]);
+  const CHAT_TOOL_NAMES = new Set(["retrieve_files", "grep_codebase", "read_file", "run_command", "edit_file", "create_file", "answer"]);
   const CHAT_TOOLS = TOOLS.filter((t) => CHAT_TOOL_NAMES.has(t.name));
   let finalAnswer = "";
   let finalGraphCommand: GraphCommand | undefined;

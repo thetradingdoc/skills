@@ -58,7 +58,15 @@ async function main() {
       : null;
 
   let dir: string;
-  if (workspaceId) {
+  // A path that already exists on disk is scanned in place, not cloned.
+  const localPath = repoUrl.trim();
+  const isLocal =
+    !localPath.match(/^https?:/i) &&
+    fs.existsSync(localPath) &&
+    fs.statSync(localPath).isDirectory();
+  if (isLocal) {
+    dir = path.resolve(localPath);
+  } else if (workspaceId) {
     dir = await cloneToStablePath(repoUrl.trim(), workspaceId);
   } else {
     const cloneUrl = authUrl(repoUrl.trim());
@@ -108,7 +116,9 @@ async function main() {
     const bytes = Buffer.byteLength(json, "utf8");
     console.log(JSON.stringify({ ok: true, path: outPath, bytes }));
   } finally {
-    if (!workspaceId && !keepClone && fs.existsSync(dir)) {
+    // never delete a local path: dir is the user's own working tree, not a
+    // temporary clone, and removing it would destroy their work
+    if (!isLocal && !workspaceId && !keepClone && fs.existsSync(dir)) {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }

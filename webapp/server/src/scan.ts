@@ -81,8 +81,15 @@ router.post("/scan", optionalUser, async (req, res) => {
   }
 
   const trimmed = repoUrl.trim();
-  if (!trimmed.match(/github\.com[/:]/i)) {
-    res.status(400).json({ error: "Use a GitHub URL, e.g. https://github.com/owner/repo" });
+  // A local directory is scanned in place. Editing a clone of your own repo
+  // is backwards, and this is the path you want when working on code that is
+  // already on disk.
+  const isLocalDir =
+    !trimmed.match(/^https?:/i) &&
+    fs.existsSync(trimmed) &&
+    fs.statSync(trimmed).isDirectory();
+  if (!isLocalDir && !trimmed.match(/github\.com[/:]/i)) {
+    res.status(400).json({ error: "Use a GitHub URL or a local directory path" });
     return;
   }
 
