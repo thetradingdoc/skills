@@ -343,13 +343,24 @@ const TOOLS: Anthropic.Tool[] = [
   },
   {
     name: "read_file",
-    description: "Read a single file's full contents.",
+    description:
+      "Read a file. Without a line range, large files are truncated to their " +
+      "first 3000 characters, which on a long file is only the header. If you " +
+      "know roughly where to look, pass fromLine.",
     input_schema: {
       type: "object",
       properties: {
         path: {
           type: "string",
           description: "File path relative to project root.",
+        },
+        fromLine: {
+          type: "number",
+          description: "First line to read, 1-based.",
+        },
+        toLine: {
+          type: "number",
+          description: "Last line to read. Defaults to fromLine plus 120.",
         },
       },
       required: ["path"],
@@ -761,7 +772,7 @@ function canTypecheck(basePath: string): boolean {
   try {
     return fs.existsSync(path.join(basePath, "tsconfig.json"));
   } catch {
-    return lse;
+    return false;
   }
 }
 
@@ -805,7 +816,15 @@ async function executeTool(
     }
     case "read_file": {
       const filePath = toolInput.path as string;
-      const res = executeReadFile(basePath, filePath);
+      if (process.env.LOG_TOKENS === "1") {
+        console.log("[read] " + filePath + (toolInput.fromLine ? " from " + toolInput.fromLine : " (whole file, truncated)"));
+      }
+      const res = executeReadFile(
+        basePath,
+        filePath,
+        typeof toolInput.fromLine === "number" ? toolInput.fromLine : undefined,
+        typeof toolInput.toLine === "number" ? toolInput.toLine : undefined
+      );
       return { result: res.result ?? `Error: ${res.error}` };
     }
     case "edit_file": {
@@ -1405,9 +1424,7 @@ export async function askAboutArchitecture(
           ? { tool_choice: { type: "tool" as const, name: "save_skill" as const } }
           : isUsageRequest && step === 0
             ? { tool_choice: { type: "tool" as const, name: "run_skill" as const } }
-            : step === MAX_STEPS - 1
-              ? { tool_choice: { type: "tool" as const, name: "answer" as const } }
-              : {}),
+            : {}),
         // Conversation history grows every step and none of it was cached, so
         // by step 7 nearly ten thousand tokens of prior tool results were being
         // resent at full price. Marking the second-to-last message cacheable
@@ -1587,7 +1604,23 @@ export async function askAboutArchitecture(
 
       if (finalAnswer) break;
 
-      messages.push({ role: "user", content: toolResults });
+      // Caching is prefix-based over tools, then system, then messages. Forcing
+      // tool_choice on the last step changed the tools parameter and invalidated
+      // everything after it — every question ended wita twelve-thousand-token
+      // cache write. Saying it in a message appends to the cached prefix instead.
+      messages.push({
+        role: "user",
+        content:
+          step === MAX_STEPS - 2
+            ? [
+                ...toolResults,
+                {
+                  type: "text" as const,
+                  text: "This is your last turn. Call the answer tool now with what you have, and say plainly what you could not establish.",
+                },
+              ]
+            : toolResults,
+      });
     }
 
     if (!finalAnswer) {

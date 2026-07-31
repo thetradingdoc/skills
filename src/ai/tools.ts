@@ -47,7 +47,12 @@ function isUnderRoot(rootPath: string, absPath: string): boolean {
   return !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-export function executeReadFile(rootPath: string, filePath: string): { result?: string; error?: string } {
+export function executeReadFile(
+  rootPath: string,
+  filePath: string,
+  fromLine?: number,
+  toLine?: number
+): { result?: string; error?: string } {
   const absPath = path.isAbsolute(filePath) ? filePath : path.join(rootPath, filePath);
   const root = path.resolve(rootPath);
   if (!isUnderRoot(root, path.resolve(absPath))) {
@@ -62,8 +67,29 @@ export function executeReadFile(rootPath: string, filePath: string): { result?: 
       return { error: `File not found: ${filePath}` };
     }
     const content = fs.readFileSync(absPath, "utf-8");
-    const truncated = content.length > READ_FILE_MAX_CHARS;
-    const result = truncated ? content.slice(0, READ_FILE_MAX_CHARS) + "\n\n// ... truncated" : content;
+    // A flat character cap on a large file returns its header and nothing
+    // else — the model asks for a 6,839-line service and receives the JSDoc.
+    // With a line range it gets the part that matters, numbered, and small.
+    const allLines = content.split("\n");
+    let result: string;
+
+    if (fromLine && fromLine > 0) {
+      const start = Math.max(0, fromLine - 1);
+      const end = Math.min(allLines.length, toLine && toLine >= fromLine ? toLine : fromLine + 120);
+      const window = allLines.slice(start, end);
+      result =
+        (start > 0 ? "// ... " + start + " earlier lines\n" : "") +
+        window.map((l, i) => (start + i + 1) + "  " + l).join("\n") +
+        (end < allLines.length ? "\n// ... " + (allLines.length - end) + " later lines" : "");
+    } else {
+      const truncated = content.length > READ_FILE_MAX_CHARS;
+      result = truncated
+        ? content.slice(0, READ_FILE_MAX_CHARS) +
+          "\n\n// ... truncated at " + READ_FILE_MAX_CHARS + " characters of " +
+          allLines.length + " lines. Call read_file again with fromLine and toLine " +
+          "to see a specific part."
+        : content;
+    }
     return { result: `--- ${path.relative(rootPath, absPath).replace(/\\/g, "/")} ---\n${result}` };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };

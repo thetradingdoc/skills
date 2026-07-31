@@ -43,10 +43,16 @@ export function summariseAgentInventory(graph: any): string | undefined {
       if (filled.length) L.push("layers present: " + filled.join(", "));
       if (missing.length) L.push("layers MISSING: " + missing.join(", "));
     }
-    const names = tools.slice(0, 40).map((t: any) => t.name).filter(Boolean);
+    // With the declaration site attached, a question about a tool is one
+    // ranged read rather than eight attempts at a truncated file.
+    const names = tools
+      .slice(0, 40)
+      .map((t: any) => (t.handler ? t.name + " (" + t.handler + ")" : t.name))
+      .filter(Boolean);
     if (names.length) L.push("tools: " + names.join(", ") + (tools.length > names.length ? (" (+" + (tools.length - names.length) + " more)") : ""));
     L.push("");
   }
-  L.push("Answer only from the facts above and from files you retrieve. Do not assert that a tool reaches a resource unless it is stated here or proven by a file you read. Where a cell is not-traced, say so rather than assuming it is clear.");
+  L.push("Each tool above lists where it is declared as path:line. To check one, call read_file with fromLine set to that line rather than reading the whole file — a large file is otherwise truncated to its header. " +
+    "Answer only from the facts above and from files you retrieve. Do not assert that a tool reaches a resource unless it is stated here or proven by a file you read. Where a cell is not-traced, say so rather than assuming it is clear.");
   return L.join("\n");
 }
