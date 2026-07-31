@@ -16,6 +16,8 @@ import CodeViewerPanel from "./CodeViewerPanel";
 import { ChangesPanel } from "./ChangesPanel";
 import { FileViewer } from "./FileViewer";
 import { FileBrowser } from "./FileBrowser";
+import { FilesView } from "./FilesView";
+import { FileIssues } from "./FileIssues";
 import type {
   ArchGraph,
   GraphCommand,
@@ -838,7 +840,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard" | "assessment" | "flow" | "changes" | "terminal">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard" | "assessment" | "flow" | "changes" | "terminal" | "files">("2d");
   const [layersAgentFile, setLayersAgentFile] = useState<string | null>(null);
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
@@ -4591,7 +4593,7 @@ export default function App() {
                                   // clicking a node in the 2D module graph.
                                   setSelectedAgentFile(a.file);
                                   setOpenFile({ path: a.file });
-                                  setSidebarTab("code");
+                                  setGraphViewMode("files");
                                 }}
                                 style={{
                                   display: "grid",
@@ -5131,14 +5133,16 @@ export default function App() {
                 onOpen={(path, line) => setOpenFile({ path, line })}
               />
             </div>
-            <div style={{ flex: 1, minHeight: 240 }}>
-              <FileViewer
-                projectRoot={graph?.projectRoot}
+            {/* The sidebar shows what is worth looking at, not the file
+                itself — 400px cannot hold 6,840 lines and should not try. */}
+            <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+              <FileIssues
+                graph={graph}
                 filePath={openFile?.path}
-                line={openFile?.line}
-                apiBase={API_BASE}
-                accessToken={accessToken}
-                onClose={() => setOpenFile(null)}
+                onOpenFull={(path, line) => {
+                  setOpenFile({ path, line });
+                  setGraphViewMode("files");
+                }}
               />
             </div>
           </div>        )}
@@ -7865,6 +7869,24 @@ export default function App() {
                     Agents
                   </button>
                   <button
+                    key="files"
+                    type="button"
+                    title="Browse and read the code"
+                    onClick={() => setGraphViewMode("files")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "files" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "files" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "files" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Files
+                  </button>
+                  <button
                     key="reach"
                     type="button"
                     title="What each tool can touch"
@@ -8239,6 +8261,15 @@ export default function App() {
               />
             ) : graphViewMode === "assessment" ? (
               <AssessmentView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
+            ) : graphViewMode === "files" ? (
+              <FilesView
+                graph={graph}
+                openFile={openFile}
+                onOpenFile={(path, line) => setOpenFile({ path, line })}
+                onClose={() => setOpenFile(null)}
+                apiBase={API_BASE}
+                accessToken={accessToken}
+              />
             ) : graphViewMode === "terminal" ? (
               <TerminalView cwd={graph?.projectRoot} accessToken={accessToken} apiBase={API_BASE} />
             ) : graphViewMode === "changes" ? (
@@ -8246,7 +8277,13 @@ export default function App() {
             ) : graphViewMode === "flow" ? (
               <FlowView agents={graph?.agents} selectedAgentFile={layersAgentFile} onSelectAgent={setLayersAgentFile} />
             ) : graphViewMode === "agents" ? (
-              <AgentsView agents={graph?.agents} />
+              <AgentsView
+                agents={graph?.agents}
+                onOpenFile={(path, line) => {
+                  setOpenFile({ path, line });
+                  setGraphViewMode("files");
+                }}
+              />
             ) : graphViewMode === "reach" ? (
               <ReachView agents={graph?.agents} />
             ) : graphViewMode === "resources" ? (

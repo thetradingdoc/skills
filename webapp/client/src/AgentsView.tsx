@@ -8,6 +8,9 @@ import type { AgentInventoryResult, AgentSurface } from "./types";
 
 type Props = {
   agents: AgentInventoryResult | undefined;
+  /** Open a file at a line. A tool declaration site is the most precise link
+   *  in this app and was previously text you had to copy by hand. */
+  onOpenFile?: (path: string, line?: number) => void;
 };
 
 function fileName(file: string): string {
@@ -71,11 +74,20 @@ function ToolCard({
   name,
   handler,
   note,
+  onOpenFile,
 }: {
   name: string;
   handler: string | null;
   note?: string;
+  onOpenFile?: (path: string, line?: number) => void;
 }) {
+  // handler is "path/to/file.js:981" — the most precise link in the app, and
+  // until now it was text you had to copy into an editor by hand.
+  const target = (() => {
+    if (!handler) return null;
+    const m = handler.match(/^(.*?):(\d+)$/);
+    return m ? { path: m[1], line: Number(m[2]) } : { pa: handler };
+  })();
   return (
     <div
       style={{
@@ -90,9 +102,26 @@ function ToolCard({
     >
       <div style={{ fontSize: 12, color: "#58a6ff", fontWeight: 600 }}>{name}</div>
       {handler && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#8b949e", wordBreak: "break-all" }}>
+        <button
+          type="button"
+          disabled={!onOpenFile || !target}
+          title={onOpenFile ? "Open " + handler : handler}
+          onClick={() => target && onOpenFile?.(target.path, target.line)}
+          style={{
+            marginTop: 4,
+            fontSize: 10,
+            color: onOpenFile ? "#58a6ff" : "#8b949e",
+            wordBreak: "break-all",
+            background: "none",
+            border: 0,
+            padding: 0,
+            textAlign: "left",
+            cursor: onOpenFile ? "pointer" : "default",
+            fontFamily: "inherit",
+          }}
+        >
           {handler}
-        </div>
+        </button>
       )}
       {!handler && note && (
         <div style={{ marginTop: 4, fontSize: 10, color: "#7d8590" }}>{note}</div>
@@ -140,7 +169,7 @@ function CollapsibleGroup({
   );
 }
 
-export default function AgentsView({ agents }: Props) {
+export default function AgentsView({ agents, onOpenFile }: Props) {
   const surfaces = agents?.agents ?? [];
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
@@ -353,6 +382,7 @@ export default function AgentsView({ agents }: Props) {
                   name={t.name}
                   handler={t.handler}
                   note={t.note}
+                  onOpenFile={onOpenFile}
                 />
               ))}
               {(selected.tools?.length ?? 0) === 0 && (
