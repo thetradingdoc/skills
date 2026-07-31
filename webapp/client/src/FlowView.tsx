@@ -17,6 +17,8 @@ type Props = {
   agents: AgentInventoryResult | undefined;
   selectedAgentFile?: string | null;
   onSelectAgent?: (file: string) => void;
+  /** Evidence is "path: reason". The path half is worth opening. */
+  onOpenFile?: (path: string, line?: number) => void;
 };
 
 const CLASS_COLOR: Record<string, string> = {
@@ -115,7 +117,47 @@ function Card({
   );
 }
 
+
+/** Evidence reads "path: reason". Only the path half is worth opening. */
+function EvidenceLink({
+  evidence,
+  onOpenFile,
+}: {
+  evidence?: string | null;
+  onOpenFile?: (path: string, line?: number) => void;
+}) {
+  if (!evidence) return null;
+  const i = evidence.indexOf(":");
+  const path = i > 0 ? evidence.slice(0, i) : null;
+  const rest = i > 0 ? evidence.slice(i + 1) : evidence;
+  const openable = !!path && !!onOpenFile && /\.[jt]sx?$/.test(path);
+  return (
+    <span>
+      {openable ? (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onOpenFile!(path!); }}
+          title={"Open " + path}
+          style={{
+            background: "none",
+            border: 0,
+            padding: 0,
+            font: "inherit",
+            color: "#58a6ff",
+            cursor: "pointer",
+          }}
+        >
+          {path}
+        </button>
+      ) : (
+        <span>{path ?? ""}</span>
+      )}
+      <span>{path ? ":" : ""}{rest}</span>
+    </span>
+  );
+}
 export function FlowView({
+  onOpenFile,
   agents,
   selectedAgentFile,
   onSelectAgent,
@@ -269,7 +311,7 @@ export function FlowView({
                 fontFamily: MONO,
               }}
             >
-              {agent.auth.evidence}
+              <EvidenceLink evidence={agent.auth.evidence} onOpenFile={onOpenFile} />
             </div>
           ) : null}
         </div>

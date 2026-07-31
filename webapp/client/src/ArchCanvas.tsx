@@ -2596,12 +2596,9 @@ export function ArchCanvas({
           setHoveredNodeId(n.id);
           setHoverPos({ x: e.clientX, y: e.clientY });
         }}
-        onNodeMouseMove={(e, n) => {
-          if (n.type === "band") return;
-          if (hoveredNodeId === n.id) {
-            setHoverPos({ x: e.clientX, y: e.clientY });
-          }
-        }}
+        // No mouse-move handler. It called setHoverPos on every event, which
+        // re-rendered the canvas sixty times a second and made hovering
+        // flicker. The position from onNodeMouseEnter is enough.
         onNodeMouseLeave={(_, n) => {
           if (n.id === hoveredNodeId) {
             setHoveredNodeId(null);

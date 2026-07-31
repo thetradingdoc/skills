@@ -7655,6 +7655,7 @@ export default function App() {
           >
             {graphViewMode === "layers" ? (
               <LayersView
+                onOpenFile={(path, line) => { setOpenFile({ path, line }); setGraphViewMode("files"); }}
                 agents={graph?.agents}
                 selectedAgentFile={layersAgentFile}
                 onSelectAgent={setLayersAgentFile}
@@ -7681,7 +7682,7 @@ export default function App() {
             ) : graphViewMode === "changes" ? (
               <ChangesView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
             ) : graphViewMode === "flow" ? (
-              <FlowView agents={graph?.agents} selectedAgentFile={layersAgentFile} onSelectAgent={setLayersAgentFile} />
+              <FlowView agents={graph?.agents} selectedAgentFile={layersAgentFile} onSelectAgent={setLayersAgentFile} onOpenFile={(path, line) => { setOpenFile({ path, line }); setGraphViewMode("files"); }} />
             ) : graphViewMode === "agents" ? (
               <AgentsView
                 agents={graph?.agents}
