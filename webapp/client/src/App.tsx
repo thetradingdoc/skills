@@ -7722,7 +7722,19 @@ export default function App() {
               selectedNode={selectedNode}
               selectedNodeData={selectedNodeData}
               repoUrl={repoUrl}
-              onNodeSelect={setSelectedNode}
+              onNodeSelect={(id) => {
+                // A node is a directory of files. Selecting one used to feed a
+                // viewer that no longer exists, so the click set state nothing
+                // read. Open the first file instead — enough to get you into
+                // the code, and the browser is there for the rest.
+                setSelectedNode(id);
+                const n = graph?.nodes?.find((x: { id: string }) => x.id === id);
+                const first = (n as { files?: string[] } | undefined)?.files?.[0];
+                if (first) {
+                  setOpenFile({ path: first });
+                  setGraphViewMode("files");
+                }
+              }}
               edgeFilter={activeFilters}
               nodeFilter={personaNodeFilters}
               persona={persona}
