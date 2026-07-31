@@ -852,7 +852,7 @@ async function executeTool(
             previous: res.previous,
             next: fs.readFileSync(res.written, "utf-8"),
           });
-        } catch { /* recording must not break the write */ }
+        } catch (err) { console.error("[record] failed:", err); }
       }
       return {
         result:
@@ -877,7 +877,7 @@ async function executeTool(
           file: String(toolInput.filePath ?? ""),
           next: String(toolInput.contents ?? ""),
         });
-      } catch { /* recording must not break the write */ }
+      } catch (err) { console.error("[record] failed:", err); }
       const verifiable = canTypecheck(basePath);
       const check = verifiable
         ? executeRunCommand(basePath, "npx tsc --noEmit")
@@ -1313,7 +1313,7 @@ export async function askAboutArchitecture(
     ? buildSystemPrompt(graph) + "\n\n" + agentFacts
     : buildSystemPrompt(graph);
   if (process.env.ARCHY_DUMP_CONTEXT === "1") {
-    try { fs.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(no agent inventory on graph)"), "utf8"); } catch {}
+    try { fs.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(none)"), "utf); } catch { /* debug aid only */ }
   }
   let systemPrompt =
     systemParts.length > 0

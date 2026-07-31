@@ -948,6 +948,9 @@ export default function App() {
    *  module canvas. On Layers, Standard, Agents, Reach, Resources and Guard they
    *  are noise, so the bar hides them there. */
   const isCanvasView = graphViewMode === "2d" || graphViewMode === "3d";
+  // Canvas controls sit behind a toggle rather than in the bar. They belong to
+  // one view, and a header that grows when you switch tabs reads as unstable.
+  const [showCanvasControls, setShowCanvasControls] = useState(false);
   const [canvasTheme, setCanvasTheme] = useState<"dark" | "light">("dark");
   const [canvasDensity, setCanvasDensity] = useState<CanvasDensity>("standard");
   const [presentationMode, setPresentationMode] = useState(false);
@@ -7994,10 +7997,30 @@ export default function App() {
                   >
                     3D
                   </button>
+                {isCanvasView && (
+                  <button
+                    type="button"
+                    title="Canvas options"
+                    onClick={() => setShowCanvasControls((v) => !v)}
+                    style={{
+                      padding: "4px 8px",
+                      fontSize: 10,
+                      fontFamily: "monospace",
+                      border: showCanvasControls ? "1px solid #58a6ff" : "1px solid #30363d",
+                      borderRadius: 8,
+                      background: "transparent",
+                      color: showCanvasControls ? "#58a6ff" : "#6e7681",
+                      cursor: "pointer",
+                      marginLeft: 4,
+                    }}
+                  >
+                    canvas options {showCanvasControls ? "\u25B4" : "\u25BE"}
+                  </button>
+                )}
                 {/* Layout and canvas-mode controls act on the module graph only. An
                     exclusion list meant every new view had to be remembered, and
                     none were — assessment, flow and changes all leaked through. */}
-                {isCanvasView && (
+                {isCanvasView && showCanvasControls && (
                   <>
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
                     {(["architecture", "domains", "runtime", "failure"] as const).map((mode) => (
@@ -8055,7 +8078,7 @@ export default function App() {
                 )}
               </div>
             )}
-            {isCanvasView && (
+            {isCanvasView && showCanvasControls && (
             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
               <span style={{ fontSize: 10, color: "#8b949e", fontFamily: "monospace" }}>Theme</span>
               <button

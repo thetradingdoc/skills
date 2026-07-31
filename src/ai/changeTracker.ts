@@ -45,7 +45,10 @@ export function readChanges(rootPath: string): ChangeRecord[] {
     if (!fs.existsSync(p)) return [];
     const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
     return Array.isArray(parsed) ? parsed : [];
-  } catch {
+  } catch (err) {
+    // A corrupt or unreadable file means no history rather than a crash, but
+    // saying nothing is how a broken tracker looks like an empty one.
+    console.error("[changes] could not read history:", err);
     return [];
   }
 }
@@ -58,8 +61,10 @@ function writeChanges(rootPath: string, records: ChangeRecord[]): void {
     // reviews, and this sits inside the user's repository.
     const trimmed = records.slice(-100);
     fs.writeFileSync(changesPath(rootPath), JSON.stringify(trimmed, null, 2), "utf-8");
-  } catch {
-    // Recording must never be the reason a write fails.
+  } catch (err) {
+    // Recording must never be the reason a write fails — but a write that is
+    // not recorded cannot be reviewed or reverted, so it is worth knowing.
+    console.error("[changes] could not record:", err);
   }
 }
 
