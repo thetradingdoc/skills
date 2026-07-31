@@ -12,6 +12,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { contextForChange, contextSeverity } from "./reachContext";
+import { ReachImpact } from "./ReachImpact";
 
 const MONO = "JetBrains Mono, ui-monospace, monospace";
 
@@ -32,6 +33,8 @@ type Props = {
   /** reach.rules, when it has been loaded, so rules naming an agent are cited. */
   rulesText?: string;
   projectRoot?: string | null;
+  /** Adopt a rescan, so a later impact check compares against current state. */
+  onNewGraph?: (graph: any) => void;
   apiBase: string;
   accessToken: string | null;
 };
@@ -89,7 +92,7 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-export function ChangesPanel({ graph, rulesText, projectRoot, apiBase, accessToken }: Props) {
+export function ChangesPanel({ graph, rulesText, projectRoot, apiBase, accessToken, onNewGraph }: Props) {
   const [changes, setChanges] = useState<Change[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -379,6 +382,15 @@ export function ChangesPanel({ graph, rulesText, projectRoot, apiBase, accessTok
             </div>
           );
         })
+      )}
+
+      {changes.length > 0 && (
+        <ReachImpact
+          graph={graph}
+          apiBase={apiBase}
+          accessToken={accessToken}
+          onNewGraph={onNewGraph}
+        />
       )}
 
       <p

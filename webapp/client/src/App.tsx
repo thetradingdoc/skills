@@ -4522,6 +4522,7 @@ export default function App() {
         {!leftPanelCollapsed && sidebarTab === "code" && (
           <ChangesPanel
             graph={graph}
+            onNewGraph={(g) => setGraph(analyseGraph(g))}
             projectRoot={graph?.projectRoot}
             apiBase={API_BASE}
             accessToken={accessToken}
