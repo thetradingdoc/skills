@@ -309,7 +309,22 @@ async function runAnalysisTask(params: {
       !!lastGraphCommand &&
       lastAnswer.trim().length < 120;
 
-    const review: CriticResult = isNavigationOnly
+    // The critic doubles the cost of every question, and for a lookup it
+    // reviews a list. Yesterday it scored a correct "that function does not
+    // exist" 4 out of 10 for insufficient architectural context — the failure
+    // mode of reviewing an answer that had nothing to review.
+    //
+    // It earns its cost when the turn changed something or proposed changing
+    // something. Those are the answers where being wrong matters.
+    const asksForChange =
+      /\b(add|create|change|edit|fix|refactor|implement|build|remove|delete|rename|move|update|write)\b/i.test(question);
+    const wroteSomething =
+      /\b(edited|created|added|updated|wrote|removed)\b/i.test(lastAnswer.slice(0, 400));
+    const proposesDesign =
+      /\b(should|recommend|suggest|propose|instead of|better to)\b/i.test(lastAnswer.slice(0, 600));
+    const criticWorthRunning = asksForChange || wroteSomething || proposesDesign;
+
+    const review: CriticResult = isNavigationOnly || !criticWorthRunning
       ? {
           approved: true,
           score: 10,
@@ -622,7 +637,7 @@ async function runGreenfieldTask(params: {
   // Agent inventory needs no filesystem access, so it is added whether or not
   // retrieval succeeded — a saved graph often has a projectRoot that no longer
   // exists on this machine.
-  const agentSmary = summariseAgentInventory(params.graph);
+  const agentSummary = summariseAgentInventory(params.graph);
   if (agentSummary) {
     contextBlock = agentSummary + (contextBlock ? "\n\n" + contextBlock : "");
   }
