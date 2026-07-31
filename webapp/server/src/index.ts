@@ -29,6 +29,7 @@ import { telemetryRoutes } from "./telemetryRoutes.js";
 import { taskRoutes } from "./taskRoutes.js";
 import { violationsRoutes } from "./violations.js";
 import { findingsRoutes } from "./findingsRoutes.js";
+import { localFileRoutes } from "./localFileRoutes.js";
 import { railsRoutes } from "./railsRoutes.js";
 import { greenfieldRoutes } from "./greenfieldRoutes.js";
 import { chatThreadRoutes } from "./chatThreads.js";
@@ -82,6 +83,7 @@ app.use("/api", jiraViolationRoutes);
 app.use("/api", integrationRoutes);
 app.use("/api", violationsRoutes);
 app.use("/api", findingsRoutes);
+app.use("/api", localFileRoutes);
 app.use("/api", scaffoldRoutes);
 app.use("/api", materializeRoutes);
 app.use("/api", authRoutes);
@@ -127,6 +129,12 @@ if (!process.env.VITEST) {
   // The terminal attaches to the HTTP server rather than to Express, because a
   // websocket upgrade happens below the routing layer. It registers nothing
   // unless TERMINAL_ENABLED=1 and the server is bound to loopback.
+  if (process.env.CHAT_DEV_BYPASS === "1") {
+    console.warn(
+      "[auth] DEV BYPASS ON — unauthenticated localhost requests are treated as a signed-in user. " +
+        "Every protected route is open. Unset CHAT_DEV_BYPASS before this is reachable by anything but you."
+    );
+  }
   attachTerminal(server);
   process.on("SIGINT", () => {
     closeAllTerminals();

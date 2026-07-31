@@ -14,6 +14,7 @@ import LayersView from "./LayersView";
 import StandardView from "./StandardView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import { ChangesPanel } from "./ChangesPanel";
+import { FileViewer } from "./FileViewer";
 import type {
   ArchGraph,
   GraphCommand,
@@ -1045,6 +1046,10 @@ export default function App() {
     return { agents: agents.length, noAuth, patientTools, moneyTools };
   })();
 
+  // Any view that names a file can open it here. Previously the only route to
+  // source was clicking a node in the 2D module graph, which is the view least
+  // concerned with agents.
+  const [openFile, setOpenFile] = useState<{ path: string; line?: number } | null>(null);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const panelWidthBeforeCollapseRef = useRef<number>(320);
   const leftPanelUserToggledRef = useRef(false);
@@ -4578,7 +4583,15 @@ export default function App() {
                               <button
                                 key={a.file}
                                 type="button"
-                                onClick={() => setSelectedAgentFile((prev) => prev === a.file ? null : a.file)}
+                                title={"Open " + a.file}
+                                onClick={() => {
+                                  // A dashboard row names a file. Until now naming
+                                  // was all it did — the only way to see source was
+                                  // clicking a node in the 2D module graph.
+                                  setSelectedAgentFile(a.file);
+                                  setOpenFile({ path: a.file });
+                                  setSidebarTab("code");
+                                }}
                                 style={{
                                   display: "grid",
                                   gridTemplateColumns: "minmax(0, 2.2fr) 74px minmax(0, 1.5fr)",
@@ -4594,7 +4607,6 @@ export default function App() {
                                   cursor: "pointer",
                                   color: "#e6edf3",
                                 }}
-                                title={a.file}
                               >
                                 <span style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace", fontSize: 11.5, color: selected ? "#58a6ff" : "#e6edf3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                   {base}
@@ -5100,12 +5112,25 @@ export default function App() {
 
         {!leftPanelCollapsed && sidebarTab === "code" && (
           <ChangesPanel
+            graph={graph}
             projectRoot={graph?.projectRoot}
             apiBase={API_BASE}
             accessToken={accessToken}
           />
         )}
-        {!leftPanelCollapsed && sidebarTab === "code" && (
+        {!leftPanelCollapsed && sidebarTab === "code" && openFile && (
+          <div style={{ flex: 1, minHeight: 300, marginBottom: 12 }}>
+            <FileViewer
+              projectRoot={graph?.projectRoot}
+              filePath={openFile.path}
+              line={openFile.line}
+              apiBase={API_BASE}
+              accessToken={accessToken}
+              onClose={() => setOpenFile(null)}
+            />
+          </div>
+        )}
+        {!leftPanelCollapsed && sidebarTab === "code" && !openFile && (
           <CodeViewerPanel
             node={selectedNodeData ?? null}
             graph={effectiveGraph ?? null}

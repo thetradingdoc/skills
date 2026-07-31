@@ -11,6 +11,7 @@
  * is what it should have been.
  */
 import { useCallback, useEffect, useState } from "react";
+import { contextForChange, contextSeverity } from "./reachContext";
 
 const MONO = "JetBrains Mono, ui-monospace, monospace";
 
@@ -26,6 +27,10 @@ type Change = {
 };
 
 type Props = {
+  /** The scan, so a changed file can be placed in what it can reach. */
+  graph?: any;
+  /** reach.rules, when it has been loaded, so rules naming an agent are cited. */
+  rulesText?: string;
   projectRoot?: string | null;
   apiBase: string;
   accessToken: string | null;
@@ -84,7 +89,7 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
-export function ChangesPanel({ projectRoot, apiBase, accessToken }: Props) {
+export function ChangesPanel({ graph, rulesText, projectRoot, apiBase, accessToken }: Props) {
   const [changes, setChanges] = useState<Change[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -326,6 +331,32 @@ export function ChangesPanel({ projectRoot, apiBase, accessToken }: Props) {
                   </button>
                 )}
               </div>
+
+              {(() => {
+                // What the changed file is part of, in terms of reach. Free to
+                // compute — the scan already knows. It says what is true of the
+                // code, not what the change did to it; that needs a rescan.
+                if (!graph) return null;
+                const ctx = contextForChange(graph, c.file, rulesText);
+                const sev = contextSeverity(ctx);
+                if (!ctx.summary || !sev) return null;
+                const colour =
+                  sev === "critical" ? "#f85149" : sev === "warn" ? "#d29922" : "e7681";
+                return (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      paddingLeft: 10,
+                      borderLeft: "2px solid " + colour,
+                      fontSize: 11.5,
+                      color: sev === "info" ? "#8b949e" : "#c9d1d9",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    {ctx.summary}
+                  </div>
+                );
+              })()}
 
               {c.reverted && c.revertedAt && (
                 <div
