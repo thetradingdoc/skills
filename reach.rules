@@ -1,7 +1,13 @@
 # reach.rules — generated from scan findings. Edit freely.
 # Rules assert only against high-confidence claims; otherwise UNEVALUABLE.
 
-# No unauthenticated agents with high-confidence patient/money reach
+# Auth gap: 6 agent(s) reach sensitive data without authentication
+agent kelly-agent-service must authenticate before patient
+agent retell-service must authenticate before patient
+agent voice-incoming-handler must authenticate before patient
+agent consumer-navigation-handler must authenticate before patient
+agent retell-websocket must authenticate before patient
+agent somo-demo-handler must authenticate before patient
 
-# No high-confidence patient+money co-reach observed yet — rule still declared
+# Observed high-confidence patient+money co-reach: retell-service / get_order_tracking
 any agent must not reach patient and money in one tool

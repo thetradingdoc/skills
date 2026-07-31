@@ -15,6 +15,7 @@ import StandardView from "./StandardView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import { ChangesPanel } from "./ChangesPanel";
 import { FileViewer } from "./FileViewer";
+import { FileBrowser } from "./FileBrowser";
 import type {
   ArchGraph,
   GraphCommand,
@@ -4323,7 +4324,7 @@ export default function App() {
               [
                 { key: "dashboard", label: "Dashboard", short: "D" },
                 { key: "chat", label: "Chat", short: "C" },
-                { key: "code", label: "Code", short: "<>" },
+                { key: "code", label: "Files", short: "<>" },
               ] as const
             ).map((t) => (
               <button
@@ -4494,7 +4495,7 @@ export default function App() {
               cursor: "pointer",
             }}
           >
-            Code
+            Files
           </button>
         </div>
         )}
@@ -5118,25 +5119,29 @@ export default function App() {
             accessToken={accessToken}
           />
         )}
-        {!leftPanelCollapsed && sidebarTab === "code" && openFile && (
-          <div style={{ flex: 1, minHeight: 300, marginBottom: 12 }}>
-            <FileViewer
-              projectRoot={graph?.projectRoot}
-              filePath={openFile.path}
-              line={openFile.line}
-              apiBase={API_BASE}
-              accessToken={accessToken}
-              onClose={() => setOpenFile(null)}
-            />
-          </div>
-        )}
-        {!leftPanelCollapsed && sidebarTab === "code" && !openFile && (
-          <CodeViewerPanel
-            node={selectedNodeData ?? null}
-            graph={effectiveGraph ?? null}
-            selectedNodeId={selectedNode}
-          />
-        )}
+        {!leftPanelCollapsed && sidebarTab === "code" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0, flex: 1 }}>
+            {/* The browser is how you reach a file when you do not already know
+                its name. Everything else in the app links straight into the
+                viewer below. */}
+            <div style={{ maxHeight: 260, display: "flex", flexDirection: "column", minHeight: 0 }}>
+              <FileBrowser
+                graph={graph}
+                openPath={openFile?.path}
+                onOpen={(path, line) => setOpenFile({ path, line })}
+              />
+            </div>
+            <div style={{ flex: 1, minHeight: 240 }}>
+              <FileViewer
+                projectRoot={graph?.projectRoot}
+                filePath={openFile?.path}
+                line={openFile?.line}
+                apiBase={API_BASE}
+                accessToken={accessToken}
+                onClose={() => setOpenFile(null)}
+              />
+            </div>
+          </div>        )}
 
         <div
           style={{
