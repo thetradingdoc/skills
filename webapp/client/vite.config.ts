@@ -20,6 +20,8 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:4000",
         changeOrigin: true,
+        // the terminal upgrades to a websocket; without this the proxy drops it
+        ws: true,
       },
     },
   },

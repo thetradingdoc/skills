@@ -217,7 +217,7 @@ export function ChangesPanel({ projectRoot, apiBase, accessToken }: Props) {
         </div>
       )}
 
-      {changes.length === 0 ? (
+      {error ? null : changes.length === 0 ? (
         <div style={{ fontSize: 12.5, color: "#8b949e", lineHeight: 1.65 }}>
           Nothing has been changed in this repository yet. Ask in chat for an
           edit and it will appear here with its diff, so you can see exactly

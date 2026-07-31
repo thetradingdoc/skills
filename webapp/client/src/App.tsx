@@ -4,6 +4,7 @@ import { buildAssessment } from "./assessment";
 import { AssessmentView } from "./AssessmentView";
 import { FlowView } from "./FlowView";
 import { ChangesView } from "./ChangesView";
+import { TerminalView } from "./TerminalView";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
@@ -835,7 +836,7 @@ export default function App() {
   const [violationsCollapsed, setViolationsCollapsed] = useState(false);
   const [violationsRestoreError, setViolationsRestoreError] = useState<string | null>(null);
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
-  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard" | "assessment" | "flow" | "changes">("2d");
+  const [graphViewMode, setGraphViewMode] = useState<"2d" | "3d" | "agents" | "reach" | "resources" | "guard" | "layers" | "standard" | "assessment" | "flow" | "changes" | "terminal">("2d");
   const [layersAgentFile, setLayersAgentFile] = useState<string | null>(null);
   const [graphCanvasViewMode, setGraphCanvasViewMode] =
     useState<"architecture" | "domains" | "runtime" | "failure">("architecture");
@@ -7938,6 +7939,24 @@ export default function App() {
                   >
                     Changes
                   </button>
+                  <button
+                    key="terminal"
+                    type="button"
+                    title="A shell in the scanned repository"
+                    onClick={() => setGraphViewMode("terminal")}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: 11,
+                      fontFamily: "monospace",
+                      border: graphViewMode === "terminal" ? "1px solid #58a6ff" : "1px solid transparent",
+                      borderRadius: 8,
+                      background: graphViewMode === "terminal" ? "rgba(29,78,216,0.2)" : "transparent",
+                      color: graphViewMode === "terminal" ? "#58a6ff" : "#8b949e",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Terminal
+                  </button>
                   <span style={{ width: 1, background: "#30363d", margin: "0 6px", alignSelf: "stretch" }} />
                   <button
                     key="2d"
@@ -8167,6 +8186,8 @@ export default function App() {
               />
             ) : graphViewMode === "assessment" ? (
               <AssessmentView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
+            ) : graphViewMode === "terminal" ? (
+              <TerminalView cwd={graph?.projectRoot} accessToken={accessToken} apiBase={API_BASE} />
             ) : graphViewMode === "changes" ? (
               <ChangesView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
             ) : graphViewMode === "flow" ? (

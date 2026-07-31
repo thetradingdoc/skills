@@ -1,4 +1,5 @@
 import "./loadEnv.js";
+import { attachTerminal, closeAllTerminals } from "./terminalServer.js";
 import { registerTodoSessionLogSink } from "./taskSessionLog.js";
 
 registerTodoSessionLogSink();
@@ -120,7 +121,15 @@ app.get("*", (_req, res) => {
 export { app };
 
 if (!process.env.VITEST) {
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
+  });
+  // The terminal attaches to the HTTP server rather than to Express, because a
+  // websocket upgrade happens below the routing layer. It registers nothing
+  // unless TERMINAL_ENABLED=1 and the server is bound to loopback.
+  attachTerminal(server);
+  process.on("SIGINT", () => {
+    closeAllTerminals();
+    process.exit(0);
   });
 }
