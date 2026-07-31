@@ -1313,7 +1313,7 @@ export async function askAboutArchitecture(
     ? buildSystemPrompt(graph) + "\n\n" + agentFacts
     : buildSystemPrompt(graph);
   if (process.env.ARCHY_DUMP_CONTEXT === "1") {
-    try { fs.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(none)"), "utf); } catch { /* debug aid only */ }
+    try { fs.writeFileSync("/tmp/archy-context.txt", String(agentFacts ?? "(none)"), "utf8"); } catch { /* debug aid only */ }
   }
   let systemPrompt =
     systemParts.length > 0
