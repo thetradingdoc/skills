@@ -1386,7 +1386,18 @@ export async function askAboutArchitecture(
         model: "claude-sonnet-4-6",
         max_tokens: 2048,
         temperature: 0.2,
-        system: systemPrompt,
+        // The prompt is identical across every step of a question — the base
+        // instructions, the editing contract, the agent inventory and the graph
+        // context. Without a cache marker that was resent at full price on each
+        // of up to eight steps. Cached, it is full price once and about a tenth
+        // thereafter, for the five minutes a question takes.
+        system: [
+          {
+            type: "text" as const,
+            text: systemPrompt,
+            cache_control: { type: "ephemeral" as const },
+          },
+        ],
         tools: forcedSkillName || isUsageRequest ? TOOLS : CHAT_TOOLS,
         // When we know a skill save is required, force save_skill on first step.
         // When the user asked to use a skill (not save), force run_skill on first step.
@@ -1397,11 +1408,49 @@ export async function askAboutArchitecture(
             : step === MAX_STEPS - 1
               ? { tool_choice: { type: "tool" as const, name: "answer" as const } }
               : {}),
-        messages,
+        // Conversation history grows every step and none of it was cached, so
+        // by step 7 nearly ten thousand tokens of prior tool results were being
+        // resent at full price. Marking the second-to-last message cacheable
+        // means everything before it reads from cache on the next step, while
+        // the newest exchange stays uncached and current.
+        //
+        // A copy, because the loop pushes to messages and a cache marker left
+        // on a message would follow it into later requests.
+        messages: (() => {
+          if (messages.length < 2) return messages;
+          const out = messages.slice();
+          const i = out.length - 2;
+          const m = out[i];
+          if (!m || typeof m.content === "string" || !Array.isArray(m.content)) return messages;
+          const blocks = m.content.slice();
+          const lastBlock = blocks[blocks.length - 1];
+          if (!lastBlock || typeof lastBlock !== "object") return messages;
+          blocks[blocks.length - 1] = {
+            ...(lastBlock as object),
+            cache_control: { type: "ephemeral" as const },
+          } as never;
+          out[i] = { ...m, content: blocks } as never;
+          return out;
+        })(),
       });
 
       const inputTokens = response.usage?.input_tokens ?? 0;
       const outputTokens = response.usage?.output_tokens ?? 0;
+      const usage = response.usage as unknown as {
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
+      };
+      const cacheRead = usage?.cache_read_input_tokens ?? 0;
+      const cacheWrite = usage?.cache_creation_input_tokens ?? 0;
+      if (process.env.LOG_TOKENS === "1") {
+        console.log(
+          "[tokens] step " + step +
+          "  in=" + inputTokens +
+          "  out=" + outputTokens +
+          "  cache_read=" + cacheRead +
+          "  cache_write=" + cacheWrite
+        );
+      }
       totalInputTokens += inputTokens;
       totalOutputTokens += outputTokens;
       const totalTokens = inputTokens + outputTokens;
