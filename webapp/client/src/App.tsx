@@ -12,6 +12,7 @@ import GuardView from "./GuardView";
 import LayersView from "./LayersView";
 import StandardView from "./StandardView";
 import CodeViewerPanel from "./CodeViewerPanel";
+import { ChangesPanel } from "./ChangesPanel";
 import type {
   ArchGraph,
   GraphCommand,
@@ -5093,6 +5094,13 @@ export default function App() {
           </div>
         )}
 
+        {!leftPanelCollapsed && sidebarTab === "code" && (
+          <ChangesPanel
+            projectRoot={graph?.projectRoot}
+            apiBase={API_BASE}
+            accessToken={accessToken}
+          />
+        )}
         {!leftPanelCollapsed && sidebarTab === "code" && (
           <CodeViewerPanel
             node={selectedNodeData ?? null}

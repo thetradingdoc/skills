@@ -22,6 +22,7 @@ import { summariseAgentInventory } from "./agentSummary";
 import { routeQuestion } from "./questionRouter";
 import { retrieveFileSnippets } from "./retriever";
 import { executeEditFile, executeCreateFile, restoreFile, appendWriteLog } from "./fileEdit";
+import { recordChange } from "./changeTracker";
 import {
   executeReadFile,
   executeGrep,
@@ -746,6 +747,24 @@ function collectCitations(
   }
 }
 
+/**
+ * Whether a typecheck can tell us anything about this repository.
+ *
+ * A JavaScript project has no tsconfig and often no TypeScript installed, so
+ * `npx tsc --noEmit` fails for reasons unrelated to the edit. Reverting on
+ * that basis makes the tool unusable on most repositories — and it is the same
+ * mistake the system prompt warns the model against: treating a pre-existing
+ * failure as one you caused.
+ */
+function canTypecheck(basePath: string): boolean {
+  if (!basePath) return false;
+  try {
+    return fs.existsSync(path.join(basePath, "tsconfig.json"));
+  } catch {
+    return lse;
+  }
+}
+
 async function executeTool(
   toolName: string,
   toolInput: Record<string, unknown>,
@@ -800,7 +819,10 @@ async function executeTool(
       // broken write is visible before the model moves on. A tool that
       // reports success on a tree that no longer compiles is worse than one
       // that refuses to write.
-      const check = executeRunCommand(basePath, "npx tsc --noEmit");
+      const verifiable = canTypecheck(basePath);
+      const check = verifiable
+        ? executeRunCommand(basePath, "npx tsc --noEmit")
+        : { exitCode: 0, result: "", error: undefined };
       const clean = (check.exitCode ?? -1) === 0;
       // A write that broke the build is put back. Leaving a half-applied change
       // in place and reporting the failure would make the tree worse than before
@@ -820,8 +842,26 @@ async function executeTool(
         };
       }
       appendWriteLog(basePath, { action: "edit", file: String(toolInput.filePath ?? "") });
+      // Recorded only once it has survived the typecheck. A change that was
+      // reverted automatically is not something the user needs to review.
+      if (res.written && res.previous !== undefined) {
+        try {
+          recordChange(basePath, {
+            action: "edit",
+            file: String(toolInput.filePath ?? ""),
+            previous: res.previous,
+            next: fs.readFileSync(res.written, "utf-8"),
+          });
+        } catch { /* recording must not break the write */ }
+      }
       return {
-        result: res.result + (clean ? " Typecheck passed." : " Typecheck reported errors that predate this edit:\n" + (check.result ?? "")),
+        result:
+          res.result +
+          (!verifiable
+            ? " No tsconfig.json here, so this was not typechecked — verify it another way before relying on it."
+            : clean
+              ? " Typecheck passed."
+              : " Typecheck reported errors that predate this edit:\n" + (check.result ?? "")),
       };
     }
     case "create_file": {
@@ -831,7 +871,17 @@ async function executeTool(
       });
       if (res.error) return { result: "Error: " + res.error };
       appendWriteLog(basePath, { action: "create", file: String(toolInput.filePath ?? "") });
-      const check = executeRunCommand(basePath, "npx tsc --noEmit");
+      try {
+        recordChange(basePath, {
+          action: "create",
+          file: String(toolInput.filePath ?? ""),
+          next: String(toolInput.contents ?? ""),
+        });
+      } catch { /* recording must not break the write */ }
+      const verifiable = canTypecheck(basePath);
+      const check = verifiable
+        ? executeRunCommand(basePath, "npx tsc --noEmit")
+        : { exitCode: 0, result: "", error: undefined };
       const clean = (check.exitCode ?? -1) === 0;
       // A new file that does not typecheck is usually still wanted — the model
       // can fix it next turn. Only edits to existing files are reverted, since
@@ -840,7 +890,7 @@ async function executeTool(
         result:
           res.result +
           (clean
-            ? " Typecheck passed."
+            ? (verifiable ? " Typecheck passed." : " No tsconfig.json here, so this was not typechecked — verify it another way before relying on it.")
             : " Typecheck reported errors:\n" + (check.result ?? check.error ?? "")),
       };
     }

@@ -356,4 +356,60 @@ router.get("/scans/previous", requireUser, async (req, res) => {
   });
 });
 
+/**
+ * Changes the tool has made, and putting one back.
+ *
+ * Edits land immediately rather than waiting in a sandbox, so review happens
+ * after the fact. That is only defensible because every write is recorded with
+ * the contents that preceded it, making revert exact rather than approximate.
+ */
+router.get("/changes", requireUser, async (req, res) => {
+  const root = String(req.query.projectRoot ?? "").trim();
+  if (!root) {
+    res.status(400).json({ error: "projectRoot is required." });
+    return;
+  }
+  try {
+    const { readChanges, diffOf, changeStats } = await import("../../../src/ai/changeTracker.js");
+    const records = readChanges(root);
+    res.json({
+      changes: records
+        .slice()
+        .reverse()
+        .map((c) => ({
+          id: c.id,
+          at: c.at,
+          action: c.action,
+          file: c.file,
+          reverted: c.reverted ?? false,
+          revertedAt: c.revertedAt ?? null,
+          stats: changeStats(c),
+          diff: diffOf(c),
+        })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.post("/changes/:changeId/revert", requireUser, async (req, res) => {
+  const root = String(req.body?.projectRoot ?? "").trim();
+  const changeId = req.params.changeId;
+  if (!root) {
+    res.status(400).json({ error: "projectRoot is required." });
+    return;
+  }
+  try {
+    const { revertChange } = await import("../../../src/ai/changeTracker.js");
+    const result = revertChange(root, changeId);
+    if (result.error) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
 export { router as findingsRoutes };
