@@ -1624,15 +1624,32 @@ export async function askAboutArchitecture(
     }
 
     if (!finalAnswer) {
-      const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-      if (lastAssistant && Array.isArray(lastAssistant.content)) {
-        const texts = lastAssistant.content
-          .filter((b): b is Anthropic.TextBlock => b.type === "text")
-          .map((b) => b.text);
-        finalAnswer =
-          texts.join("\n").trim() ||
-          "I was unable to formulate a complete answer. Try asking more specifically.";
+      // This looked at the last assistant message only. If the final step was a
+      // tool call with no text — which is common when the model runs out of
+      // steps m-task — everything it had explained across the earlier steps
+      // was discarded for a canned apology. On a long build that is the whole
+      // account of what was done.
+      //
+      // Take the most recent substantial text from anywhere in the turn, and
+      // say what happened rather than implying nothing was found.
+      const allTexts: string[] = [];
+      for (const m of messages) {
+        if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+        for (const b of m.content) {
+          if (b.type === "text" && typeof b.text === "string" && b.text.trim()) {
+            allTexts.push(b.text.trim());
+          }
+        }
       }
+
+      const substantial = allTexts.filter((t) => t.length > 200);
+      const best = substantial.length ? substantial[substantial.length - 1] : allTexts[allTexts.length - 1];
+
+      finalAnswer = best
+        ? best +
+          "\n\n_This ran out of steps before finishing. The above is what was " +
+          "established; ask again to continue from re._"
+        : "I ran out of steps before reaching an answer. Ask again with a narrower question, or in smaller pieces.";
     }
 
     // Global fallback: if this was a navigation query with matches but no graphCommand,
