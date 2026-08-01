@@ -1403,7 +1403,9 @@ export async function askAboutArchitecture(
     for (let step = 0; step < MAX_STEPS; step++) {
       const response = await client.messages.create({
         model: "claude-sonnet-4-6",
-        max_tokens: 2048,
+        // A 200-line file is most of a 2048-token budget before any prose,
+        // which is how create_file ended up being called with no content.
+        max_tokens: 8192,
         temperature: 0.2,
         // The prompt is identical across every step of a question — the base
         // instructions, the editing contract, the agent inventory and the graph
@@ -1648,7 +1650,7 @@ export async function askAboutArchitecture(
       finalAnswer = best
         ? best +
           "\n\n_This ran out of steps before finishing. The above is what was " +
-          "established; ask again to continue from re._"
+          "established; ask again to continue from here._"
         : "I ran out of steps before reaching an answer. Ask again with a narrower question, or in smaller pieces.";
     }
 

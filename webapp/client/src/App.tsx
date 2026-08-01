@@ -4,7 +4,7 @@ import { buildAssessment } from "./assessment";
 import { AssessmentView } from "./AssessmentView";
 import { FlowView } from "./FlowView";
 import { ChangesView } from "./ChangesView";
-import { TerminalView } from "./TerminalView";
+import { TerminalPanel } from "./TerminalPanel";
 import { ArchCanvas } from "./ArchCanvas";
 import AgentsView from "./AgentsView";
 import ReachView from "./ReachView";
@@ -7678,9 +7678,7 @@ export default function App() {
                 apiBase={API_BASE}
                 accessToken={accessToken}
               />
-            ) : graphViewMode === "terminal" ? (
-              <TerminalView cwd={graph?.projectRoot} accessToken={accessToken} apiBase={API_BASE} />
-            ) : graphViewMode === "changes" ? (
+            ) : graphViewMode === "terminal" ? null : graphViewMode === "changes" ? (
               <ChangesView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
             ) : graphViewMode === "flow" ? (
               <FlowView agents={graph?.agents} selectedAgentFile={layersAgentFile} onSelectAgent={setLayersAgentFile} onOpenFile={(path, line) => { setOpenFile({ path, line }); setGraphViewMode("files"); }} />
@@ -7777,6 +7775,26 @@ export default function App() {
               vulnerableNodeIds={showSupplyChainRisk ? vulnerableNodeIds : undefined}
             />
             )}
+            {/* Outside the chain above, and hidden rather than unmounted. Every
+                other view can be rebuilt from the graph; a shell cannot — its
+                scrollback, working directory and running command are the state.
+                Conditionally rendering it closed the websocket on every tab
+                switch and you came back to an empty prompt. */}
+            <div
+              style={{
+                display: graphViewMode === "terminal" ? "flex" : "none",
+                flexDirection: "column",
+                position: "absolute",
+                inset: 0,
+                minHeight: 0,
+              }}
+            >
+              <TerminalPanel
+                cwd={graph?.projectRoot}
+                accessToken={accessToken}
+                apiBase={API_BASE}
+              />
+            </div>
           </div>
         )}
         {showInsightsPanel && graph && (

@@ -226,6 +226,30 @@ export function executeCreateFile(
   if (gate.error) return { error: gate.error };
   const abs = gate.abs!;
 
+  // An empty file cannot be edited — edit_file needs a non-empty anchor — and
+  // could not be created either, because the path exists. It was unwriteable by
+  // both tools. Treat a zero-byte file as absent.
+  if (fs.existsSync(abs) && fs.statSync(abs).size === 0) {
+    try {
+      fs.writeFileSync(abs, contents, "utf-8");
+      const lines = contents.split("\n").length;
+      return { result: "Wrote " + filePath + " (" + lines + " lines, replacing an empty file).", written: abs };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  // An empty file cannot be edited — edit_file needs a non-empty anchor — and
+  // could not be created either, because the path exists. It was unwriteable by
+  // both tools. Treat a zero-byte file as absent.
+  if (fs.existsSync(abs) && fs.statSync(abs).size === 0) {
+    try {
+      fs.writeFileSync(abs, contents, "utf-8");
+      const lines = contents.split("\n").length;
+      return { result: "Wrote " + filePath + " (" + lines + " lines, replacing an empty file).", written: abs };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
   if (fs.existsSync(abs)) {
     return {
       error:
