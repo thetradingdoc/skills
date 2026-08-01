@@ -71,9 +71,13 @@ function TerminalSession({
   // on every prompt. The directory you started in is also not where you are
   // after a cd, so following the graph was wrong anyway.
   const cwdRef = useRef<string | null | undefined>(cwd);
+  // Frozen for the same reason as cwd. Supabase refreshes the access token, and
+  // with it in the deps every refresh tore the shell down mid-session. The
+  // socket authenticated once at connect; a new token does not change that.
+  const tokenRef = useRef<string | null>(accessToken);
 
   useEffect(() => {
-    if (!hostRef.current || !accessToken) return;
+    if (!hostRef.current || !tokenRef.current) return;
 
     const term = new Terminal({
       fontFamily: MONO,
@@ -106,7 +110,7 @@ function TerminalSession({
     const ws = new WebSocket(
       origin.replace(/^http/, "ws") +
         "/api/terminal?token=" +
-        encodeURIComponent(accessToken) +
+        encodeURIComponent(tokenRef.current) +
         (cwdRef.current ? "&cwd=" + encodeURIComponent(cwdRef.current) : "")
     );
     wsRef.current = ws;
@@ -172,7 +176,7 @@ function TerminalSession({
     // Deliberately not depending on `active` — remounting on every tab switch
     // is the bug this component exists to fix.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, accessToken, apiBase]);
+  }, [id, apiBase]);
 
   // A hidden container has no size, so xterm's last fit was against zero.
   // Refit and refocus when this session comes back into view.
