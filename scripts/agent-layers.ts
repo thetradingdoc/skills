@@ -717,7 +717,10 @@ export function detectAgentLayers(
           emptyReason =
             tools.length === 0
               ? "No tools to attribute data stores from."
-              : "Tool reach found no db/external stores for this agent.";
+              : "Tool reach found no db/external stores for this agent. This " +
+                "means none were traced, not that none exist — a store reached " +
+                "through a shared module or a dispatch the tracer could not follow " +
+                "will not appear.";
         }
       }
     } else if (id === "safety") {

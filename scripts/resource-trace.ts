@@ -640,10 +640,21 @@ function scanSnippet(
   const importRe = /from\s+['"](\.[^'"]+)['"]/g;
   while ((m = importRe.exec(text)) !== null) localRequires.push(m[1]!);
 
-  // Genuine SQL tables only
+  // Genuine SQL tables only — in backticks or in quotes.
+  //
+  // This scanned template literals alone, so db.prepare('SELECT ... FROM x')
+  // was invisible and the agent appeared to touch nothing. extractDatabaseModule
+  // already handled the quoted form; these two disagreed, silently.
+  const sqlChunks: string[] = [];
+
   const sqlRe = /`([^`]{10,4000})`/g;
-  while ((m = sqlRe.exec(text)) !== null) {
-    const chunk = m[1]!;
+  while ((m = sqlRe.exec(text)) !== null) sqlChunks.push(m[1]!);
+
+  const quotedSqlRe =
+    /['"]\s*((?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE)\s[^'"]{8,2000})['"]/gi;
+  while ((m = quotedSqlRe.exec(text)) !== null) sqlChunks.push(m[1]!);
+
+  for (const chunk of sqlChunks) {
     if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN|CREATE\s+TABLE)\b/i.test(chunk)) {
       continue;
     }
@@ -1056,9 +1067,17 @@ export function traceToolHandler(
       label: `${rel}:${lineStr || "?"} case '${toolName}'`,
       bindings: fileBindings,
     });
+    // Method dispatch, class dispatch, and plain function dispatch. The last
+    // was missing, so
+    //
+    //   case 'get_portfolio': return getPortfolio(args, context);
+    //
+    // led nowhere and the tool reported zero resources — indistinguishable from
+    // having checked and found nothing.
     const methodCalls = [
       ...caseBody.matchAll(/this\.(_?[a-zA-Z][a-zA-Z0-9_]*)\s*\(/g),
       ...caseBody.matchAll(/KellyToolExecutor\.(_?[a-zA-Z][a-zA-Z0-9_]*)\s*\(/g),
+      ...caseBody.matchAll(/(?:return|await)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g),
     ];
     for (const mc of methodCalls) {
       const name = mc[1]!;
@@ -1485,7 +1504,11 @@ export function detectAgentAuth(
     found: false,
     location: null,
     evidence:
-      "No authentication or identity check found on the path into tool execution. (Conversation-mode firewalls and error-code strings are not authentication.)",
+      "No authentication or identity check found in this file. Callers and " +
+      "middleware are not followed, so a check performed at the ingress — where " +
+      "it belongs — will not be seen here. Verify before treating this as a " +
+      "finding. (Conversation-mode firewalls and error-code strings are not " +
+      "authentication.)",
   };
 }
 

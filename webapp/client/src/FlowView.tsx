@@ -298,7 +298,7 @@ export function FlowView({
           }}
         >
           <strong style={{ color: "#f85149", fontWeight: 600 }}>
-            No authentication anywhere on this path.
+            No authentication found in these files. Checks in callers or middleware are not detected.
           </strong>{" "}
           A request entering at step 1 reaches the resources in step 4 without
           an identity check.
@@ -332,7 +332,7 @@ export function FlowView({
               <Card
                 key={c.id}
                 label={c.label}
-                sub={authFound ? undefined : "no identity check"}
+                sub={authFound ? undefined : "none found in this file"}
                 accent={authFound ? "#3fb950" : "#f85149"}
                 title={c.evidence}
               />
