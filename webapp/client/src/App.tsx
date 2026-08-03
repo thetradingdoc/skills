@@ -14,6 +14,7 @@ import LayersView from "./LayersView";
 import StandardView from "./StandardView";
 import CodeViewerPanel from "./CodeViewerPanel";
 import { ChangesPanel } from "./ChangesPanel";
+import { StalenessBanner } from "./StalenessBanner";
 import { FileViewer } from "./FileViewer";
 import { FileBrowser } from "./FileBrowser";
 import { FilesView } from "./FilesView";
@@ -7641,6 +7642,18 @@ export default function App() {
               )}
             </div>
           </div>
+          {/* Every view here is a picture of a scan, and a scan is a moment.
+              Without this the picture goes stale silently — thirty files were
+              wtten into the clone one week and the dashboard kept showing
+              the scan from before they existed. */}
+          <StalenessBanner
+            projectRoot={graph?.projectRoot}
+            generatedAt={graph?.generatedAt}
+            apiBase={API_BASE}
+            accessToken={accessToken}
+            scanning={!!loading}
+            onRescan={() => scanRepo(repoUrl)}
+          />
         </div>
         {graph && (
           <div

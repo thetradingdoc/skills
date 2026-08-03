@@ -828,6 +828,60 @@ function enrichSurface(
   };
 }
 
+
+/**
+ * Which providers a file reaches through its own modules.
+ *
+ * extractImportSpecifiers drops anything starting with "." because the SDK
+ * intersection only cares about packages. That is right for the intersection
+ * and wrong for detection: a file that requires "./llm-router" and runs a tool
+ * loop is an agent, and it was invisible.
+ *
+ * This penalises exactly the codebases that factored their model access
+ * properly — the SDK sits in one shared client, and every agent that uses it
+ * disappears. One hop is enough for that shape and stops well short of walking
+ * a whole dependency tree.
+ */
+function resolveLocalProviders(
+  absPath: string,
+  text: string,
+  active: stri[]
+): string[] {
+  const dir = path.dirname(absPath);
+  const found: string[] = [];
+
+  const re = /(?:require\s*\(\s*['"](\.[^'"]+)['"]\s*\)|from\s+['"](\.[^'"]+)['"])/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(text)) !== null) {
+    const spec = (m[1] ?? m[2] ?? "").trim();
+    if (!spec) continue;
+
+    for (const ext of ["", ".js", ".ts", ".mjs", ".cjs", "/index.js", "/index.ts"]) {
+      const candidate = path.resolve(dir, spec + ext);
+      if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) continue;
+
+      let inner: string;
+      try {
+        inner = fs.readFileSync(candidate, "utf8").slice(0, 200_000);
+      } catch {
+        break;
+      }
+
+      for (const pkg of active) {
+        const importRe = new RegExp(
+          "(?:require\\s*\\(\\s*['\"]" + pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\function analyzeJsTsFile(") +
+          "['\"]|from\\s+['\"]" + pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\function analyzeJsTsFile(") + "['\"])"
+        );
+        if (importRe.test(inner) && !found.includes(pkg)) found.push(pkg);
+      }
+      break;
+    }
+  }
+
+  return found;
+}
+
 function analyzeJsTsFile(
   absPath: string,
   rel: string,
@@ -853,6 +907,13 @@ function analyzeJsTsFile(
   for (const spec of imports) {
     const hit = matchesActivePackage(spec, active);
     if (hit && !importedActive.includes(hit)) importedActive.push(hit);
+  }
+
+  // A file reaching a provider through a shared local client counts. Without
+  // this, "if (!hasPkgImport) continue" skips every provider pattern and a
+  // real agent is reported as nothing at all.
+  for (const pkg of resolveLocalProviders(absPath, text, active)) {
+    if (!importedActive.includes(pkg)) importedActive.push(pkg);
   }
 
   const finish = (
@@ -919,6 +980,37 @@ function analyzeJsTsFile(
         provider: pat.provider,
         evidence: lineOfMatch(text, m.index),
         model,
+        systemPrompt: findSystemPrompt(text, rel),
+        confidence: "high",
+      });
+    }
+  }
+
+  // An agent that reaches a model through a local client.
+  //
+  // The provider patterns above look for the SDK's own method names —
+  // messages.create, chat.completions.create — at the call site. A file that
+  // calls its own router instead has none of them, so a real agent with tool
+  // definitions and a tool-call loop was reported as nothing at all.
+  //
+  // This is the shape of every codebase that put its model access behind one
+  // shared client, which is the better design. Requiring all three signals
+  // together keeps it from firing on files that merely import the router.
+  if (importedActive.length > 0 && !/messages\.create|completions\.create/.test(text)) {
+    const hasSchemas = /tools\s*[:=]|TOOL_SCHEMAS|toolSchemas|function:\s*\{/.test(text);
+    const hasLoop = /tool_calls|tool_use|toolCalls/.test(text) && /for\s*\(|while\s*\(|\.map\s*\(/.test(text);
+
+    if (hasSchemas && hasLoop) {
+      return finish({
+        file: rel,
+        provider: providerForPackage(importedActive[0]),
+        evidence:
+          text
+            .split("\n")
+            .find((l) => /tool_calls|tool_use|toolCalls/.test(l))
+            ?.trim()
+            .slice(0, 160) ?? "tool-call loop over a local model client",
+        model: findModel(text),
         systemPrompt: findSystemPrompt(text, rel),
         confidence: "high",
       });
