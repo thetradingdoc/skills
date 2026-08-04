@@ -7680,7 +7680,7 @@ export default function App() {
                 selectedAgentFile={layersAgentFile}
                 onSelectAgent={setLayersAgentFile}
               />
-            ) : graphViewMode === "assessment" ? (
+                        ) : graphViewMode === "assessment" ? (
               <AssessmentView graph={graph} apiBase={API_BASE} accessToken={accessToken} workspaceId={activeWorkspaceId} />
             ) : graphViewMode === "files" ? (
               <FilesView
