@@ -173,20 +173,25 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
   const surfaces = agents?.agents ?? [];
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
-  const { agentSurfaces, helpers, unknowns } = useMemo(() => {
+  const { agentSurfaces, helpers, infra, unknowns } = useMemo(() => {
     const agentSurfaces: AgentSurface[] = [];
     const helpers: AgentSurface[] = [];
+    // Its own bucket. A shared router is what everything depends on, and folding
+    // it in with one-shot helpers hides the one file whose failure is total.
+    const infra: AgentSurface[] = [];
     const unknowns: AgentSurface[] = [];
     for (const s of surfaces) {
       const kind = s.kind ?? (s.tools?.length || s.toolCandidates?.length ? "agent" : "helper");
       if (kind === "agent") agentSurfaces.push(s);
+      else if (kind === "infrastructure") infra.push(s);
       else if (kind === "unknown") unknowns.push(s);
       else helpers.push(s);
     }
     agentSurfaces.sort((a, b) => a.file.localeCompare(b.file));
     helpers.sort((a, b) => a.file.localeCompare(b.file));
     unknowns.sort((a, b) => a.file.localeCompare(b.file));
-    return { agentSurfaces, helpers, unknowns };
+    infra.sort((a, b) => a.file.localeCompare(b.file));
+    return { agentSurfaces, helpers, infra, unknowns };
   }, [surfaces]);
 
   const selected = agentSurfaces.find((a) => a.file === selectedFile) ?? null;
@@ -302,6 +307,43 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           </div>
         </CollapsibleGroup>
 
+        {infra.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <div
+              style={{
+                color: "#e6edf3",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontSize: 12,
+                padding: "4px 0",
+              }}
+            >
+              Infrastructure — everything depends on these ({infra.length})
+            </div>
+            <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+              {infra.map((i) => (
+                <div
+                  key={i.file}
+                  style={{
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    border: "1px solid #1f3a4d",
+                    background: "rgba(10,30,45,0.35)",
+                    fontSize: 11,
+                    color: "#e6edf3",
+                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  }}
+                >
+                  <div style={{ fontWeight: 600 }}>{fileName(i.file)}</div>
+                  <div style={{ marginTop: 4, color: "#8b949e", fontSize: 10, lineHeight: 1.4 }}>
+                    {i.kindSignal}
+                  </div>
+                </div>
+            ))}
+            </div>
+          </div>
+        )}
+
+        {unknowns.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div
             style={{
@@ -333,11 +375,9 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
                 </div>
               </div>
             ))}
-            {unknowns.length === 0 && (
-              <div style={{ fontSize: 11, color: "#4b5563" }}>None</div>
-            )}
           </div>
         </div>
+        )}
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: "20px 24px 40px" }}>

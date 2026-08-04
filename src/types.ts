@@ -362,7 +362,17 @@ export type AgentAuthFinding = {
   evidence: string;
 };
 
-export type AgentSurfaceKind = "agent" | "helper" | "unknown";
+/**
+ * What a model-touching file is.
+ *
+ * infrastructure is not a weaker agent — it is a different thing. A shared
+ * router is the path every model call takes, so its failure is total, and
+ * filing it under "unknown" meant the one component whose failure takes down
+ * everything was the one the tool declined to describe. It was not unknown:
+ * the classifier identified it deliberately, by filename, and then had nowhere
+ * to put the answer.
+ */
+export type AgentSurfaceKind = "agent" | "helper" | "infrastructure" | "unknown";
 export type AgentLoopKind =
   | "hosted"
   | "tool-loop"

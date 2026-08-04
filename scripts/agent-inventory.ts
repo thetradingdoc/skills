@@ -604,9 +604,9 @@ function classifySurface(
   ) {
     if (!hasToolDefs && !isRetellHandler) {
       return {
-        kind: "unknown",
+        kind: "infrastructure",
         kindSignal:
-          "shared model router / client factory — forwards calls but is not itself an agent",
+          "shared model router — every model call passes through here, so a fault is total. Not an agent, and not unknown either: this was identified deliberately.",
         loopKind: null,
       };
     }
