@@ -307,6 +307,29 @@ export type AgentTool = {
 };
 
 export type ResourceKind = "db" | "db_call" | "service" | "external" | "fs";
+/**
+ * What architectural job a store does, as distinct from how sensitive it is.
+ *
+ * conversation   — turns between a user and an agent
+ * session_state  — where a state machine is, not what was said
+ * ledger         — an immutable record of decisions or money
+ * knowledge      — gathered facts about the world
+ * identity       — who someone is
+ * operational    — anything the system needs to run and nobody reasons about
+ *
+ * Undeclared is a real answer. A detector asking for a role should report that
+ * it could not establish one rather than guessing from a table name — guessing
+ * from names is how five other detectors in this codebase came to report
+ * absences that were not true.
+ */
+export type ResourceRole =
+  | "conversation"
+  | "session_state"
+  | "ledger"
+  | "knowledge"
+  | "identity"
+  | "operational";
+
 export type ResourceClass =
   | "patient"
   | "money"
@@ -329,6 +352,8 @@ export type ReachResource = {
   kind: ResourceKind;
   name: string;
   class: ResourceClass;
+  /** What job this store does. Absent means nobody has said. */
+  role?: ResourceRole;
   depth: number;
   path: string[];
   evidence: string;

@@ -9,6 +9,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { AgentSurface, AgentTool } from "./agent-inventory";
+import { extractDatabaseModule, loadClassifyConfig, resourceRole } from "./resource-trace";
 
 export type LayerId =
   | "ingress"
@@ -437,6 +438,50 @@ function fileLooksLikeIngress(rel: string, text: string): boolean {
   return INGRESS_FILE_RE.test(rel) || INGRESS_TEXT_RE.test(text.slice(0, 80_000));
 }
 
+/**
+ * Which tables a shared database module's method touches.
+ *
+ * extractDatabaseModule already does this — it was written for the reach
+ * tracer and maps methods to tables by reading the module. Reusing it here
+ * means turn-assembly detection resolves db.listTradingHistory to
+ * trading_conversation_history without a new mechanism.
+ */
+function dbMethodTables(repoRoot: string, agentAbs: string, method: string): string[] {
+  const candidates = [
+    path.join(path.dirname(agentAbs), "../database.js"),
+    path.join(path.dirname(agentAbs), "../../database.js"),
+    path.join(repoRoot, "middleware-platform/database.js"),
+    path.join(repoRoot, "database.js"),
+  ];
+
+  }
+
+  for (const abs of candidates) {
+    if (!fs.existsSync(abs)) continue;
+    try {
+      const mod = extractDatabaseModule(abs, repoRoot);
+          " methods=" + Object.keys((mod as any).methodTables || {}).length +
+          " want=" + method +
+          " got=" + JSON.stringify((mod as any).methodTables?.[method] ?? null));
+      }
+      const tables = mod.methodTables?.[method];
+      if (tables && tables.length) return tables;
+    } catch (e) {
+    }
+  }
+  return [];
+}
+
+/** A store's declared role, or undefined when nobody has said. */
+function layerRoleOf(repoRoot: string, table: string): string | undefined {
+  try {
+    const cfg = loadClassifyConfig(repoRoot);
+    return resourceRole("db", table, cfg);
+  } catch {
+    return undefined;
+  }
+}
+
 export function detectAgentLayers(
   repoRoot: string,
   agent: AgentSurface,
@@ -631,10 +676,39 @@ export function detectAgentLayers(
           evidence: `${rel}: session module on path from ${base}`,
         });
       }
+      // The agent's own turn assembly. A conversation history read happens
+      // before any tool runs, so tool reach cannot contain it, and the file is
+      // not named session-store — the two checks above are structurally unable
+      // to see it. The agent's source is already loaded; consult it.
+        const hits = agentText ? [...agentText.matchAll(/\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)].map((x) => x[1]) : [];
+        for (const h of hits) {
+        }
+      }
+      if (agentText) {
+        for (const m of agentText.matchAll(/\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)) {
+          const method = m[1];
+          const tables = dbMethodTables(repoRoot, agentAbs, method);
+          for (const table of tables) {
+            const role = layerRoleOf(repoRoot, table);
+            if (role !== "conversation") continue;
+            const key = "turn:" + table;
+            if (memKeys.has(key)) continue;
+            memKeys.add(key);
+            components.push({
+              id: "memory:" + key,
+              label: table,
+              evidence: base + ": db." + method + "() in turn assembly, before tool dispatch",
+            });
+          }
+        }
+      }
+
       status = statusFromCount(components.length);
       if (status === "empty") {
         emptyReason =
-          "No session/history stores on this agent's tool reach or forward path.";
+          "No conversation store on this agent's tool reach, forward path, or turn " +
+          "assembly. If one exists, it may be a store nobody has given a role — " +
+          "roles are declared in resources.classify.json.";
       }
     } else if (id === "knowledge") {
       if (!pathInfo.agentForwardOk && toolsOf(agent).every((t) => !t.handler)) {

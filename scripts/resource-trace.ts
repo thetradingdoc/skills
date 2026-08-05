@@ -80,6 +80,13 @@ export type ClassifyConfig = {
   };
   /** Confirmed human (or committed) decisions. */
   resources: Record<string, ResourceClass>;
+
+  /**
+   * What job each store does. Separate from its class because sensitivity and
+   * architectural role are different questions — a portfolio and a transcript
+   * can both be sensitive and are not the same kind of thing.
+   */
+  roles?: Record<string, string>;
   /** Heuristic suggestions awaiting confirmation. */
   guesses: Record<string, ResourceClass>;
   /** Keys still needing a decision. */
@@ -258,6 +265,10 @@ export function loadClassifyConfig(repoRoot: string): ClassifyConfig {
       cfg = {
         version: raw.version ?? cfg.version,
         description: raw.description ?? cfg.description,
+        // Merged like everything else. This rebuilds the config field by field,
+        // so a field it does not name is silently dropped — roles loaded as
+        // an empty object and every lookup returned undefined.
+        roles: { ...(cfg.roles ?? {}), ...(raw.roles ?? {}) },
         heuristics: {
           patient: raw.heuristics?.patient ?? cfg.heuristics.patient,
           money: raw.heuristics?.money ?? cfg.heuristics.money,
@@ -351,6 +362,23 @@ export function looksLikeCallExpression(name: string): boolean {
 /**
  * Classify a resource. Confirmed resources win; else guesses; else heuristics → guess.
  */
+/**
+ * What job a store does, if anyone has said.
+ *
+ * No heuristic fallback, deliberately. A detector that guesses "anything called
+ * history is conversation" would be the same brittle name-matching that made
+ * five other checks in this file wrong. Undeclared returns undefined, and the
+ * caller reports that it could not establish rather than inventing an answer.
+ */
+export function resourceRole(
+  kind: ResourceKind,
+  name: string,
+  cfg: ClassifyConfig
+): string | undefined {
+  const declared = cfg.roles?.[resourceKey(kind, name)];
+  return declared || undefined;
+}
+
 export function classifyResource(
   kind: ResourceKind,
   name: string,
