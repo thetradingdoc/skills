@@ -78,6 +78,7 @@ router.get("/todos", requireUser, async (req, res) => {
   }
 
   const includeArchived = (req.query.includeArchived as string) === "true" || (req.query.includeArchived as string) === "1";
+  const agentFile = typeof req.query.agentFile === "string" ? req.query.agentFile.trim() : "";
   let query = supabaseAdmin
     .from("todos")
     .select("*")
@@ -85,6 +86,10 @@ router.get("/todos", requireUser, async (req, res) => {
     .order("created_at", { ascending: true });
   if (!includeArchived) {
     query = query.is("archived_at", null);
+  }
+  // Exact match only — paths contain `/` and break PostgREST `.or()` filters.
+  if (agentFile) {
+    query = query.eq("agent_file", agentFile);
   }
   const { data, error } = await query;
 
@@ -158,6 +163,17 @@ router.post("/todos", requireUser, async (req, res) => {
     }
   }
 
+  const agentFile =
+    typeof req.body?.agentFile === "string" ? req.body.agentFile.trim() || null : null;
+  const layerId =
+    typeof req.body?.layerId === "string" ? req.body.layerId.trim() || null : null;
+  const assigneeLabel =
+    typeof req.body?.assigneeLabel === "string"
+      ? req.body.assigneeLabel.trim() || "Cursor"
+      : "Cursor";
+  const kindRaw = typeof req.body?.kind === "string" ? req.body.kind.trim() : "task";
+  const kind = kindRaw === "issue" ? "issue" : "task";
+
   const { data, error } = await supabaseAdmin
     .from("todos")
     .insert({
@@ -179,6 +195,10 @@ router.post("/todos", requireUser, async (req, res) => {
       session_log: [],
       source: req.body?.source ?? null,
       source_path: req.body?.sourcePath ?? null,
+      agent_file: agentFile,
+      layer_id: layerId,
+      assignee_label: assigneeLabel,
+      kind,
     })
     .select("*")
     .single();
@@ -596,6 +616,18 @@ router.patch("/todos/:id", requireUser, async (req, res) => {
   }
   if (req.body?.archived === true) {
     updates.archived_at = new Date().toISOString();
+  }
+  if (typeof req.body?.agentFile === "string") {
+    updates.agent_file = req.body.agentFile.trim() || null;
+  }
+  if (typeof req.body?.layerId === "string") {
+    updates.layer_id = req.body.layerId.trim() || null;
+  }
+  if (typeof req.body?.assigneeLabel === "string") {
+    updates.assignee_label = req.body.assigneeLabel.trim() || "Cursor";
+  }
+  if (typeof req.body?.kind === "string") {
+    updates.kind = req.body.kind.trim() === "issue" ? "issue" : "task";
   }
 
   const { data, error } = await supabaseAdmin

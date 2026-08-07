@@ -1,77 +1,86 @@
 /**
- * Flow view.
- *
- * How a request travels: who can start one, what decides, what runs, what
- * gets touched. The Reach matrix answers "can this tool reach that?" for a
- * thousand pairs; this answers the question a reviewer actually asks first —
- * what happens on a call, and where is the identity check.
- *
- * The gap between column one and column four is the point. If nothing
- * authenticates on that path, the view says so between the columns rather
- * than as a footnote.
+ * Flow view — Path (request forensics) | Tasks (Kanban).
+ * blanko paper/ink/pink; bright status accents — no grey Kanban chrome.
  */
 import { useMemo, useState } from "react";
 import type { AgentInventoryResult, AgentSurface, AgentTool } from "./types";
+import {
+  ACCENT,
+  ACCENT_WASH,
+  BAD,
+  CANVAS,
+  FONT_MONO,
+  FONT_UI,
+  GOOD,
+  INK,
+  LINE,
+  PAPER,
+  WARN,
+} from "./theme/tokens";
+import { FlowTasksBoard } from "./FlowTasksBoard";
+
+/** Bright accents (not grey) for class / columns */
+const INFO = "#2563EB";
+const DECIDING = "#7C3AED";
 
 type Props = {
   agents: AgentInventoryResult | undefined;
   selectedAgentFile?: string | null;
   onSelectAgent?: (file: string) => void;
-  /** Evidence is "path: reason". The path half is worth opening. */
   onOpenFile?: (path: string, line?: number) => void;
+  workspaceId?: string | null;
+  accessToken?: string | null;
+  apiBase?: string;
 };
 
 const CLASS_COLOR: Record<string, string> = {
-  patient: "#f85149",
-  money: "#d29922",
-  external: "#58a6ff",
-  internal: "#8b949e",
-  unclassified: "#6e7681",
-  plumbing: "#484f58",
+  patient: BAD,
+  money: WARN,
+  external: ACCENT,
+  internal: INFO,
+  unclassified: DECIDING,
+  plumbing: INFO,
 };
 
 const fileName = (f: string) => f.split(/[/\\]/).pop() || f;
-
-const MONO = "JetBrains Mono, ui-monospace, monospace";
 
 function Column({
   step,
   title,
   question,
+  tipColor,
   children,
 }: {
   step: number;
   title: string;
   question: string;
+  tipColor: string;
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ minWidth: 0 }}>
+    <div style={{ minWidth: 0 }} data-testid={`flow-path-col-${step}`}>
       <div
         style={{
-          borderBottom: "1px solid #30363d",
+          borderBottom: `3px solid ${tipColor}`,
           paddingBottom: 8,
           marginBottom: 12,
         }}
       >
         <div
           style={{
-            fontFamily: MONO,
+            fontFamily: FONT_MONO,
             fontSize: 10,
             letterSpacing: "0.09em",
             textTransform: "uppercase",
-            color: "#6e7681",
+            color: tipColor,
+            fontWeight: 700,
           }}
         >
           {step} · {title}
         </div>
-        <div style={{ fontSize: 11.5, color: "#8b949e", marginTop: 3 }}>
-          {question}
-        </div>
+        <div style={{ fontSize: 12, color: INK, marginTop: 4, opacity: 0.75 }}>{question}</div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-        {children}
-      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>{children}</div>
     </div>
   );
 }
@@ -91,34 +100,32 @@ function Card({
     <div
       title={title}
       style={{
-        background: "rgba(22,27,34,0.7)",
-        border: "1px solid #30363d",
-        borderLeft: "3px solid " + (accent ?? "#30363d"),
-        borderRadius: 7,
-        padding: "8px 10px",
+        background: CANVAS,
+        border: `1px solid ${LINE}`,
+        borderLeft: "4px solid " + (accent ?? ACCENT),
+        borderRadius: 10,
+        padding: "10px 12px",
+        boxShadow: "0 1px 0 rgba(18,19,26,0.04)",
       }}
     >
       <div
         style={{
-          fontFamily: MONO,
-          fontSize: 11.5,
-          color: "#e6edf3",
+          fontFamily: FONT_MONO,
+          fontSize: 12,
+          color: INK,
           wordBreak: "break-word",
+          fontWeight: 600,
         }}
       >
         {label}
       </div>
       {sub ? (
-        <div style={{ fontSize: 10.5, color: "#6e7681", marginTop: 3 }}>
-          {sub}
-        </div>
+        <div style={{ fontSize: 11, color: INK, opacity: 0.65, marginTop: 4 }}>{sub}</div>
       ) : null}
     </div>
   );
 }
 
-
-/** Evidence reads "path: reason". Only the path half is worth opening. */
 function EvidenceLink({
   evidence,
   onOpenFile,
@@ -136,15 +143,19 @@ function EvidenceLink({
       {openable ? (
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); onOpenFile!(path!); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenFile!(path!);
+          }}
           title={"Open " + path}
           style={{
             background: "none",
             border: 0,
             padding: 0,
             font: "inherit",
-            color: "#58a6ff",
+            color: ACCENT,
             cursor: "pointer",
+            fontWeight: 600,
           }}
         >
           {path}
@@ -152,16 +163,21 @@ function EvidenceLink({
       ) : (
         <span>{path ?? ""}</span>
       )}
-      <span>{path ? ":" : ""}{rest}</span>
+      <span>
+        {path ? ":" : ""}
+        {rest}
+      </span>
     </span>
   );
 }
-export function FlowView({
-  onOpenFile,
+
+function PathPane({
   agents,
   selectedAgentFile,
   onSelectAgent,
-}: Props) {
+  onOpenFile,
+  headerExtra,
+}: Props & { headerExtra?: React.ReactNode }) {
   const surfaces = useMemo(
     () => (agents?.agents ?? []).filter((a) => a.kind === "agent"),
     [agents]
@@ -169,9 +185,7 @@ export function FlowView({
 
   const [localPick, setLocalPick] = useState<string | null>(null);
   const pickedFile = selectedAgentFile ?? localPick ?? surfaces[0]?.file ?? null;
-  const agent: AgentSurface | undefined = surfaces.find(
-    (a) => a.file === pickedFile
-  );
+  const agent: AgentSurface | undefined = surfaces.find((a) => a.file === pickedFile);
 
   const catalogs = (agents as any)?.toolCatalogs ?? {};
   const toolsOf = (a: AgentSurface): AgentTool[] =>
@@ -183,30 +197,23 @@ export function FlowView({
 
   if (!agents || surfaces.length === 0) {
     return (
-      <div style={{ padding: 24, fontSize: 13, color: "#8b949e" }}>
-        No agent surfaces found — there is no request path to trace.
+      <div style={{ padding: 24, fontSize: 13, color: INK, fontFamily: FONT_UI }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+          {headerExtra}
+        </div>
+        No agent surfaces found — there is no request path to trace. Use Tasks to track build work.
       </div>
     );
   }
 
   const tools = agent ? toolsOf(agent) : [];
-
-  // Column 3: the tools that actually reach something sensitive lead, since
-  // those are the ones a reviewer is asking about.
   const rank = (t: AgentTool) => {
     const c: any = (t as any).reach?.cells ?? {};
-    return (
-      (c.patient?.state === "reaches" ? 2 : 0) +
-      (c.money?.state === "reaches" ? 1 : 0)
-    );
+    return (c.patient?.state === "reaches" ? 2 : 0) + (c.money?.state === "reaches" ? 1 : 0);
   };
   const orderedTools = [...tools].sort((a, b) => rank(b) - rank(a));
 
-  // Column 4: distinct resources across all tools, sensitive first.
-  const resourceMap = new Map<
-    string,
-    { name: string; kind: string; cls: string; tools: number }
-  >();
+  const resourceMap = new Map<string, { name: string; kind: string; cls: string; tools: number }>();
   for (const t of tools) {
     for (const r of ((t as any).reach?.resources ?? []) as any[]) {
       if (!r?.name) continue;
@@ -223,28 +230,22 @@ export function FlowView({
   }
   const order = ["patient", "money", "external", "internal", "unclassified"];
   const resources = [...resourceMap.values()].sort(
-    (a, b) =>
-      order.indexOf(a.cls) - order.indexOf(b.cls) || b.tools - a.tools
+    (a, b) => order.indexOf(a.cls) - order.indexOf(b.cls) || b.tools - a.tools
   );
 
   const ingress =
-    (agent?.layers as any[] | undefined)?.find((l) => l.id === "ingress")
-      ?.components ?? [];
+    (agent?.layers as any[] | undefined)?.find((l) => l.id === "ingress")?.components ?? [];
   const reasoning =
-    (agent?.layers as any[] | undefined)?.find((l) => l.id === "reasoning")
-      ?.components ?? [];
+    (agent?.layers as any[] | undefined)?.find((l) => l.id === "reasoning")?.components ?? [];
 
   const authFound = !!agent?.auth?.found;
   const patientCount = tools.filter(
     (t) => (t as any).reach?.cells?.patient?.state === "reaches"
   ).length;
-  const moneyCount = tools.filter(
-    (t) => (t as any).reach?.cells?.money?.state === "reaches"
-  ).length;
+  const moneyCount = tools.filter((t) => (t as any).reach?.cells?.money?.state === "reaches").length;
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "14px 18px 60px" }}>
-      {/* agent picker */}
+    <div style={{ height: "100%", overflowY: "auto", padding: "14px 18px 60px", fontFamily: FONT_UI }}>
       <div
         style={{
           display: "flex",
@@ -254,21 +255,23 @@ export function FlowView({
           flexWrap: "wrap",
         }}
       >
-        <span style={{ fontSize: 12, color: "#8b949e" }}>Showing</span>
+        {headerExtra}
+        <span style={{ fontSize: 12, color: INK, fontWeight: 600 }}>Showing</span>
         <select
+          data-testid="flow-agent-select"
           value={pickedFile ?? ""}
           onChange={(e) => {
             setLocalPick(e.target.value);
             onSelectAgent?.(e.target.value);
           }}
           style={{
-            background: "#161b22",
-            border: "1px solid #30363d",
-            borderRadius: 6,
-            color: "#e6edf3",
+            background: CANVAS,
+            border: `1px solid ${LINE}`,
+            borderRadius: 8,
+            color: INK,
             fontSize: 12,
-            fontFamily: MONO,
-            padding: "5px 8px",
+            fontFamily: FONT_MONO,
+            padding: "6px 10px",
           }}
         >
           {surfaces.map((a) => (
@@ -277,40 +280,31 @@ export function FlowView({
             </option>
           ))}
         </select>
-        <span style={{ fontSize: 11.5, color: "#6e7681" }}>
-          {tools.length} tools · {patientCount} reach patient data ·{" "}
-          {moneyCount} reach money
+        <span style={{ fontSize: 12, color: INK, opacity: 0.7 }}>
+          {tools.length} tools · {patientCount} patient · {moneyCount} money
         </span>
       </div>
 
-      {/* the finding that sits between the columns */}
       {!authFound && (patientCount > 0 || moneyCount > 0) ? (
         <div
+          data-testid="flow-auth-banner"
           style={{
-            border: "1px solid rgba(248,81,73,0.35)",
-            background: "rgba(248,81,73,0.06)",
-            borderRadius: 8,
-            padding: "10px 14px",
+            border: `1px solid ${BAD}`,
+            background: "#FEF2F2",
+            borderRadius: 10,
+            padding: "12px 14px",
             marginBottom: 18,
-            fontSize: 12.5,
-            color: "#e6edf3",
+            fontSize: 13,
+            color: INK,
             lineHeight: 1.6,
           }}
         >
-          <strong style={{ color: "#f85149", fontWeight: 600 }}>
+          <strong style={{ color: BAD, fontWeight: 700 }}>
             No authentication found in these files. Checks in callers or middleware are not detected.
           </strong>{" "}
-          A request entering at step 1 reaches the resources in step 4 without
-          an identity check.
+          A request entering at step 1 reaches the resources in step 4 without an identity check.
           {agent?.auth?.evidence ? (
-            <div
-              style={{
-                marginTop: 6,
-                fontSize: 11.5,
-                color: "#8b949e",
-                fontFamily: MONO,
-              }}
-            >
+            <div style={{ marginTop: 6, fontSize: 12, fontFamily: FONT_MONO }}>
               <EvidenceLink evidence={agent.auth.evidence} onOpenFile={onOpenFile} />
             </div>
           ) : null}
@@ -324,40 +318,40 @@ export function FlowView({
           gap: 20,
         }}
       >
-        <Column step={1} title="A request arrives" question="Who can start one?">
+        <Column step={1} title="A request arrives" question="Who can start one?" tipColor={INFO}>
           {ingress.length === 0 ? (
-            <Card label="no ingress mapped" sub="nothing was found calling into this agent" />
+            <Card label="no ingress mapped" sub="nothing was found calling into this agent" accent={INFO} />
           ) : (
             ingress.slice(0, 8).map((c: any) => (
               <Card
                 key={c.id}
                 label={c.label}
                 sub={authFound ? undefined : "none found in this file"}
-                accent={authFound ? "#3fb950" : "#f85149"}
+                accent={authFound ? GOOD : BAD}
                 title={c.evidence}
               />
             ))
           )}
         </Column>
 
-        <Column step={2} title="The agent decides" question="What runs the turn?">
+        <Column step={2} title="The agent decides" question="What runs the turn?" tipColor={DECIDING}>
           {reasoning.length === 0 ? (
-            <Card label="no reasoning layer found" />
+            <Card label="no reasoning layer found" accent={DECIDING} />
           ) : (
             reasoning.slice(0, 6).map((c: any) => (
-              <Card key={c.id} label={c.label} accent="#a371f7" title={c.evidence} />
+              <Card key={c.id} label={c.label} accent={DECIDING} title={c.evidence} />
             ))
           )}
           <Card
             label={agent?.provider ?? "unknown provider"}
             sub={agent?.model ?? "model not determinable"}
-            accent="#a371f7"
+            accent={DECIDING}
           />
         </Column>
 
-        <Column step={3} title="A tool runs" question="What can it call?">
+        <Column step={3} title="A tool runs" question="What can it call?" tipColor={ACCENT}>
           {orderedTools.length === 0 ? (
-            <Card label="no tools declared" />
+            <Card label="no tools declared" accent={ACCENT} />
           ) : (
             <>
               {orderedTools.slice(0, 12).map((t) => {
@@ -368,22 +362,14 @@ export function FlowView({
                   <Card
                     key={t.name}
                     label={t.name ?? "(unnamed)"}
-                    sub={
-                      p && m
-                        ? "patient · money"
-                        : p
-                          ? "patient"
-                          : m
-                            ? "money"
-                            : undefined
-                    }
-                    accent={p ? "#f85149" : m ? "#d29922" : "#db6d9d"}
+                    sub={p && m ? "patient · money" : p ? "patient" : m ? "money" : undefined}
+                    accent={p ? BAD : m ? WARN : ACCENT}
                     title={t.description ?? undefined}
                   />
                 );
               })}
               {orderedTools.length > 12 ? (
-                <div style={{ fontSize: 11, color: "#6e7681", padding: "2px 4px" }}>
+                <div style={{ fontSize: 12, color: ACCENT, padding: "2px 4px", fontWeight: 600 }}>
                   + {orderedTools.length - 12} more
                 </div>
               ) : null}
@@ -391,11 +377,12 @@ export function FlowView({
           )}
         </Column>
 
-        <Column step={4} title="Something is touched" question="What does it reach?">
+        <Column step={4} title="Something is touched" question="What does it reach?" tipColor={WARN}>
           {resources.length === 0 ? (
             <Card
               label="no resources traced"
               sub="the tracer could not follow this agent's tools"
+              accent={WARN}
             />
           ) : (
             <>
@@ -404,11 +391,11 @@ export function FlowView({
                   key={r.kind + ":" + r.name}
                   label={r.name}
                   sub={r.cls + " · " + r.tools + " tool" + (r.tools === 1 ? "" : "s")}
-                  accent={CLASS_COLOR[r.cls] ?? "#30363d"}
+                  accent={CLASS_COLOR[r.cls] ?? INFO}
                 />
               ))}
               {resources.length > 12 ? (
-                <div style={{ fontSize: 11, color: "#6e7681", padding: "2px 4px" }}>
+                <div style={{ fontSize: 12, color: WARN, padding: "2px 4px", fontWeight: 600 }}>
                   + {resources.length - 12} more
                 </div>
               ) : null}
@@ -417,20 +404,91 @@ export function FlowView({
         </Column>
       </div>
 
-      <p
-        style={{
-          marginTop: 28,
-          fontSize: 11.5,
-          color: "#484f58",
-          maxWidth: "76ch",
-          lineHeight: 1.6,
-        }}
-      >
-        Each column is what the scan established, not what the code intends. A
-        resource missing from step 4 may still be reached through a path the
-        tracer could not follow — check the Reach view for what was left
-        untraced.
+      <p style={{ marginTop: 28, fontSize: 12, color: INK, opacity: 0.7, maxWidth: "76ch", lineHeight: 1.6 }}>
+        Each column is what the scan established, not what the code intends. Use the Tasks tab to
+        track Payment → Broker → Policy → Execution work.
       </p>
     </div>
   );
+}
+
+function TabBtn({
+  active,
+  testId,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  testId: string;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      onClick={onClick}
+      style={{
+        padding: "7px 14px",
+        borderRadius: 8,
+        border: active ? `2px solid ${ACCENT}` : `1px solid ${LINE}`,
+        background: active ? ACCENT_WASH : CANVAS,
+        color: active ? ACCENT : INK,
+        fontSize: 13,
+        fontWeight: 700,
+        cursor: "pointer",
+        fontFamily: FONT_UI,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function FlowView(props: Props) {
+  const [pane, setPane] = useState<"path" | "tasks">("path");
+
+  const tabs = (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }} data-testid="flow-tabs">
+      <TabBtn active={pane === "path"} testId="flow-tab-path" label="Path" onClick={() => setPane("path")} />
+      <TabBtn
+        active={pane === "tasks"}
+        testId="flow-tab-tasks"
+        label="Tasks"
+        onClick={() => setPane("tasks")}
+      />
+    </div>
+  );
+
+  if (pane === "tasks") {
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: PAPER }}>
+        <div
+          style={{
+            padding: "12px 18px",
+            borderBottom: `1px solid ${LINE}`,
+            background: CANVAS,
+            display: "flex",
+            gap: 12,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          {tabs}
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <FlowTasksBoard
+            workspaceId={props.workspaceId}
+            accessToken={props.accessToken}
+            apiBase={props.apiBase}
+            agentFile={props.selectedAgentFile}
+            agents={props.agents}
+            onSelectAgent={props.onSelectAgent}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return <PathPane {...props} headerExtra={tabs} />;
 }
