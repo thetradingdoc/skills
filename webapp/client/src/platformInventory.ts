@@ -1,6 +1,8 @@
 /**
  * Derive platform inventory from a graph + optional agent inventory providers.
  * Pure — safe for unit tests and UI.
+ *
+ * Insights must show what THIS architecture uses — not a generic SaaS wishlist.
  */
 import type { ArchGraph, ArchNode } from "./types";
 import {
@@ -21,18 +23,25 @@ export type InventoryRow = {
   evidence: string[];
 };
 
+export type BuildInventoryOpts = {
+  /**
+   * When true, also list catalog `critical` providers with no evidence as unbound gaps.
+   * Default false — Insights should not invent Stripe/AWS for a trading board.
+   */
+  includeCriticalGaps?: boolean;
+};
+
 function nodeBindings(node: ArchNode): PlatformBinding[] {
   const out: PlatformBinding[] = [];
   if (Array.isArray(node.platformBindings)) {
     for (const b of node.platformBindings) {
       const id = canonicalizeProviderId(b.providerId);
-      if (!id) continue;
+      if (!id || !getProvider(id)) continue;
       out.push({ ...b, providerId: id });
     }
   }
-  // Detected from llmProvider / cloudProvider when no explicit binding yet
   const llm = canonicalizeProviderId(node.llmProvider);
-  if (llm && !out.some((b) => b.providerId === llm)) {
+  if (llm && getProvider(llm) && !out.some((b) => b.providerId === llm)) {
     out.push({
       providerId: llm,
       status: "unknown",
@@ -40,8 +49,10 @@ function nodeBindings(node: ArchNode): PlatformBinding[] {
       evidence: `llmProvider=${node.llmProvider}`,
     });
   }
-  const cloud = canonicalizeProviderId(node.cloudProvider === "other" || node.cloudProvider === "unknown" ? null : node.cloudProvider);
-  if (cloud && !out.some((b) => b.providerId === cloud)) {
+  const cloud = canonicalizeProviderId(
+    node.cloudProvider === "other" || node.cloudProvider === "unknown" ? null : node.cloudProvider
+  );
+  if (cloud && getProvider(cloud) && !out.some((b) => b.providerId === cloud)) {
     out.push({
       providerId: cloud,
       status: "unknown",
@@ -52,12 +63,41 @@ function nodeBindings(node: ArchNode): PlatformBinding[] {
   return out;
 }
 
+/** Infer provider from node label/id when no explicit binding (e.g. Alpaca box). */
+function inferProvidersFromNode(node: ArchNode): PlatformBinding[] {
+  const blob = `${node.label ?? ""} ${node.id ?? ""} ${(node.files ?? []).join(" ")}`.toLowerCase();
+  const hits: Array<{ id: string; evidence: string }> = [];
+  const tryHit = (id: string, needles: string[]) => {
+    if (needles.some((n) => blob.includes(n))) hits.push({ id, evidence: `node:${node.label || node.id}` });
+  };
+  tryHit("alpaca", ["alpaca"]);
+  tryHit("kraken", ["kraken"]);
+  tryHit("openai", ["openai", "gpt-"]);
+  tryHit("anthropic", ["anthropic", "claude"]);
+  tryHit("stripe", ["stripe"]);
+  tryHit("telegram", ["telegram"]); // may not be in catalog — filtered below
+  return hits
+    .map((h) => {
+      const id = canonicalizeProviderId(h.id);
+      if (!id || !getProvider(id)) return null;
+      return {
+        providerId: id,
+        status: "connected" as const,
+        source: "detected" as const,
+        evidence: h.evidence,
+      };
+    })
+    .filter(Boolean) as PlatformBinding[];
+}
+
 export function bindingsForNode(node: ArchNode): PlatformBinding[] {
-  return nodeBindings(node);
+  const explicit = nodeBindings(node);
+  if (explicit.length) return explicit;
+  return inferProvidersFromNode(node);
 }
 
 export function primaryBinding(node: ArchNode): PlatformBinding | null {
-  const list = nodeBindings(node);
+  const list = bindingsForNode(node);
   return list.find((b) => b.source === "declared") ?? list[0] ?? null;
 }
 
@@ -87,7 +127,6 @@ export function setNodeProviderBinding(
   return {
     ...node,
     platformBindings: [...existing, binding],
-    // Keep llmProvider in sync for LLM catalog entries so existing badges work
     llmProvider: def?.category === "llm" || def?.category === "framework" ? id : node.llmProvider,
     cloudProvider:
       def?.category === "cloud" && (id === "aws" || id === "gcp" || id === "azure")
@@ -98,9 +137,11 @@ export function setNodeProviderBinding(
 
 export function buildPlatformInventory(
   graph: ArchGraph | null,
-  detectedProviderIds: string[] = []
+  detectedProviderIds: string[] = [],
+  opts: BuildInventoryOpts = {}
 ): InventoryRow[] {
   const byId = new Map<string, InventoryRow>();
+  const includeCriticalGaps = opts.includeCriticalGaps === true;
 
   const ensure = (id: string): InventoryRow | null => {
     const provider = getProvider(id);
@@ -120,9 +161,27 @@ export function buildPlatformInventory(
     return row;
   };
 
+  const absorb = (node: ArchNode, b: PlatformBinding) => {
+    const row = ensure(b.providerId);
+    if (!row) return;
+    if (!row.boundNodeIds.includes(node.id)) row.boundNodeIds.push(node.id);
+    if (!row.sources.includes(b.source)) row.sources.push(b.source);
+    if (b.accountLabel && !row.accountLabels.includes(b.accountLabel)) {
+      row.accountLabels.push(b.accountLabel);
+    }
+    if (b.evidence) row.evidence.push(b.evidence);
+    const rank: Record<BindingStatus, number> = {
+      connected: 4,
+      missing_credentials: 3,
+      unknown: 2,
+      unbound: 1,
+    };
+    if (rank[b.status] > rank[row.status]) row.status = b.status;
+  };
+
   for (const raw of detectedProviderIds) {
     const id = canonicalizeProviderId(raw);
-    if (!id) continue;
+    if (!id || !getProvider(id)) continue;
     const row = ensure(id);
     if (!row) continue;
     if (!row.sources.includes("detected")) row.sources.push("detected");
@@ -131,38 +190,24 @@ export function buildPlatformInventory(
   }
 
   for (const node of graph?.nodes ?? []) {
-    for (const b of nodeBindings(node)) {
-      const row = ensure(b.providerId);
-      if (!row) continue;
-      if (!row.boundNodeIds.includes(node.id)) row.boundNodeIds.push(node.id);
-      if (!row.sources.includes(b.source)) row.sources.push(b.source);
-      if (b.accountLabel && !row.accountLabels.includes(b.accountLabel)) {
-        row.accountLabels.push(b.accountLabel);
-      }
-      if (b.evidence) row.evidence.push(b.evidence);
-      // Prefer connected > missing_credentials > unknown > unbound
-      const rank: Record<BindingStatus, number> = {
-        connected: 4,
-        missing_credentials: 3,
-        unknown: 2,
-        unbound: 1,
-      };
-      if (rank[b.status] > rank[row.status]) row.status = b.status;
-    }
+    const bindings = nodeBindings(node);
+    const list = bindings.length ? bindings : inferProvidersFromNode(node);
+    for (const b of list) absorb(node, b);
   }
 
-  // Critical catalog providers with zero evidence stay as unbound gaps
-  for (const p of PROVIDER_CATALOG) {
-    if (!p.critical) continue;
-    if (!byId.has(p.id)) {
-      byId.set(p.id, {
-        provider: p,
-        status: "unbound",
-        boundNodeIds: [],
-        sources: [],
-        accountLabels: [],
-        evidence: [],
-      });
+  if (includeCriticalGaps) {
+    for (const p of PROVIDER_CATALOG) {
+      if (!p.critical) continue;
+      if (!byId.has(p.id)) {
+        byId.set(p.id, {
+          provider: p,
+          status: "unbound",
+          boundNodeIds: [],
+          sources: [],
+          accountLabels: [],
+          evidence: [],
+        });
+      }
     }
   }
 
@@ -173,17 +218,20 @@ export function buildPlatformInventory(
       unknown: 2,
       connected: 3,
     };
-    const d = rank[a.status] - rank[b.status];
+    // Prefer showing connected brokers first for value.
+    const d = rank[b.status] - rank[a.status];
     if (d !== 0) return d;
     return a.provider.name.localeCompare(b.provider.name);
   });
 }
 
-export function collectDetectedProvidersFromAgents(agents: Array<{ provider?: string | null }> | null | undefined): string[] {
+export function collectDetectedProvidersFromAgents(
+  agents: Array<{ provider?: string | null }> | null | undefined
+): string[] {
   const out = new Set<string>();
   for (const a of agents ?? []) {
     const id = canonicalizeProviderId(a.provider ?? null);
-    if (id) out.add(id);
+    if (id && getProvider(id)) out.add(id);
   }
   return [...out];
 }

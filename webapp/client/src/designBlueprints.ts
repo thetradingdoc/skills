@@ -67,9 +67,10 @@ const tradingAgent: DesignBlueprint = {
     [
       bpNode({
         id: "bp-ta-telegram",
-        label: "Telegram",
+        label: "Telegram / Trading Chat",
         layer: "Presentation",
-        description: "Human interface — commands and alerts.",
+        description:
+          "Human ingress — Telegram commands and HTTP Trading Chat. Always through Identity before Payment or Agent.",
         x: 0,
         y: 160,
         techKind: "external-saas",

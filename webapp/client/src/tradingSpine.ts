@@ -5,10 +5,18 @@
 import type { ArchGraph, ArchNode } from "./types";
 import { forkBlueprint } from "./designBlueprints";
 import { TRADING_PIPELINE_SEED } from "./flowTradingSeed";
+import { setNodeProviderBinding } from "./platformInventory";
 
 /** File path substrings (posix) bound onto spine node ids. */
 export const SPINE_FILE_BINDINGS: Record<string, string[]> = {
-  "bp-ta-telegram": ["telegram-bot.js", "telegram-paper-commands.js"],
+  "bp-ta-telegram": [
+    "telegram-bot.js",
+    "telegram-paper-commands.js",
+    "trading-chat",
+    "trading/chat",
+    "handleTradingChat",
+    "execute-turn.js",
+  ],
   "bp-ta-identity": ["telegram-auth.js", "caller.js", "identity-service.js", "005_identity"],
   "bp-ta-payment": [
     "paper-wallet-writer.js",
@@ -16,8 +24,15 @@ export const SPINE_FILE_BINDINGS: Record<string, string[]> = {
     "011_paper_wallets",
     "wallet-service.js",
   ],
-  "bp-ta-agent": ["llm-router.js", "execute-turn.js", "trading-tool-executor.js", "propose-only-guard"],
-  "bp-ta-strategy": ["services/strategy/", "signal-engine.js", "fda-client.js"],
+  "bp-ta-agent": [
+    "llm-router.js",
+    "execute-turn.js",
+    "trading-tool-executor.js",
+    "propose-only-guard",
+    "trading-chat",
+    "investment-agent",
+  ],
+  "bp-ta-strategy": ["services/strategy/", "signal-engine.js", "fda-client.js", "pead"],
   "bp-ta-policy": ["services/policy/", "policy-engine.js", "010_policy_trace"],
   "bp-ta-risk": ["services/risk/", "risk-engine.js"],
   "bp-ta-execution": ["services/execution/", "execution-service.js", "reconcile.js"],
@@ -41,13 +56,19 @@ export const SPINE_TASK_NODE: Record<string, string> = {
 const BUILT_IF_ANY_FILE: Record<string, string[]> = {
   "bp-ta-payment": ["paper-wallet-writer.js", "011_paper_wallets"],
   "bp-ta-identity": ["telegram-auth.js"],
-  "bp-ta-telegram": ["telegram-bot.js"],
+  "bp-ta-telegram": ["telegram-bot.js", "trading-chat", "execute-turn"],
   "bp-ta-policy": ["policy-engine.js", "services/policy/"],
   "bp-ta-risk": ["risk-engine.js", "services/risk/"],
   "bp-ta-execution": ["execution-service.js", "services/execution/"],
   "bp-ta-alpaca": ["paper-broker.js", "services/broker/"],
   "bp-ta-strategy": ["services/strategy/", "pead.js"],
-  "bp-ta-agent": ["propose-only-guard.js", "llm-router.js"],
+  "bp-ta-agent": ["propose-only-guard.js", "llm-router.js", "execute-turn"],
+  "bp-ta-kraken": ["kraken"],
+};
+
+const AUTO_BIND: Record<string, string> = {
+  "bp-ta-alpaca": "alpaca",
+  "bp-ta-kraken": "kraken",
 };
 
 export function looksLikeTradingScan(graph: ArchGraph | null | undefined): boolean {
@@ -110,6 +131,20 @@ function inferBuildStatus(node: ArchNode, scanFiles: string[]): "planned" | "bui
   return "planned";
 }
 
+function enrichIngressLabel(node: ArchNode, scanFiles: string[]): ArchNode {
+  if (node.id !== "bp-ta-telegram") return node;
+  const hasChat = scanFiles.some((f) => /trading.?chat|execute-turn/i.test(f));
+  if (!hasChat && !(node.files ?? []).some((f) => /trading.?chat|execute-turn/i.test(f))) {
+    return node;
+  }
+  return {
+    ...node,
+    label: "Telegram / Trading Chat",
+    description:
+      "Human ingress — Telegram commands and HTTP Trading Chat. Always through Identity before Payment or Agent.",
+  };
+}
+
 export type ApplyTradingSpineOpts = {
   /** Existing workspace graph (often a scan). Files + projectRoot preserved when present. */
   from?: ArchGraph | null;
@@ -120,6 +155,7 @@ export type ApplyTradingSpineOpts = {
 /**
  * Returns the locked trading spine as an architecture board.
  * Keeps projectRoot from `from` so Rescan still works; sets architectureBoard.
+ * Auto-binds Alpaca/Kraken providers so Insights shows real brokers, not Stripe wishlist.
  */
 export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph | null {
   const base = forkBlueprint("trading-agent");
@@ -128,12 +164,19 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
   const scanFiles = collectScanFiles(from);
   const inferBuilt = opts.inferBuilt !== false;
 
-  const nodes = base.nodes.map((n) => {
+  let nodes = base.nodes.map((n) => {
     let next = bindFiles(n, scanFiles);
+    next = enrichIngressLabel(next, scanFiles);
     if (inferBuilt) {
       next = { ...next, buildStatus: inferBuildStatus(next, scanFiles) };
     } else if (!next.buildStatus) {
       next = { ...next, buildStatus: "planned" };
+    }
+    const providerId = AUTO_BIND[next.id];
+    if (providerId) {
+      const status =
+        next.buildStatus === "built" || (next.files ?? []).length > 0 ? "connected" : "unknown";
+      next = setNodeProviderBinding(next, providerId, { status });
     }
     return next;
   });
@@ -143,7 +186,9 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
   const risk = nodes.find((n) => n.id === "bp-ta-risk");
   if (policy?.buildStatus === "built" && risk) {
     const riskBuilt = inferBuildStatus(risk, scanFiles);
-    if (riskBuilt === "built") risk.buildStatus = "built";
+    if (riskBuilt === "built") {
+      nodes = nodes.map((n) => (n.id === "bp-ta-risk" ? { ...n, buildStatus: "built" } : n));
+    }
   }
 
   return {
@@ -162,4 +207,20 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
 
 export function tradingSpineSeedTitles(): string[] {
   return TRADING_PIPELINE_SEED.map((c) => c.title);
+}
+
+/** True when money-path spine nodes are present and ingress is edged into Identity. */
+export function spineWorkflowConnected(graph: ArchGraph | null | undefined): boolean {
+  if (!graph?.nodes?.length || !graph.edges?.length) return false;
+  const ids = new Set(graph.nodes.map((n) => n.id));
+  const need = ["bp-ta-telegram", "bp-ta-identity", "bp-ta-policy", "bp-ta-risk", "bp-ta-execution", "bp-ta-alpaca"];
+  if (!need.every((id) => ids.has(id))) return false;
+  const edgeKey = (s: string, t: string) => `${s}->${t}`;
+  const edges = new Set(graph.edges.map((e) => edgeKey(e.source, e.target)));
+  return (
+    edges.has(edgeKey("bp-ta-telegram", "bp-ta-identity")) &&
+    edges.has(edgeKey("bp-ta-policy", "bp-ta-risk")) &&
+    edges.has(edgeKey("bp-ta-risk", "bp-ta-execution")) &&
+    edges.has(edgeKey("bp-ta-execution", "bp-ta-alpaca"))
+  );
 }

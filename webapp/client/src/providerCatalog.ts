@@ -234,7 +234,27 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
     color: "#635BFF",
     packages: ["stripe"],
     credentialEnv: ["STRIPE_SECRET_KEY", "STRIPE_API_KEY"],
-    critical: true,
+    // Not critical for every board — only surface when detected/declared.
+  },
+  {
+    id: "alpaca",
+    name: "Alpaca",
+    category: "third_party",
+    icon: "/provider-icons/generic.svg",
+    color: "#FCD34D",
+    packages: ["@alpacahq/alpaca-trade-api", "alpaca"],
+    credentialEnv: ["ALPACA_API_KEY", "ALPACA_API_SECRET", "ALPACA_KEY_ID"],
+    aliases: ["alpaca-markets", "alpaca markets"],
+  },
+  {
+    id: "kraken",
+    name: "Kraken",
+    category: "third_party",
+    icon: "/provider-icons/generic.svg",
+    color: "#5741D9",
+    packages: ["kraken-api", "kraken"],
+    credentialEnv: ["KRAKEN_API_KEY", "KRAKEN_API_SECRET"],
+    aliases: ["kraken-exchange"],
   },
   {
     id: "twilio",

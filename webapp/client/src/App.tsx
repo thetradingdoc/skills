@@ -112,7 +112,7 @@ import {
   type DockMode,
   type OverflowView,
 } from "./blanko";
-import { buildPlatformInventory } from "./platformInventory";
+import { buildPlatformInventory, collectDetectedProvidersFromAgents } from "./platformInventory";
 import { getDesignKnowledge } from "./designKnowledge";
 import { planFromGraph, nextStep } from "./buildPlan";
 import { DESIGN_BLUEPRINTS, forkBlueprint } from "./designBlueprints";
@@ -1604,10 +1604,12 @@ export default function App() {
     [graph]
   );
 
-  const platformInventory = useMemo(
-    () => (graph ? buildPlatformInventory(graph) : []),
-    [graph]
-  );
+  const platformInventory = useMemo(() => {
+    if (!graph) return [];
+    const detected = collectDetectedProvidersFromAgents(graph.agents?.agents ?? null);
+    // Never inject generic critical SaaS gaps into Insights — only what this board uses.
+    return buildPlatformInventory(graph, detected, { includeCriticalGaps: false });
+  }, [graph]);
 
   const allInsightsFindings = useMemo(
     () => [...designFindings, ...importFindings],
@@ -1779,7 +1781,10 @@ export default function App() {
   }, []);
 
   const handleForkBlueprint = useCallback((blueprintId: string) => {
-    const forked = forkBlueprint(blueprintId);
+    const forked =
+      blueprintId === "trading-agent"
+        ? applyTradingSpine({ inferBuilt: true })
+        : forkBlueprint(blueprintId);
     if (!forked) return;
     setGraph(forked);
     setRepoUrl("");
@@ -1790,8 +1795,9 @@ export default function App() {
     setSidebarTab("dashboard");
     setDesignDashboardTab("review");
     setSceneCollapsed(true);
-    setDockMode(null);
-    setDockOpen(false);
+    setDockMode("insights");
+    setDockOpen(true);
+    setInsightsEditOpen(false);
     setChatExpanded(false);
     setImportFindings([]);
     try {
@@ -9421,20 +9427,15 @@ export default function App() {
             <InsightsPanel
               findings={allInsightsFindings}
               inventory={platformInventory}
+              graph={graph}
               selectedNode={selectedNodeData ?? null}
               editDetailsOpen={insightsEditOpen}
               onEditDetailsOpenChange={setInsightsEditOpen}
-              architectureSummary={
-                !selectedNodeData && graph && graph.nodes.length > 0
-                  ? (() => {
-                      const sample = graph.nodes
-                        .slice(0, 3)
-                        .map((n) => n.label)
-                        .join(", ");
-                      return `AI design canvas: ${graph.nodes.length} pieces (${sample}${graph.nodes.length > 3 ? "…" : ""}) with ${graph.edges.length} connections. Insights highlights where the agent system is broken — click a finding to see it on the canvas.`;
-                    })()
-                  : undefined
-              }
+              onOpenConfig={(view) => {
+                setConfigMenuOpen(false);
+                setGraphViewMode(view);
+                setDockOpen(false);
+              }}
               onHighlight={(f) => {
                 if (f.nodeIds[0]) {
                   setSelectedNode(f.nodeIds[0]);
