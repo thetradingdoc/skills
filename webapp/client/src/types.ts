@@ -27,6 +27,7 @@ export type NodeLayer =
   | "Reasoning"
   | "Business Logic"
   | "Memory"
+  | "Evaluation"
   | "Data Access"
   | "Safety"
   | "External Services"
@@ -97,6 +98,17 @@ export interface ArchNode {
   hasRAG?: boolean;
   toolCount?: number;
   hasTraces?: boolean;
+  /**
+   * P4: explicit platform bindings (provider catalog id + account status).
+   * Detected llmProvider/cloudProvider still apply when this is empty.
+   */
+  platformBindings?: Array<{
+    providerId: string;
+    accountLabel?: string;
+    status: "connected" | "missing_credentials" | "unknown" | "unbound";
+    source: "detected" | "declared";
+    evidence?: string;
+  }>;
   description?: string;
   semanticSignals?: SemanticSignals;
   techKind?: TechKind;
@@ -135,12 +147,58 @@ export interface ArchNode {
   runtimeRoles?: string[];
   /** Inferred tier (core/supporting/peripheral). From SystemModel. */
   tier?: "core" | "supporting" | "peripheral";
+  /** Design mode (P1 assisted design loop): build-plan status for this node. */
+  buildStatus?: "planned" | "building" | "built";
+  /** Design mode: authored canvas position, set on drop/drag. Absent nodes fall back to auto-layout. */
+  position?: { x: number; y: number };
+  /** P6: LLMOps refs for agent-like nodes — prompt/config lineage, linked memory/eval nodes. */
+  llmops?: { promptRef?: string; configRef?: string; memoryNodeId?: string; evalNodeId?: string };
+  /**
+   * Post-V1: polymorphic property bag driven by nodePropertySchemas (db connection, queue topic, etc.).
+   */
+  properties?: Record<string, string | number | boolean | null>;
+  /** Post-V1: env vars this node expects (design-declared or detected). */
+  requiredEnv?: string[];
+  /** Post-V1: deploy/CI/env health adjacent to the architecture node. */
+  deployHealth?: {
+    status: "healthy" | "degraded" | "failed" | "unknown";
+    summary?: string;
+    checkedAt?: string;
+    missingEnv?: string[];
+    ciStatus?: "success" | "failure" | "pending" | "unknown";
+  };
+  /**
+   * Stable external identity for re-import.
+   * n8n: `n8n:{workflowId}:{variantKey}:{n8nNodeId}`
+   */
+  externalId?: string;
+  workflowId?: string;
+  variantKey?: string;
+  importSource?: "n8n" | "scan" | "design";
+  /** n8n: node.disabled → deactivated on canvas. */
+  disabled?: boolean;
+  /** n8n: trigger / webhook / schedule entry nodes. */
+  isTrigger?: boolean;
 }
 
 export type EdgeImportance = "architectural" | "utility" | "config";
 
 /** Request/flow edge semantics: dependency (static), runtime_path (observed), event (async), job (scheduled). */
 export type FlowKind = "dependency" | "runtime_path" | "event" | "job";
+
+/** Design-graph edge meaning (optional; scanned import graphs leave this unset). */
+export type EdgeRelation =
+  | "calls"
+  | "uses"
+  | "retrieves"
+  | "reads"
+  | "writes"
+  | "publishes"
+  | "subscribes"
+  | "authenticates_via"
+  | "caches"
+  | "depends_on"
+  | "channel_to";
 
 export interface ArchEdge {
   id: string;
@@ -149,10 +207,19 @@ export interface ArchEdge {
   type: "import" | "reexport" | "dynamic" | "runtime";
   /** Request/flow semantics for runtime and path analysis. */
   flowKind?: FlowKind;
+  /**
+   * Semantic relation for design graphs (calls/reads/…).
+   * Optional so scanned graphs remain unchanged.
+   */
+  relation?: EdgeRelation;
   isDrift: boolean;
   driftReason?: string;
   importance?: EdgeImportance;
   isLayerViolation?: boolean;
+  /** Display label (e.g. n8n branch true/false / switch rule / error). */
+  label?: string;
+  /** Upstream handle / branch key when preserved from import. */
+  sourceHandle?: string;
 }
 
 export type BackgroundTaskStatus = "running" | "completed" | "failed" | "needs_review";
@@ -194,6 +261,27 @@ export interface BackgroundTask {
   railId?: string;
 }
 
+/** Design-vs-reality diff produced by reconciling a design workspace against a fresh scan. */
+export interface ArchGraphReconciliation {
+  matched: Array<{ designNodeId: string; scanNodeId: string; confidence: number; method: string }>;
+  missing: Array<{ designNodeId: string; label: string; layer?: string }>;
+  unplanned: Array<{ scanNodeId: string; label: string; layer?: string }>;
+}
+
+/** Canvas grouping container (n8n sticky notes, authored regions). */
+export interface ArchGraphGroup {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** n8n sticky color index (1–7) or CSS color. */
+  color?: number | string;
+  workflowId?: string;
+  source?: "n8n-sticky" | string;
+}
+
 export interface ArchGraph {
   nodes: ArchNode[];
   edges: ArchEdge[];
@@ -202,8 +290,25 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  /**
+   * Post-V1 multiplayer: monotonic revision counter bumped on each save/merge.
+   * See webapp/client/src/graphSync.ts (mergeGraphs) and the /save endpoint's
+   * optimistic-concurrency check (baseRevision).
+   */
+  revision?: number;
+  /**
+   * Architecture board (e.g. trading spine) overlaid on / replacing scan layout.
+   * Still may keep projectRoot so Rescan can refresh the clone + re-bind files.
+   */
+  architectureBoard?: boolean;
+  /** Git tip of the clone when this graph was last produced by scan/refresh. */
+  scannedCommit?: string;
   /** Agent inventory from scan (scripts/agent-inventory.ts). */
   agents?: AgentInventoryResult;
+  /** Set when a scan is reconciled against a prior design workspace for the same repo. */
+  reconciliation?: ArchGraphReconciliation;
+  /** Grouping containers (n8n sticky regions). Absolute canvas coords. */
+  groups?: ArchGraphGroup[];
   layers?: Array<{
     id: string;
     name: string;
@@ -312,6 +417,8 @@ export type AgentSurface = {
     question: string;
     whyItMatters: string;
     status: "filled" | "thin" | "empty" | "unsearched";
+    /** agent = evidence is only from this agent's turn path (e.g. safety, observability). */
+    scope?: "agent" | "system";
     emptyReason?: string;
     components: Array<{
       id: string;
@@ -400,8 +507,25 @@ export interface WorkspaceAnnotation {
   layer?: string | null;
   canvas_x?: number | null;
   canvas_y?: number | null;
+  /** Sticky/group geometry (n8n import). */
+  width?: number | null;
+  height?: number | null;
+  color?: number | string | null;
+  kind?: "sticky" | "group" | null;
   created_at: string;
   updated_at: string;
+}
+
+/** A claim that a user has taken ownership of a layer/node/section for now. */
+export interface SectionClaim {
+  id: string;
+  workspace_id: string;
+  kind: "layer" | "node" | "section";
+  target_id: string;
+  target_label?: string | null;
+  claimer_id: string;
+  claimed_at: string;
+  claimerNickname?: string | null;
 }
 
 export interface RuntimeEdgeMetrics {
@@ -448,6 +572,15 @@ export type GraphCommand =
       fromId: string;
       toId: string;
       edgeType?: "import" | "reexport" | "dynamic";
+      /** Design semantic relation; client defaults to calls when absent. */
+      relation?: EdgeRelation;
+    }
+  | {
+      action: "update_node";
+      id: string;
+      label?: string;
+      layer?: NodeLayer | string;
+      description?: string;
     }
   | { action: "trace_path"; nodeIds: string[]; intensity?: number };
 

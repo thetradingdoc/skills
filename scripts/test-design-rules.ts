@@ -53,8 +53,8 @@ function check(name: string, fn: () => void) {
 
 // ── RULE_IDS sanity ─────────────────────────────────────────────────────
 
-check("RULE_IDS lists exactly the 9 required rules", () => {
-  assert.equal(RULE_IDS.length, 9);
+check("RULE_IDS lists exactly the 10 required rules", () => {
+  assert.equal(RULE_IDS.length, 10);
   assert.deepEqual(
     [...RULE_IDS].sort(),
     [
@@ -62,6 +62,7 @@ check("RULE_IDS lists exactly the 9 required rules", () => {
       "client_to_db",
       "layer_inversion",
       "llm_to_broker",
+      "missing_trading_spine",
       "no_config_secrets",
       "no_observability",
       "orphan_node",
@@ -78,6 +79,24 @@ check("llm_to_broker: blocker when agent calls Alpaca directly", () => {
   const findings = findingsFor("llm_to_broker", evaluateDesign(g));
   assert.equal(findings.length, 1);
   assert.equal(findings[0]!.severity, "blocker");
+});
+
+check("missing_trading_spine: fires on trading scan without Payment/Policy/Risk/Execution", () => {
+  const chat = node({ id: "trading-chat", label: "Trading Chat", layer: "Presentation" });
+  const mid = node({ id: "middleware-platform", label: "Middleware Platform", layer: "Data Access" });
+  const g = graphOf([chat, mid], []);
+  (g as { projectName?: string }).projectName = "trading-agent";
+  const findings = findingsFor("missing_trading_spine", evaluateDesign(g));
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]!.severity, "blocker");
+});
+
+check("missing_trading_spine: silent when architectureBoard is set", () => {
+  const chat = node({ id: "trading-chat", label: "Trading Chat", layer: "Presentation" });
+  const g = graphOf([chat], []);
+  (g as { projectName?: string; architectureBoard?: boolean }).projectName = "trading-agent";
+  (g as { architectureBoard?: boolean }).architectureBoard = true;
+  assert.equal(findingsFor("missing_trading_spine", evaluateDesign(g)).length, 0);
 });
 
 // ── client_to_db ──────────────────────────────────────────────────────────

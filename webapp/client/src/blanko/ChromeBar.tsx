@@ -25,6 +25,7 @@ type Props = {
   /** Scan staleness + Rescan live in the notifications bell */
   projectRoot?: string | null;
   generatedAt?: number | null;
+  scannedCommit?: string | null;
   onRescan?: () => void;
   scanning?: boolean;
   hideStaleness?: boolean;
@@ -46,6 +47,7 @@ export function ChromeBar({
   materializeSlot,
   projectRoot,
   generatedAt,
+  scannedCommit,
   onRescan,
   scanning,
   hideStaleness,
@@ -151,6 +153,7 @@ export function ChromeBar({
           variant="blanko"
           projectRoot={projectRoot}
           generatedAt={generatedAt}
+          scannedCommit={scannedCommit}
           onRescan={onRescan}
           scanning={scanning}
           hideStaleness={hideStaleness}

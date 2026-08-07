@@ -20,6 +20,8 @@ type Staleness = {
   changed: number;
   files?: { path: string; modified: string; isNew: boolean }[];
   truncated?: boolean;
+  scannedCommit?: string;
+  summary?: string;
 };
 
 interface Props {
@@ -31,6 +33,7 @@ interface Props {
   /** Scan workspace: show repo-change + Rescan inside the bell panel */
   projectRoot?: string | null;
   generatedAt?: number | null;
+  scannedCommit?: string | null;
   onRescan?: () => void;
   scanning?: boolean;
   hideStaleness?: boolean;
@@ -67,6 +70,7 @@ export function NotificationsBell({
   variant = "legacy",
   projectRoot,
   generatedAt,
+  scannedCommit,
   onRescan,
   scanning,
   hideStaleness,
@@ -109,7 +113,8 @@ export function NotificationsBell({
           "/scan-staleness?projectRoot=" +
           encodeURIComponent(projectRoot) +
           "&since=" +
-          generatedAt,
+          generatedAt +
+          (scannedCommit ? `&scannedCommit=${encodeURIComponent(scannedCommit)}` : ""),
         { headers: { Authorization: "Bearer " + accessToken } }
       );
       if (!r.ok) return;
@@ -117,7 +122,7 @@ export function NotificationsBell({
     } catch {
       /* best-effort */
     }
-  }, [apiBase, accessToken, projectRoot, generatedAt, hideStaleness]);
+  }, [apiBase, accessToken, projectRoot, generatedAt, scannedCommit, hideStaleness]);
 
   useEffect(() => {
     fetchNotifications();
@@ -169,6 +174,9 @@ export function NotificationsBell({
     !!onRescan &&
     !!staleness &&
     ((staleness.available && staleness.changed > 0) || !staleness.available);
+  const tipSha = (scannedCommit || staleness?.scannedCommit || "").slice(0, 7);
+  const showScanTip =
+    !!onRescan && !!projectRoot && !!generatedAt && (!!tipSha || !!staleness);
   const badgeCount = unreadCount + (repoNeedsRescan ? 1 : 0);
 
   return (
@@ -264,25 +272,49 @@ export function NotificationsBell({
               Notifications
             </div>
 
-            {repoNeedsRescan && onRescan ? (
+            {showScanTip && onRescan ? (
               <div
                 data-testid="notifications-rescan-row"
                 style={{
                   padding: "12px",
                   borderBottom: blanko ? `1px solid ${LINE}` : "1px solid #21262d",
-                  background: blanko ? ACCENT + "0c" : "rgba(239,50,166,0.08)",
+                  background: repoNeedsRescan
+                    ? blanko
+                      ? ACCENT + "0c"
+                      : "rgba(239,50,166,0.08)"
+                    : blanko
+                      ? PAPER
+                      : "#0d1117",
                   fontFamily: FONT_UI,
                 }}
               >
+                {tipSha ? (
+                  <div
+                    data-testid="notifications-scan-commit"
+                    style={{
+                      fontSize: 11,
+                      fontFamily: "ui-monospace, monospace",
+                      color: blanko ? SLATE : "#8b949e",
+                      marginBottom: 6,
+                    }}
+                  >
+                    Clone at {tipSha}
+                    {staleness?.available && staleness.changed === 0 ? " · up to date" : ""}
+                  </div>
+                ) : null}
                 <div style={{ fontSize: 13, fontWeight: 700, color: blanko ? INK : "#e6edf3" }}>
-                  {!staleness!.available
-                    ? staleness!.reason ?? "Scan unavailable"
-                    : `${staleness!.changed} file${staleness!.changed === 1 ? "" : "s"} changed since this scan`}
+                  {!staleness
+                    ? "Repository scan"
+                    : !staleness.available
+                      ? staleness.reason ?? "Scan unavailable"
+                      : staleness.changed > 0
+                        ? `${staleness.changed} file${staleness.changed === 1 ? "" : "s"} changed since this scan`
+                        : staleness.summary || "Nothing changed since this scan"}
                 </div>
                 <div style={{ fontSize: 12, color: blanko ? SLATE : "#8b949e", marginTop: 4, lineHeight: 1.4 }}>
                   Rescan pulls the latest clone from GitHub, then rebuilds the canvas.
                 </div>
-                {staleness!.available && (staleness!.files?.length ?? 0) > 0 ? (
+                {staleness?.available && (staleness.files?.length ?? 0) > 0 ? (
                   <button
                     type="button"
                     data-testid="notifications-which-files"
@@ -302,7 +334,7 @@ export function NotificationsBell({
                     {filesOpen ? "Hide files" : "Which files"}
                   </button>
                 ) : null}
-                {filesOpen && staleness!.files && (
+                {filesOpen && staleness?.files && (
                   <ul
                     style={{
                       margin: "8px 0 0",
@@ -312,13 +344,13 @@ export function NotificationsBell({
                       fontFamily: "ui-monospace, monospace",
                     }}
                   >
-                    {staleness!.files.slice(0, 12).map((f) => (
+                    {staleness.files.slice(0, 12).map((f) => (
                       <li key={f.path} style={{ marginBottom: 2 }}>
                         {f.isNew ? "+ " : ""}
                         {f.path}
                       </li>
                     ))}
-                    {staleness!.truncated ? <li>…</li> : null}
+                    {staleness.truncated ? <li>…</li> : null}
                   </ul>
                 )}
                 <button
@@ -349,7 +381,7 @@ export function NotificationsBell({
               </div>
             ) : null}
 
-            {notifications.length === 0 && !repoNeedsRescan ? (
+            {notifications.length === 0 && !showScanTip ? (
               <div style={{ padding: 16, fontSize: 13, color: blanko ? SLATE : "#6e7681", fontFamily: FONT_UI }}>
                 Nothing yet — mentions, assignments, and repo changes show up here.
               </div>

@@ -1,38 +1,50 @@
 /**
  * Has the code changed since the scan you are looking at?
  *
- * Every view in this tool is a picture of a scan, and a scan is a moment. Work
- * on the repository afterwards and the picture quietly stops matching — the
- * dashboard shows agents that have moved, the assessment cites line numbers
- * that have shifted, and nothing anywhere says so.
- *
- * That happened all week: thirty new files were written into the clone and the
- * dashboard kept showing the scan from before they existed. Not a rendering
- * bug — the tool was faithfully displaying a stale graph, which is the worst
- * kind of wrong because it looks right.
- *
- * A webhook would only help for pushed commits, and the case that actually
- * bites is local editing. So this compares file modification times against the
- * scan's timestamp and reports what moved.
+ * Prefer git tip (scannedCommit) when provided; fall back to mtime with noise filters.
  */
 
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import * as fs from "fs";
 import * as path from "path";
+import { execFileSync } from "child_process";
 
 const router = Router();
 
 /** Directories whose churn says nothing about the architecture. */
 const IGNORE_DIRS = new Set([
-  'node_modules', '.git', 'dist', 'build', '.next', 'coverage',
-  '.agent', 'data', '.cache', 'tmp', '.turbo', 'out',
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  ".next",
+  "coverage",
+  ".agent",
+  "data",
+  ".cache",
+  "tmp",
+  ".turbo",
+  "out",
+  "__tests__",
+  "test-results",
+  "playwright-report",
 ]);
 
 /** Extensions the scanner actually reads. A changed README is not a changed graph. */
-const CODE_EXT = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.json']);
+const CODE_EXT = new Set([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".py", ".json"]);
+
+const IGNORE_FILES = new Set([
+  "package-lock.json",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  ".gc-stamp",
+]);
 
 const MAX_FILES = 20000;
+
+/** Grace so files touched during the scan itself don't immediately look "changed". */
+const GRACE_MS = 5000;
 
 function walk(dir: string, since: number, acc: { changed: any[]; scanned: number }, root: string) {
   if (acc.scanned > MAX_FILES) return;
@@ -45,10 +57,11 @@ function walk(dir: string, since: number, acc: { changed: any[]; scanned: number
   }
 
   for (const e of entries) {
-    if (e.name.startsWith('.') && e.name !== '.env.example') {
+    if (e.name.startsWith(".") && e.name !== ".env.example") {
       if (IGNORE_DIRS.has(e.name)) continue;
     }
     if (IGNORE_DIRS.has(e.name)) continue;
+    if (IGNORE_FILES.has(e.name)) continue;
 
     const full = path.join(dir, e.name);
 
@@ -67,55 +80,80 @@ function walk(dir: string, since: number, acc: { changed: any[]; scanned: number
         acc.changed.push({
           path: path.relative(root, full),
           modified: new Date(st.mtimeMs).toISOString(),
-          // A file created after the scan is a different thing from one edited
-          // after it: the first means the graph is missing a node, the second
-          // that a node's contents moved.
           isNew: st.birthtimeMs > since,
         });
       }
     } catch {
-      // A file that cannot be stat'd is not evidence either way.
+      /* ignore */
     }
   }
 }
 
-router.get('/scan-staleness', requireUser, (req, res) => {
-  const projectRoot = String(req.query.projectRoot || '').trim();
+function gitHead(root: string): string | null {
+  try {
+    return execFileSync("git", ["-C", root, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+router.get("/scan-staleness", requireUser, (req, res) => {
+  const projectRoot = String(req.query.projectRoot || "").trim();
   const since = Number(req.query.since || 0);
+  const scannedCommit =
+    typeof req.query.scannedCommit === "string" ? req.query.scannedCommit.trim() : "";
 
   if (!projectRoot) {
-    res.status(400).json({ error: 'projectRoot is required' });
+    res.status(400).json({ error: "projectRoot is required" });
     return;
   }
   if (!since) {
-    res.status(400).json({ error: 'since is required — the scan timestamp' });
+    res.status(400).json({ error: "since is required — the scan timestamp" });
     return;
   }
 
   const root = path.resolve(projectRoot);
 
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-    // The clone is gone. Worth saying plainly rather than reporting no changes,
-    // which would read as "nothing to do".
     res.json({
       available: false,
-      reason: 'The scanned directory no longer exists. Scan again to recreate it.',
+      reason: "The scanned directory no longer exists. Scan again to recreate it.",
       changed: 0,
+    });
+    return;
+  }
+
+  const head = gitHead(root);
+  if (scannedCommit && head && scannedCommit === head) {
+    res.json({
+      available: true,
+      scanned: 0,
+      changed: 0,
+      added: 0,
+      edited: 0,
+      since: new Date(since).toISOString(),
+      files: [],
+      truncated: false,
+      scannedCommit: head,
+      summary: "Clone tip matches this scan (up to date).",
     });
     return;
   }
 
   type Changed = { path: string; modified: string; isNew: boolean };
   const acc: { changed: Changed[]; scanned: number } = { changed: [], scanned: 0 };
+  const cutoff = since + GRACE_MS;
 
   try {
-    walk(root, since, acc, root);
+    walk(root, cutoff, acc, root);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     return;
   }
 
-  // Most recent first — what changed last is usually what you were doing.
   acc.changed.sort((a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime());
 
   const added = acc.changed.filter((c) => c.isNew).length;
@@ -129,13 +167,11 @@ router.get('/scan-staleness', requireUser, (req, res) => {
     since: new Date(since).toISOString(),
     files: acc.changed.slice(0, 12),
     truncated: acc.changed.length > 12,
+    scannedCommit: head ?? undefined,
     summary:
       acc.changed.length === 0
-        ? 'Nothing has changed since this scan.'
-        : acc.changed.length +
-          ' file' + (acc.changed.length === 1 ? '' : 's') +
-          ' changed since this scan' +
-          (added ? ', ' + added + ' of them new' : '') + '.',
+        ? "Nothing has changed since this scan."
+        : `${acc.changed.length} file${acc.changed.length === 1 ? "" : "s"} changed since this scan.`,
   });
 });
 

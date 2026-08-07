@@ -97,6 +97,16 @@ async function main() {
 
     const agents = packToolCatalogs(buildAgentInventory(absoluteCloneDir));
 
+    let scannedCommit: string | undefined;
+    try {
+      scannedCommit = (await git.revparse(["HEAD"])).trim();
+    } catch {
+      scannedCommit = undefined;
+    }
+
+    // Stamp after all IO so staleness mtimes from reset/enrich fall before generatedAt.
+    const generatedAt = Date.now();
+
     // Normalize for JSON output:
     // - projectRoot: absolute path to the cloned repo (server uses this as rootPath)
     // - node.files: always relative to projectRoot to avoid double-joining
@@ -104,6 +114,8 @@ async function main() {
       ...graph,
       projectRoot: absoluteCloneDir,
       agents,
+      scannedCommit,
+      generatedAt,
       nodes: graph.nodes.map((n) => ({
         ...n,
         path: n.id,

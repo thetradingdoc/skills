@@ -44,6 +44,7 @@ export const RULE_IDS = [
   "no_observability",
   "no_config_secrets",
   "llm_to_broker",
+  "missing_trading_spine",
 ] as const;
 
 export type RuleId = (typeof RULE_IDS)[number];
@@ -411,6 +412,38 @@ function ruleLlmToBroker(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
+function ruleMissingTradingSpine(graph: ArchGraph): DesignFinding[] {
+  // Pure heuristic: trading-ish scan without Payment/Policy/Risk/Execution boxes.
+  if ((graph as { architectureBoard?: boolean }).architectureBoard) return [];
+  const blob = [
+    graph.projectName ?? "",
+    graph.projectRoot ?? "",
+    ...graph.nodes.map((n) => `${n.label ?? ""} ${n.id ?? ""}`),
+  ]
+    .join(" ")
+    .toLowerCase();
+  const tradingish = ["trading", "middleware-platform", "investment agent", "trading chat"].some((h) =>
+    blob.includes(h)
+  );
+  if (!tradingish) return [];
+  const labels = graph.nodes.map((n) => (n.label ?? "").toLowerCase());
+  const need = ["payment", "policy", "risk", "execution"];
+  const missing = need.filter((k) => !labels.some((l) => l.includes(k)));
+  if (missing.length === 0) return [];
+  return [
+    {
+      id: "missing_trading_spine",
+      ruleId: "missing_trading_spine",
+      severity: "blocker",
+      title: "Trading scan is missing the architecture spine",
+      whyItMatters:
+        "This canvas looks like a code scan (modules), not Telegram → Identity → Payment → Policy → Risk → Execution. Use Export · Apply trading agent spine (or Insights CTA) to place the locked board.",
+      nodeIds: graph.nodes.slice(0, 3).map((n) => n.id),
+      edgeIds: [],
+    },
+  ];
+}
+
 // ── Engine ────────────────────────────────────────────────────────────────
 
 type RuleFn = (graph: ArchGraph) => DesignFinding[];
@@ -425,6 +458,7 @@ const RULES: Record<RuleId, RuleFn> = {
   no_observability: ruleNoObservability,
   no_config_secrets: ruleNoConfigSecrets,
   llm_to_broker: ruleLlmToBroker,
+  missing_trading_spine: ruleMissingTradingSpine,
 };
 
 export function evaluateDesign(graph: ArchGraph): DesignFinding[] {

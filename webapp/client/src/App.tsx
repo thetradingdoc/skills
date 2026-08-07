@@ -116,6 +116,7 @@ import { buildPlatformInventory } from "./platformInventory";
 import { getDesignKnowledge } from "./designKnowledge";
 import { planFromGraph, nextStep } from "./buildPlan";
 import { DESIGN_BLUEPRINTS, forkBlueprint } from "./designBlueprints";
+import { applyTradingSpine, looksLikeTradingScan, spineMissing } from "./tradingSpine";
 import { computeLayerLayout } from "./layout/layerLayout";
 import type { EdgeRelation } from "./types";
 
@@ -1489,10 +1490,17 @@ export default function App() {
     return { count: needsAttention.length, drifts: needsAttention };
   }, [isDesignMode, graph]);
   const [designDashboardTab, setDesignDashboardTab] = useState<"review" | "plan">("review");
-  const designFindings = useMemo(
-    () => (isDesignMode && graph ? evaluateDesign(graph) : []),
-    [isDesignMode, graph]
-  );
+  const designFindings = useMemo(() => {
+    if (!graph) return [];
+    if (isDesignMode) return evaluateDesign(graph);
+    // Scan canvases: only surface trading-spine gaps / LLM→broker (not full design heuristics).
+    if (looksLikeTradingScan(graph) && spineMissing(graph)) {
+      return evaluateDesign(graph).filter(
+        (f) => f.ruleId === "missing_trading_spine" || f.ruleId === "llm_to_broker"
+      );
+    }
+    return [];
+  }, [isDesignMode, graph]);
   const designPlan = useMemo(
     () => (isDesignMode && graph ? planFromGraph(graph) : []),
     [isDesignMode, graph]
@@ -1793,6 +1801,25 @@ export default function App() {
     }
     setGreenfieldSessionId(null);
   }, []);
+
+  /** Replace scan/module canvas with locked trading spine (keeps projectRoot for Rescan). */
+  const handleApplyTradingSpine = useCallback(() => {
+    const next = applyTradingSpine({ from: graphRef.current ?? graph, inferBuilt: true });
+    if (!next) {
+      setError("Could not apply trading spine — blueprint missing.");
+      return;
+    }
+    setGraph(next);
+    setSelectedNode(null);
+    setSelectedEdgeId(null);
+    setAgentGraphCommand(null);
+    setGraphViewMode("2d");
+    setDockMode("insights");
+    setDockOpen(true);
+    setInsightsEditOpen(false);
+    setSceneCollapsed(true);
+    setError(null);
+  }, [graph]);
 
   // Restore the draft once on load if there's no workspace graph to prefer.
   // This must run (and be declared) before the persist effect below: both
@@ -3134,10 +3161,28 @@ export default function App() {
 
         // Successful scan: canvas is the picture; control panel stays closed.
         setSelectedAgentFile(null);
-        setGraph(analyseGraph(data));
+        const scanned = analyseGraph(data) as ArchGraph;
+        // Preserve architecture board across Rescan (re-bind files from fresh clone).
+        const prev = graphRef.current;
+        const nextGraph =
+          prev?.architectureBoard
+            ? applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ?? scanned
+            : scanned;
+        setGraph(nextGraph);
         setGraphViewMode("2d");
-        setDockMode(null);
-        setDockOpen(false);
+        // Trading scan without spine: open Insights so Apply CTA is obvious.
+        if (
+          !nextGraph.architectureBoard &&
+          looksLikeTradingScan(nextGraph) &&
+          spineMissing(nextGraph)
+        ) {
+          setDockMode("insights");
+          setDockOpen(true);
+          setInsightsEditOpen(false);
+        } else {
+          setDockMode(null);
+          setDockOpen(false);
+        }
         setSceneCollapsed(true);
         setImportFindings([]);
         const firstAgent = (data as ArchGraph).agents?.agents?.find(
@@ -3159,7 +3204,7 @@ export default function App() {
               try {
                 localStorage.setItem(
                   `workspaceGraph:${data.workspaceId}`,
-                  JSON.stringify(data as ArchGraph)
+                  JSON.stringify({ ...nextGraph, workspaceId: data.workspaceId })
                 );
               } catch {
                 // ignore
@@ -3174,7 +3219,7 @@ export default function App() {
           if (accessToken) setError(`Workspace save failed: ${data.persistError}`);
           // Persist anonymous graph snapshot for refresh-only restore.
           try {
-            localStorage.setItem("anonGraph", JSON.stringify(data));
+            localStorage.setItem("anonGraph", JSON.stringify(nextGraph));
           } catch {
             // ignore
           }
@@ -8706,9 +8751,10 @@ export default function App() {
                 apiBase={API_BASE}
                 projectRoot={graph?.projectRoot}
                 generatedAt={graph?.generatedAt}
+                scannedCommit={graph?.scannedCommit}
                 scanning={!!loading}
                 onRescan={() => scanRepo(repoUrl)}
-                hideStaleness={isDesignMode}
+                hideStaleness={isDesignMode && !(graph?.projectRoot && graph.projectRoot.trim())}
                 exportOptions={[
                   {
                     id: "assessment",
@@ -8801,6 +8847,11 @@ export default function App() {
                     : []),
                 ]}
                 moreItems={[
+                  {
+                    id: "apply-trading-spine",
+                    label: "Apply trading agent spine",
+                    onClick: () => handleApplyTradingSpine(),
+                  },
                   {
                     id: "health",
                     label: showHealthBadges ? "Health badges: on" : "Health badges: off",
@@ -9404,6 +9455,13 @@ export default function App() {
                 setAiQuestion(`Help me fix: ${f.title}. ${f.whyItMatters}`);
                 setChatExpanded(true);
               }}
+              showApplyTradingSpine={
+                !!graph &&
+                !graph.architectureBoard &&
+                spineMissing(graph) &&
+                (looksLikeTradingScan(graph) || !!graph.projectRoot?.trim())
+              }
+              onApplyTradingSpine={handleApplyTradingSpine}
               onContinueInChat={(node) => {
                 setAiQuestion(`Looking at “${node.label}” (${node.layer ?? "piece"}): `);
                 setChatExpanded(true);

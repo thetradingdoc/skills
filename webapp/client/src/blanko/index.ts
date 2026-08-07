@@ -1,0 +1,15 @@
+export { ScenePanel } from "./ScenePanel";
+export { DockRail } from "./DockRail";
+export { DockFrame } from "./DockFrame";
+export { BuildPanel } from "./BuildPanel";
+export { InsightsPanel } from "./InsightsPanel";
+export { EvidencePanel } from "./EvidencePanel";
+export { ChatBar } from "./ChatBar";
+export { ChromeBar } from "./ChromeBar";
+export { StatusBar } from "./StatusBar";
+export { EdgeTeachStrip } from "./EdgeTeachStrip";
+export { ViewShell } from "./ViewShell";
+export type { DockMode, EvidenceTab, OverflowView } from "./types";
+export type { LeftRailTab, LeftExploreSection } from "./ScenePanel";
+export { DOCK_MODES, OVERFLOW_VIEWS, CONFIG_SECTIONS } from "./types";
+export { getBuildItem, recommendForSelection, allBuildItems } from "./buildCatalog";
