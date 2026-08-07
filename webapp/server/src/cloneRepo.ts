@@ -36,6 +36,46 @@ export function isCloneValid(dir: string): boolean {
   }
 }
 
+/**
+ * Bring a kept clone up to date with origin.
+ * Rescan used to reuse ~/.arch-viz/repos/<workspaceId> forever without fetch,
+ * so GitHub pushes never appeared as new canvas nodes.
+ */
+export async function refreshStableClone(dir: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isCloneValid(dir)) {
+    return { ok: false, error: "Not a git clone" };
+  }
+  try {
+    const git = simpleGit(dir);
+    // Shallow clones: deepen one tip from origin rather than a full history pull.
+    await git.fetch(["origin", "--depth", "1"]);
+    let branch = "main";
+    try {
+      branch = (await git.revparse(["--abbrev-ref", "HEAD"])).trim() || "main";
+    } catch {
+      /* keep main */
+    }
+    if (branch === "HEAD") {
+      // Detached HEAD after prior reset — prefer origin/main then origin/master.
+      try {
+        await git.reset(["--hard", "origin/main"]);
+      } catch {
+        await git.reset(["--hard", "origin/master"]);
+      }
+    } else {
+      try {
+        await git.reset(["--hard", `origin/${branch}`]);
+      } catch {
+        await git.reset(["--hard", "FETCH_HEAD"]);
+      }
+    }
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[cloneRepo] refreshStableClone failed:", msg);
+    return { ok: false, error: msg };
+  }
+}
 
 export async function cloneToStablePath(repoUrl: string, workspaceId: string): Promise<string> {
   const stableDir = path.join(getClonesDir(), workspaceId);
@@ -43,7 +83,17 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
     if (!isCloneValid(stableDir)) {
       fs.rmSync(stableDir, { recursive: true, force: true });
     } else {
-      return stableDir;
+      const refreshed = await refreshStableClone(stableDir);
+      if (!refreshed.ok) {
+        // Stale/corrupt clone — delete and reclone from scratch.
+        try {
+          fs.rmSync(stableDir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      } else {
+        return stableDir;
+      }
     }
   }
   fs.mkdirSync(path.dirname(stableDir), { recursive: true });

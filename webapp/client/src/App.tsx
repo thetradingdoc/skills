@@ -8616,7 +8616,7 @@ export default function App() {
             accessToken={accessToken}
             scanning={!!loading}
             onRescan={() => scanRepo(repoUrl)}
-            hideForDesign={isDesignMode}
+            hideForDesign={isDesignMode || blankoShell}
           />
           {graph?.reconciliation && (
             <div
@@ -8704,6 +8704,11 @@ export default function App() {
                 }}
                 accessToken={accessToken}
                 apiBase={API_BASE}
+                projectRoot={graph?.projectRoot}
+                generatedAt={graph?.generatedAt}
+                scanning={!!loading}
+                onRescan={() => scanRepo(repoUrl)}
+                hideStaleness={isDesignMode}
                 exportOptions={[
                   {
                     id: "assessment",

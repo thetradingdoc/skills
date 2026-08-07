@@ -17,7 +17,7 @@ import { scanProject } from "../src/analyzer/scanner";
 import { detectDrift } from "../src/analyzer/driftDetector";
 import { enrichGraph } from "../src/ai/enricher-v2";
 import { analyseGraph } from "../src/analysis/graphAnalyser";
-import { getClonesDir, authUrl, cloneToStablePath } from "../webapp/server/src/cloneRepo.js";
+import { getClonesDir, authUrl, cloneToStablePath, refreshStableClone } from "../webapp/server/src/cloneRepo.js";
 import { buildAgentInventory } from "./agent-inventory";
 
 /**
@@ -78,9 +78,16 @@ async function main() {
   try {
     const absoluteCloneDir = dir;
     const git = simpleGit(absoluteCloneDir);
-    if (branch) {
-      await git.fetch(["origin", branch]);
-      await git.checkout(branch);
+    // GitHub-backed scans: always refresh tip so Rescan sees pushes (Payment, etc.).
+    // Local working trees are scanned in place — never reset the user's files.
+    if (!isLocal) {
+      if (branch) {
+        await git.fetch(["origin", branch, "--depth", "1"]);
+        await git.checkout(branch);
+        await git.reset(["--hard", `origin/${branch}`]);
+      } else {
+        await refreshStableClone(absoluteCloneDir);
+      }
     }
 
     let graph = await scanProject(absoluteCloneDir);
