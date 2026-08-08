@@ -69,6 +69,7 @@ const BUILT_IF_ANY_FILE: Record<string, string[]> = {
 const AUTO_BIND: Record<string, string> = {
   "bp-ta-alpaca": "alpaca",
   "bp-ta-kraken": "kraken",
+  "bp-ta-telegram": "telegram",
 };
 
 export function looksLikeTradingScan(graph: ArchGraph | null | undefined): boolean {
@@ -155,7 +156,7 @@ export type ApplyTradingSpineOpts = {
 /**
  * Returns the locked trading spine as an architecture board.
  * Keeps projectRoot from `from` so Rescan still works; sets architectureBoard.
- * Auto-binds Alpaca/Kraken providers so Insights shows real brokers, not Stripe wishlist.
+ * Auto-binds Alpaca/Kraken/Telegram so Insights shows real platforms, not Stripe wishlist.
  */
 export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph | null {
   const base = forkBlueprint("trading-agent");
@@ -209,18 +210,49 @@ export function tradingSpineSeedTitles(): string[] {
   return TRADING_PIPELINE_SEED.map((c) => c.title);
 }
 
-/** True when money-path spine nodes are present and ingress is edged into Identity. */
+/**
+ * Required Blanko edges for a connected trading spine (EXPECTED_SPINE).
+ * Must stay in sync with runtime `services/trading-rails/expected-spine.js`.
+ */
+export const EXPECTED_SPINE_EDGES: ReadonlyArray<readonly [string, string, string]> = [
+  ["bp-ta-telegram", "bp-ta-identity", "channel_to"],
+  ["bp-ta-telegram", "bp-ta-agent", "invokes"],
+  ["bp-ta-identity", "bp-ta-agent", "authorizes"],
+  ["bp-ta-agent", "bp-ta-strategy", "uses"],
+  ["bp-ta-strategy", "bp-ta-policy", "depends_on"],
+  ["bp-ta-policy", "bp-ta-risk", "depends_on"],
+  ["bp-ta-risk", "bp-ta-execution", "calls"],
+  ["bp-ta-execution", "bp-ta-alpaca", "calls"],
+] as const;
+
+export const EXPECTED_SPINE_RUNTIME_HOPS = [
+  "telegram_or_chat",
+  "assertCaller",
+  "execute_turn",
+  "allowlisted_propose_only_tools",
+  "generate_signal_selectors_only",
+  "runStrategies",
+  "PROPOSED_ACTION",
+  "policy_risk",
+  "no_broker_submit_from_agent",
+] as const;
+
+/** True when ingress reaches Agent→Strategy and the money path is edged. */
 export function spineWorkflowConnected(graph: ArchGraph | null | undefined): boolean {
   if (!graph?.nodes?.length || !graph.edges?.length) return false;
   const ids = new Set(graph.nodes.map((n) => n.id));
-  const need = ["bp-ta-telegram", "bp-ta-identity", "bp-ta-policy", "bp-ta-risk", "bp-ta-execution", "bp-ta-alpaca"];
+  const need = [
+    "bp-ta-telegram",
+    "bp-ta-identity",
+    "bp-ta-agent",
+    "bp-ta-strategy",
+    "bp-ta-policy",
+    "bp-ta-risk",
+    "bp-ta-execution",
+    "bp-ta-alpaca",
+  ];
   if (!need.every((id) => ids.has(id))) return false;
   const edgeKey = (s: string, t: string) => `${s}->${t}`;
   const edges = new Set(graph.edges.map((e) => edgeKey(e.source, e.target)));
-  return (
-    edges.has(edgeKey("bp-ta-telegram", "bp-ta-identity")) &&
-    edges.has(edgeKey("bp-ta-policy", "bp-ta-risk")) &&
-    edges.has(edgeKey("bp-ta-risk", "bp-ta-execution")) &&
-    edges.has(edgeKey("bp-ta-execution", "bp-ta-alpaca"))
-  );
+  return EXPECTED_SPINE_EDGES.every(([s, t]) => edges.has(edgeKey(s, t)));
 }

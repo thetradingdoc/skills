@@ -56,7 +56,7 @@ const tradingAgent: DesignBlueprint = {
   id: "trading-agent",
   title: "Trading agent",
   summary:
-    "Healthcare paper trading spine: Telegram → Identity → Payment → Agent proposes → Policy → Risk → Execution → Alpaca. LLM never submits orders.",
+    "Healthcare paper trading spine: Telegram → Identity (authorizes) → Agent → Strategy → Policy → Risk → Execution → Alpaca. Ingress also invokes Agent. LLM never submits orders.",
   notes: [
     "Hard rule: Agent outputs PROPOSED_ACTION only — Policy + Risk + Execution own money.",
     "Payment is paper wallet via Telegram (/fund → /confirm_fund). Track progress in Flow → Tasks.",
@@ -70,7 +70,7 @@ const tradingAgent: DesignBlueprint = {
         label: "Telegram / Trading Chat",
         layer: "Presentation",
         description:
-          "Human ingress — Telegram commands and HTTP Trading Chat. Always through Identity before Payment or Agent.",
+          "Human ingress — Telegram commands and HTTP Trading Chat. Invokes Agent; Identity authorizes before eligible turns.",
         x: 0,
         y: 160,
         techKind: "external-saas",
@@ -162,6 +162,8 @@ const tradingAgent: DesignBlueprint = {
     ],
     [
       bpEdge("bp-ta-telegram", "bp-ta-identity", "channel_to"),
+      bpEdge("bp-ta-telegram", "bp-ta-agent", "invokes"),
+      bpEdge("bp-ta-identity", "bp-ta-agent", "authorizes"),
       bpEdge("bp-ta-mobile", "bp-ta-identity", "calls"),
       bpEdge("bp-ta-payment", "bp-ta-identity", "authenticates_via"),
       bpEdge("bp-ta-agent", "bp-ta-identity", "authenticates_via"),
