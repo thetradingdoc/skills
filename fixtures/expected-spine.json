@@ -1,0 +1,26 @@
+{
+  "name": "expected-spine",
+  "version": 1,
+  "note": "SSOT fixture duplicated in Blanko + trading-agent. Edit both copies together; CI/tests fail if they diverge.",
+  "edges": [
+    ["bp-ta-telegram", "bp-ta-identity", "channel_to"],
+    ["bp-ta-telegram", "bp-ta-agent", "invokes"],
+    ["bp-ta-identity", "bp-ta-agent", "authorizes"],
+    ["bp-ta-agent", "bp-ta-strategy", "uses"],
+    ["bp-ta-strategy", "bp-ta-policy", "depends_on"],
+    ["bp-ta-policy", "bp-ta-risk", "depends_on"],
+    ["bp-ta-risk", "bp-ta-execution", "calls"],
+    ["bp-ta-execution", "bp-ta-alpaca", "calls"]
+  ],
+  "runtime_hops": [
+    "telegram_or_chat",
+    "assertCaller",
+    "execute_turn",
+    "allowlisted_propose_only_tools",
+    "generate_signal_selectors_only",
+    "runStrategies",
+    "PROPOSED_ACTION",
+    "policy_risk",
+    "no_broker_submit_from_agent"
+  ]
+}
