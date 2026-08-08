@@ -119,6 +119,8 @@
     "lint": "eslint src --ext .ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:trading-spine": "tsx scripts/test-expected-spine.ts && tsx scripts/test-trading-spine.ts && tsx scripts/test-trading-blueprint-spine.ts",
+    "test:expected-spine": "tsx scripts/test-expected-spine.ts",
     "webapp:server": "cd webapp/server && npm run build && concurrently \"npm run build:watch\" \"node --watch dist/index.js\"",
     "webapp:client": "cd webapp/client && npm run dev",
     "webapp": "concurrently \"npm run webapp:server\" \"npm run webapp:client\"",
