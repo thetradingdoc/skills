@@ -10,6 +10,13 @@ import {
   classifySubsystem,
   summarizeSubsystemReadiness,
 } from "./subsystemClassify";
+import {
+  type Severity,
+  fromActionPriority,
+  contributesToBadge,
+  SEVERITY_RANK,
+  toBadgeChromeSeverity,
+} from "./severity";
 
 export type WorkflowHop = {
   id: string;
@@ -50,6 +57,8 @@ export type NodeNextAction = {
   title: string;
   detail: string;
   priority: "blocker" | "high" | "medium";
+  /** Shared Blanko severity (D3 / Epic 1). Soft never badges. */
+  severity: Severity;
   /** Primary destination */
   kind: "spine" | "flow" | "code" | "chat" | "task";
   filePath?: string;
@@ -152,7 +161,7 @@ export function architectureBrief(graph: ArchGraph | null | undefined): string {
     return "Money path: Telegram/Trading Chat → Identity → Agent (propose) → Strategy → Policy → Risk → Execution → Alpaca | Kraken. The LLM never submits orders — that saves blow-ups and wasted broker calls.";
   }
   if (looksLikeTradingScan(graph) && spineMissing(graph)) {
-    return "You are looking at a code-scan layout (modules like Trading Chat). Those boxes do not show the money workflow. Apply the trading agent spine to see the locked architecture.";
+    return "Code map of scanned modules — not the money path yet. Apply the trading spine to place Payment → Policy → Risk → Execution and wire ingress into that board.";
   }
   return `Design board: ${graph.nodes.length} pieces, ${graph.edges.length} connections. Insights flags broken design; click a piece for role, tools, and cost.`;
 }
@@ -367,22 +376,65 @@ export function briefBoundFiles(node: ArchNode): BoundFileRole[] {
   return (node.files ?? []).slice(0, 10).map(roleForBoundFile);
 }
 
+function isSpineSetupFinding(f: {
+  id?: string;
+  title?: string;
+  whyItMatters?: string;
+  ruleId?: string;
+}): boolean {
+  const id = `${f.id ?? ""} ${f.ruleId ?? ""}`.toLowerCase();
+  if (id.includes("missing_trading_spine")) return true;
+  return /spine|money path not on canvas|trading agent spine|architecture spine/i.test(
+    `${f.title ?? ""} ${f.whyItMatters ?? ""}`
+  );
+}
+
+/** One board-setup CTA for spine gaps (dedupes missing_trading_spine + wire-ingress). */
+export function buildBoardSetupAction(): NodeNextAction {
+  return {
+    id: "board-setup",
+    title: "Switch to money-path board",
+    detail:
+      "This workspace is still a code map of modules. Apply the trading spine to place Payment, Policy, Risk, and Execution and wire ingress (Telegram / Trading Chat) into that path.",
+    priority: "high",
+    severity: "warning",
+    kind: "spine",
+    taskTitle: "Apply trading agent spine",
+    chatPrompt:
+      "Explain how to apply the trading agent spine so this workspace switches from a code-scan layout to the money-path board (Telegram → Identity → Agent → Strategy → Policy → Risk → Execution).",
+  };
+}
+
 export function nextActionsForNode(
   graph: ArchGraph | null | undefined,
   node: ArchNode,
-  findings: Array<{ id: string; title: string; whyItMatters: string; severity: string; nodeIds: string[] }> = []
+  findings: Array<{
+    id: string;
+    title: string;
+    whyItMatters: string;
+    severity: string;
+    nodeIds: string[];
+    ruleId?: string;
+  }> = []
 ): NodeNextAction[] {
   const actions: NodeNextAction[] = [];
+  const push = (a: Omit<NodeNextAction, "severity"> & { severity?: Severity }) => {
+    const severity = a.severity ?? fromActionPriority(a.priority);
+    actions.push({ ...a, severity });
+  };
+
   const onNode = findings.filter((f) => f.nodeIds.includes(node.id));
+  const spineFindingsOnNode = onNode.filter(isSpineSetupFinding);
   for (const f of onNode) {
+    if (isSpineSetupFinding(f)) continue; // folded into single board-setup below
     if (f.severity !== "blocker" && f.severity !== "risk") continue;
-    const spine = /spine|trading agent/i.test(f.title + f.whyItMatters);
-    actions.push({
+    push({
       id: `finding-${f.id}`,
       title: f.title,
       detail: f.whyItMatters,
       priority: f.severity === "blocker" ? "blocker" : "high",
-      kind: spine ? "spine" : "chat",
+      severity: f.severity === "blocker" ? "blocker" : "warning",
+      kind: "code",
       chatPrompt: `Help me fix: ${f.title}. ${f.whyItMatters}`,
       taskTitle: f.title,
     });
@@ -392,11 +444,12 @@ export function nextActionsForNode(
     const server = (node.files ?? []).find((f) => /server\.js$/i.test(f));
     const db = (node.files ?? []).find((f) => /database\.js$/i.test(f));
     if (server) {
-      actions.push({
+      push({
         id: "audit-server",
         title: "Review server boot",
         detail: "Port, env mode, CORS/rate-limit, error handling.",
         priority: "high",
+        severity: "warning",
         kind: "code",
         filePath: server,
         chatPrompt: `Audit ${server}: list listen port, env mode, global middleware, and how errors are returned to clients.`,
@@ -404,11 +457,12 @@ export function nextActionsForNode(
       });
     }
     if (db) {
-      actions.push({
+      push({
         id: "audit-db",
         title: "Review database wiring",
         detail: "Env credentials, path/URL, no secrets in source.",
         priority: "high",
+        severity: "warning",
         kind: "code",
         filePath: db,
         chatPrompt: `Audit ${db}: how is the DB path/URL chosen, are credentials from env, any pool/timeout settings?`,
@@ -417,26 +471,36 @@ export function nextActionsForNode(
     }
   }
 
-  if (looksLikeTradingIngress(node) && spineMissing(graph ?? null)) {
-    actions.push({
-      id: "wire-ingress",
-      title: "Wire ingress into reasoning → money path",
-      detail:
-        "Apply trading spine so Telegram / Trading Chat → Agent → Strategy → Policy → Risk → Execution (Identity authorizes Agent).",
-      priority: "blocker",
-      kind: "spine",
-      taskTitle: "Apply trading agent spine",
-      chatPrompt:
-        "Explain how to apply the trading agent spine so ingress reaches Agent and Strategy, then Policy and execution.",
+  // Single SETUP card: graph-level board gap, attributed via ingress or spine finding on this node.
+  if (
+    spineMissing(graph ?? null) &&
+    (looksLikeTradingIngress(node) || spineFindingsOnNode.length > 0)
+  ) {
+    push(buildBoardSetupAction());
+  }
+
+  const hasBadgeWorthy = actions.some((a) => contributesToBadge(a.severity));
+  if (!hasBadgeWorthy && !actions.some((a) => a.id === "review-node")) {
+    // Soft fallback — never badges (Epic 1).
+    push({
+      id: "review-node",
+      title: "Review with agent",
+      detail: "Open a sandbox Fix run for this piece — review in Tasks before Approve.",
+      priority: "medium",
+      severity: "soft",
+      kind: "code",
+      chatPrompt: `Review “${node.label}” on the trading money-path. List top risks and a concrete fix plan.`,
+      taskTitle: `Review ${node.label}`,
     });
   }
 
   if (actions.length === 0) {
-    actions.push({
+    push({
       id: "explain-node",
       title: "Explain this piece",
       detail: "Ask chat what it does and what to check next.",
       priority: "medium",
+      severity: "soft",
       kind: "chat",
       chatPrompt: `Explain “${node.label}” in this architecture and list the top 3 checks I should make.`,
       taskTitle: `Review ${node.label}`,
@@ -447,23 +511,21 @@ export function nextActionsForNode(
   return actions.sort((a, b) => order[a.priority] - order[b.priority]).slice(0, 5);
 }
 
-/** Badge meta aligned with Insights "What to do next" (findings + audit tasks, etc.). */
+/** Badge meta — badge_count excludes soft (Epic 1). */
 export function nodeActionBadgeMeta(
   graph: ArchGraph | null | undefined,
   findings: Array<{ id: string; title: string; whyItMatters: string; severity: string; nodeIds: string[] }>,
   opts?: { todoStatusBySourcePath?: Record<string, string> }
-): Record<string, { count: number; severity: "blocker" | "risk" | "suggestion" }> {
-  const map: Record<string, { count: number; severity: "blocker" | "risk" | "suggestion" }> = {};
+): Record<string, { count: number; badge_count: number; severity: "blocker" | "risk" | "suggestion" }> {
+  const map: Record<
+    string,
+    { count: number; badge_count: number; severity: "blocker" | "risk" | "suggestion" }
+  > = {};
   if (!graph?.nodes?.length) return map;
 
   const todoStatus = opts?.todoStatusBySourcePath ?? {};
-  const rank = { blocker: 3, risk: 2, suggestion: 1 } as const;
-  const toSeverity = (p: NodeNextAction["priority"]): "blocker" | "risk" | "suggestion" =>
-    p === "blocker" ? "blocker" : p === "high" ? "risk" : "suggestion";
 
   for (const node of graph.nodes) {
-    // Match Insights "What to do next", but skip the soft default "Explain this piece"
-    // so every idle node does not get a red "1".
     const actions = nextActionsForNode(graph, node, findings).filter((a) => {
       if (a.id === "explain-node") return false;
       const sp = `insights:${node.id}:${a.id}`;
@@ -471,13 +533,17 @@ export function nodeActionBadgeMeta(
       if (st === "done" || st === "completed") return false;
       return true;
     });
-    if (actions.length === 0) continue;
-    let severity: "blocker" | "risk" | "suggestion" = "suggestion";
-    for (const a of actions) {
-      const s = toSeverity(a.priority);
-      if (rank[s] > rank[severity]) severity = s;
+    const badgeActions = actions.filter((a) => contributesToBadge(a.severity));
+    if (badgeActions.length === 0) continue;
+    let sev: Severity = "soft";
+    for (const a of badgeActions) {
+      if (SEVERITY_RANK[a.severity] > SEVERITY_RANK[sev]) sev = a.severity;
     }
-    map[node.id] = { count: actions.length, severity };
+    map[node.id] = {
+      count: badgeActions.length,
+      badge_count: badgeActions.length,
+      severity: toBadgeChromeSeverity(sev),
+    };
   }
   return map;
 }

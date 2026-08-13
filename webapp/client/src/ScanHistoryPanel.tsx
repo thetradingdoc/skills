@@ -173,7 +173,7 @@ export function ScanHistoryPanel({
                       style={{
                         fontSize: 12,
                         fontWeight: 500,
-                        color: s.status === "completed" ? "#3fb950" : s.status === "failed" ? "#f85149" : "#58a6ff",
+                        color: s.status === "completed" ? "#3fb950" : s.status === "failed" ? "#f85149" : "#ef32a6",
                       }}
                     >
                       {s.status}

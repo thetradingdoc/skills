@@ -5,6 +5,8 @@ export interface ModuleContext {
   modulePath: string;
   role?: string;
   layer?: string;
+  /** Quant cockpit subsystem override (ingress|strategy|risk_execution|data_obs|unclassified). */
+  subsystem?: string;
   description?: string;
   mustNotDependOn?: string[];
   isDeprecated?: boolean;
@@ -26,6 +28,9 @@ export function readContextFile(modulePath: string): ModuleContext | null {
 
     const layerMatch = fm.match(/layer:\s*(.+)/);
     if (layerMatch) context.layer = layerMatch[1].trim();
+
+    const subsystemMatch = fm.match(/subsystem:\s*(.+)/);
+    if (subsystemMatch) context.subsystem = subsystemMatch[1].trim();
 
     const descMatch = fm.match(/description:\s*(.+)/);
     if (descMatch) context.description = descMatch[1].trim();
@@ -62,6 +67,7 @@ export function writeContextFile(input: WriteContextInput): void {
   const lines: string[] = ["---"];
   if (role) lines.push(`role: ${role}`);
   if (layer) lines.push(`layer: ${layer}`);
+  if (existing?.subsystem) lines.push(`subsystem: ${existing.subsystem}`);
   if (description) lines.push(`description: ${description}`);
   if (existing?.mustNotDependOn?.length) {
     lines.push(`must-not-depend-on: [${existing.mustNotDependOn.join(", ")}]`);

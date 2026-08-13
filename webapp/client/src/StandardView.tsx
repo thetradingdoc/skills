@@ -106,7 +106,7 @@ export default function StandardView({
           background: "rgba(15,23,42,0.95)",
         }}
       >
-        <span style={{ color: "#58a6ff", fontWeight: 600, fontSize: 12 }}>
+        <span style={{ color: "#ef32a6", fontWeight: 600, fontSize: 12 }}>
           Standard
         </span>
         <span style={{ color: "#7d8590", fontSize: 11 }}>Agent</span>
@@ -168,7 +168,7 @@ export default function StandardView({
                 lineHeight: 1.5,
               }}
             >
-              <div style={{ color: "#58a6ff", fontWeight: 600, marginBottom: 4 }}>
+              <div style={{ color: "#ef32a6", fontWeight: 600, marginBottom: 4 }}>
                 Calibration
               </div>
               {scorecard.calibration}

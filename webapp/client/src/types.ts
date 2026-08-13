@@ -36,6 +36,23 @@ export type NodeLayer =
   | "Configuration"
   | "Uncategorized";
 
+/** Quant cockpit subsystem (car systems). Distinct from node.tier. */
+export type NodeSubsystem =
+  | "ingress"
+  | "strategy"
+  | "risk_execution"
+  | "data_obs"
+  | "unclassified";
+
+/** Trading readiness + design-plan status. */
+export type TradingBuildStatus =
+  | "planned"
+  | "building"
+  | "built"
+  | "paper"
+  | "stub"
+  | "missing";
+
 // ── Critic / violation types (frontend copy — mirrors src/types.ts) ───────────
 
 export interface CriticViolation {
@@ -108,6 +125,7 @@ export interface ArchNode {
     status: "connected" | "missing_credentials" | "unknown" | "unbound";
     source: "detected" | "declared";
     evidence?: string;
+    role?: "primary" | "fallback";
   }>;
   description?: string;
   semanticSignals?: SemanticSignals;
@@ -147,8 +165,13 @@ export interface ArchNode {
   runtimeRoles?: string[];
   /** Inferred tier (core/supporting/peripheral). From SystemModel. */
   tier?: "core" | "supporting" | "peripheral";
-  /** Design mode (P1 assisted design loop): build-plan status for this node. */
-  buildStatus?: "planned" | "building" | "built";
+  /**
+   * Quant cockpit functional subsystem (not the same as tier).
+   * ingress | strategy | risk_execution | data_obs | unclassified
+   */
+  subsystem?: NodeSubsystem;
+  /** Trading readiness + design-plan status (paper/stub/missing for quant cockpit). */
+  buildStatus?: TradingBuildStatus;
   /** Design mode: authored canvas position, set on drop/drag. Absent nodes fall back to auto-layout. */
   position?: { x: number; y: number };
   /** P6: LLMOps refs for agent-like nodes — prompt/config lineage, linked memory/eval nodes. */
@@ -305,6 +328,30 @@ export interface ArchGraph {
   scannedCommit?: string;
   /** Agent inventory from scan (scripts/agent-inventory.ts). */
   agents?: AgentInventoryResult;
+  /**
+   * Static provider probe from scan (scripts/lib/scanProviders.ts).
+   * Credential flags reflect the scanned repo's .env — not live :4100 / vendor balances.
+   */
+  providers?: {
+    static: true;
+    note: string;
+    providers: Array<{
+      id: string;
+      detected: boolean;
+      hasCredential: boolean;
+      boundToNode: boolean;
+      credentialEnv: string[];
+      configuredEnvKeys: string[];
+      evidence: string[];
+    }>;
+    llmRouting: {
+      primary: string;
+      fallback: string;
+      source: "detected" | "default";
+      kellyPrimaryProvider: string | null;
+      note: string;
+    };
+  };
   /** Set when a scan is reconciled against a prior design workspace for the same repo. */
   reconciliation?: ArchGraphReconciliation;
   /** Grouping containers (n8n sticky regions). Absolute canvas coords. */
@@ -389,7 +436,7 @@ export type AgentAuthFinding = {
   evidence: string;
 };
 
-export type AgentSurfaceKind = "agent" | "helper" | "unknown";
+export type AgentSurfaceKind = "agent" | "helper" | "unknown" | "infrastructure";
 export type AgentLoopKind =
   | "hosted"
   | "tool-loop"
@@ -448,7 +495,7 @@ export interface CameraPreset {
   target: { x: number; y: number; z: number };
 }
 
-export type LayoutMode = "depth" | "layer" | "domain" | "elk";
+export type LayoutMode = "depth" | "layer" | "domain" | "elk" | "subsystem";
 
 export interface WorkspaceSceneDoc {
   schemaVersion: number;

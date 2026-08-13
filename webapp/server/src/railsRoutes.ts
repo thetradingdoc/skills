@@ -171,9 +171,21 @@ async function resolveRootFromWorkspace(
       .eq("id", workspaceId)
       .eq("owner_id", ownerId)
       .maybeSingle();
-    if (error || !data) return null;
-    const pr = (data as { project_root?: string | null }).project_root;
-    return typeof pr === "string" && pr.trim() ? path.resolve(pr.trim()) : null;
+    if (!error && data) {
+      const pr = (data as { project_root?: string | null }).project_root;
+      if (typeof pr === "string" && pr.trim()) return path.resolve(pr.trim());
+    }
+    // Fix G fallback: latest graph_json.projectRoot when workspace column empty.
+    const { data: graphRow } = await supabaseAdmin
+      .from("graphs")
+      .select("graph_json")
+      .eq("workspace_id", workspaceId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const g = (graphRow as { graph_json?: { projectRoot?: string } } | null)?.graph_json;
+    const fromGraph = typeof g?.projectRoot === "string" ? g.projectRoot.trim() : "";
+    return fromGraph ? path.resolve(fromGraph) : null;
   } catch {
     return null;
   }

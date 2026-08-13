@@ -2,6 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import { ArchGraph, ArchNode, NodeKind, NodeLayer } from "../types";
 import { readContextFile } from "../analyzer/contextReader";
+import { classifySubsystem } from "../analyzer/subsystemClassify";
+import { refineGraphNodeLabels } from "../analyzer/nodeLabel";
 
 // ── Keyword → Layer mapping ───────────────────────────────────────────────────
 const VALID_LAYERS: Set<NodeLayer> = new Set([
@@ -720,6 +722,7 @@ export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph>
           : baseDesc,
         status: inferStatus(node),
         kind,
+        subsystem: classifySubsystem(node, { contextSubsystem: context.subsystem }).subsystem,
         ...(llmProvider && { llmProvider }),
         ...(hasRAG && { hasRAG: true }),
         ...(toolCount != null && toolCount > 0 && { toolCount }),
@@ -732,7 +735,12 @@ export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph>
       node.suggestedLabel &&
       !agentHit
     ) {
-      return node;
+      return {
+        ...node,
+        subsystem:
+          node.subsystem ??
+          classifySubsystem(node, { contextSubsystem: context?.subsystem }).subsystem,
+      };
     }
 
     // Import/content agent evidence overrides a pre-stamped non-Uncategorized layer.
@@ -753,13 +761,14 @@ export async function enrichGraphHeuristic(graph: ArchGraph): Promise<ArchGraph>
       status,
       description: evidence ? `${baseDesc} [${evidence}]` : baseDesc,
       kind,
+      subsystem: classifySubsystem(node, { contextSubsystem: context?.subsystem }).subsystem,
       ...(llmProvider && { llmProvider }),
       ...(hasRAG && { hasRAG: true }),
       ...(toolCount != null && toolCount > 0 && { toolCount }),
     };
   });
 
-  return { ...graph, nodes };
+  return refineGraphNodeLabels({ ...graph, nodes });
 }
 
 // ── OpenAI enricher (real AI, requires OPENAI_API_KEY) ────────────────────────

@@ -22,6 +22,11 @@ import {
   type ToolReach,
 } from "./resource-trace";
 import { attachLayersToInventory } from "./agent-layers";
+import {
+  buildArchitectureLayersDoc,
+  writeArchitectureLayersDoc,
+  type ArchitectureLayersDoc,
+} from "./architecture-layers";
 import type { AgentLayerResult } from "./agent-layers";
 
 export type AgentTool = {
@@ -67,6 +72,8 @@ export type AgentInventory = {
   languages: Record<string, number>;
   pythonAgents: string[];
   searchedFor: string[];
+  /** System-level layer rollup (P3b/P3c). */
+  architectureLayers?: ArchitectureLayersDoc;
 };
 
 /** Candidate SDKs — only used after intersecting with the target's package.json. */
@@ -705,6 +712,84 @@ function classifySurface(
   };
 }
 
+/**
+ * Load propose-only lane allowlists from trading-rails/tool-allowlists.js.
+ * Prefer require() when possible; fall back to regex of string-literal arrays.
+ * Never invent broker submit tools.
+ */
+function loadTradingAllowlistTools(
+  absAllowPath: string,
+  repoRoot: string
+): AgentTool[] {
+  if (!fs.existsSync(absAllowPath)) return [];
+  const blocked = /submit_order|broker\.|alpaca_order|paper_submit/i;
+  const names = new Set<string>();
+  try {
+    // Clear cache so rescan sees edits
+    delete require.cache[require.resolve(absAllowPath)];
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require(absAllowPath) as {
+      listAllAllowedTools?: () => string[];
+      ALLOWLISTS?: Record<string, Record<string, string[]>>;
+    };
+    if (typeof mod.listAllAllowedTools === "function") {
+      for (const n of mod.listAllAllowedTools()) names.add(n);
+    } else if (mod.ALLOWLISTS) {
+      for (const lane of Object.values(mod.ALLOWLISTS)) {
+        for (const tools of Object.values(lane)) {
+          for (const t of tools) names.add(t);
+        }
+      }
+    }
+  } catch {
+    try {
+      const body = fs.readFileSync(absAllowPath, "utf8");
+      const re = /['"]([a-zA-Z][a-zA-Z0-9_]*)['"]/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(body)) !== null) {
+        const n = m[1]!;
+        if (
+          [
+            "research",
+            "signal",
+            "execute",
+            "review",
+            "guard",
+            "query",
+            "summarize",
+            "analyze",
+            "preview",
+            "confirm",
+            "submit",
+            "portfolio",
+            "postmortem",
+            "block",
+            "use strict",
+          ].includes(n)
+        ) {
+          continue;
+        }
+        if (/^[a-z]+_[a-z0-9_]+$/.test(n)) names.add(n);
+      }
+    } catch {
+      return [];
+    }
+  }
+  const rel = path.relative(repoRoot, absAllowPath).split(path.sep).join("/");
+  const out: AgentTool[] = [];
+  for (const name of [...names].sort()) {
+    if (blocked.test(name)) continue;
+    out.push({
+      name,
+      handler: null,
+      description: null,
+      params: [],
+      note: `lane allowlist from ${rel} (propose-only; no broker submit)`,
+    });
+  }
+  return out;
+}
+
 function enrichSurface(
   base: Omit<AgentSurface, "kind" | "kindSignal" | "loopKind" | "tools" | "toolCandidates" | "auth"> & {
     toolCandidates?: string[];
@@ -734,6 +819,16 @@ function enrichSurface(
       for (const t of more) {
         if (!tools.some((x) => x.name === t.name)) tools.push(t);
       }
+    }
+  }
+
+  // Trading money-path: merge lane/step allowlists from tool-allowlists.js onto execute-turn
+  // so Agents / Reach / Guard can reconcile propose-only SSOT (BK-AGENTS-ALLOW-001).
+  if (/trading-rails\/execute-turn/i.test(base.file.replace(/\\/g, "/"))) {
+    const allowPath = path.join(dir, "tool-allowlists.js");
+    const fromAllow = loadTradingAllowlistTools(allowPath, repoRoot);
+    for (const t of fromAllow) {
+      if (!tools.some((x) => x.name === t.name)) tools.push(t);
     }
   }
 
@@ -845,7 +940,7 @@ function enrichSurface(
 function resolveLocalProviders(
   absPath: string,
   text: string,
-  active: stri[]
+  active: string[]
 ): string[] {
   const dir = path.dirname(absPath);
   const found: string[] = [];
@@ -869,9 +964,9 @@ function resolveLocalProviders(
       }
 
       for (const pkg of active) {
+        const escaped = pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const importRe = new RegExp(
-          "(?:require\\s*\\(\\s*['\"]" + pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\function analyzeJsTsFile(") +
-          "['\"]|from\\s+['\"]" + pkg.replace(/[.*+?^${}()|[\]\\]/g, "\\function analyzeJsTsFile(") + "['\"])"
+          "(?:require\\s*\\(\\s*['\"]" + escaped + "['\"]|from\\s+['\"]" + escaped + "['\"])"
         );
         if (importRe.test(inner) && !found.includes(pkg)) found.push(pkg);
       }
@@ -1163,12 +1258,26 @@ export function buildAgentInventory(repoRoot: string): AgentInventory {
   const productRoot = path.resolve(__dirname, "..");
   attachLayersToInventory(root, deduped, productRoot);
 
+  // System rollup + built-but-unconnected (P3b/P3c). Written beside the repo so
+  // GET /api/layers and LayersAssessmentView can read the same artifact.
+  let architectureLayers: ArchitectureLayersDoc | undefined;
+  try {
+    architectureLayers = buildArchitectureLayersDoc(root, deduped, productRoot);
+    writeArchitectureLayersDoc(root, architectureLayers);
+  } catch (e) {
+    console.warn(
+      "[agent-inventory] architecture.layers.json generation failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
+
   return {
     agents: deduped,
     scannedFiles,
     languages,
     pythonAgents: pythonAgents.sort(),
     searchedFor,
+    architectureLayers,
   };
 }
 

@@ -256,8 +256,8 @@ export function ChangesPanel({ graph, rulesText, projectRoot, apiBase, accessTok
                     fontSize: 9.5,
                     padding: "2px 6px",
                     borderRadius: 4,
-                    border: "1px solid " + (c.action === "create" ? "#3fb950" : "#58a6ff"),
-                    color: c.action === "create" ? "#3fb950" : "#58a6ff",
+                    border: "1px solid " + (c.action === "create" ? "#3fb950" : "#ef32a6"),
+                    color: c.action === "create" ? "#3fb950" : "#ef32a6",
                   }}
                 >
                   {c.action}

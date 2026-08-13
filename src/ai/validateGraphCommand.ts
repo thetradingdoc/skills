@@ -3,7 +3,7 @@
  * No heavy dependencies (only types).
  */
 
-import type { GraphCommand, NodeLayer } from "../types";
+import type { EdgeRelation, GraphCommand, NodeLayer } from "../types";
 
 export const VALID_LAYERS: NodeLayer[] = [
   "Presentation",
@@ -16,8 +16,26 @@ export const VALID_LAYERS: NodeLayer[] = [
   "Uncategorized",
 ];
 
+export const VALID_EDGE_RELATIONS: EdgeRelation[] = [
+  "calls",
+  "uses",
+  "retrieves",
+  "reads",
+  "writes",
+  "publishes",
+  "subscribes",
+  "authenticates_via",
+  "caches",
+  "depends_on",
+  "channel_to",
+];
+
 function isValidLayer(v: string): v is NodeLayer {
   return VALID_LAYERS.includes(v as NodeLayer);
+}
+
+function isValidRelation(v: string): v is EdgeRelation {
+  return VALID_EDGE_RELATIONS.includes(v as EdgeRelation);
 }
 
 const ID_PATTERN = /^[a-zA-Z0-9_\-\/\.]+$/;
@@ -78,6 +96,8 @@ export function validateGraphCommand(raw: unknown): GraphCommandValidationResult
         toId: o.toId,
         edgeType:
           typeof o.edgeType === "string" ? (o.edgeType as "import" | "reexport" | "dynamic") : undefined,
+        relation:
+          typeof o.relation === "string" && isValidRelation(o.relation) ? o.relation : undefined,
       },
     };
   }

@@ -75,7 +75,16 @@ function inferProvidersFromNode(node: ArchNode): PlatformBinding[] {
   tryHit("openai", ["openai", "gpt-"]);
   tryHit("anthropic", ["anthropic", "claude"]);
   tryHit("stripe", ["stripe"]);
-  tryHit("telegram", ["telegram"]); // may not be in catalog — filtered below
+  // Trading Chat HTTP is the same human ingress family as Telegram on this product —
+  // show Telegram on scan nodes even when only trading-chat.js is bound (no "telegram" string).
+  tryHit("telegram", [
+    "telegram",
+    "telegram-bot",
+    "telegraf",
+    "trading-chat",
+    "trading chat",
+    "execute-turn",
+  ]);
   return hits
     .map((h) => {
       const id = canonicalizeProviderId(h.id);
@@ -101,17 +110,23 @@ export function primaryBinding(node: ArchNode): PlatformBinding | null {
   return list.find((b) => b.source === "declared") ?? list[0] ?? null;
 }
 
-/** Upsert a declared binding on a node (immutable). */
+/** Upsert a declared binding on a node (immutable). Keeps other declared bindings. */
 export function setNodeProviderBinding(
   node: ArchNode,
   providerId: string | null,
-  opts?: { accountLabel?: string; status?: BindingStatus }
+  opts?: {
+    accountLabel?: string;
+    status?: BindingStatus;
+    role?: PlatformBinding["role"];
+    evidence?: string;
+  }
 ): ArchNode {
-  const existing = (node.platformBindings ?? []).filter((b) => b.source !== "declared");
+  const nonDeclared = (node.platformBindings ?? []).filter((b) => b.source !== "declared");
+  const otherDeclared = (node.platformBindings ?? []).filter((b) => b.source === "declared");
   if (!providerId) {
     return {
       ...node,
-      platformBindings: existing.length ? existing : undefined,
+      platformBindings: nonDeclared.length ? nonDeclared : undefined,
       llmProvider: node.llmProvider,
     };
   }
@@ -121,13 +136,26 @@ export function setNodeProviderBinding(
     accountLabel: opts?.accountLabel,
     status: opts?.status ?? "connected",
     source: "declared",
-    evidence: "user-bound in canvas",
+    evidence: opts?.evidence ?? "user-bound in canvas",
+    role: opts?.role,
   };
+  const declared = [...otherDeclared.filter((b) => b.providerId !== id), binding];
   const def = getProvider(id);
+  const primaryLlm =
+    opts?.role === "primary" && (def?.category === "llm" || def?.category === "framework")
+      ? id
+      : def?.category === "llm" || def?.category === "framework"
+        ? id
+        : node.llmProvider;
   return {
     ...node,
-    platformBindings: [...existing, binding],
-    llmProvider: def?.category === "llm" || def?.category === "framework" ? id : node.llmProvider,
+    platformBindings: [...nonDeclared, ...declared],
+    llmProvider:
+      opts?.role === "primary"
+        ? id
+        : opts?.role === "fallback"
+          ? node.llmProvider || primaryLlm
+          : primaryLlm,
     cloudProvider:
       def?.category === "cloud" && (id === "aws" || id === "gcp" || id === "azure")
         ? (id as ArchNode["cloudProvider"])
@@ -229,8 +257,9 @@ export function collectDetectedProvidersFromAgents(
   agents: Array<{ provider?: string | null }> | null | undefined
 ): string[] {
   const out = new Set<string>();
-  for (const a of agents ?? []) {
-    const id = canonicalizeProviderId(a.provider ?? null);
+  const list = Array.isArray(agents) ? agents : [];
+  for (const a of list) {
+    const id = canonicalizeProviderId(a?.provider ?? null);
     if (id && getProvider(id)) out.add(id);
   }
   return [...out];

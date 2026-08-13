@@ -347,6 +347,8 @@ export function looksLikeTableName(name: string): boolean {
   if (!name || name.length < 2) return false;
   if (/^[a-z][a-z0-9]*(_[a-z0-9]+)+$/.test(name)) return true; // snake_case
   if (/^[a-z]+s$/.test(name) && name.length >= 4 && !/[A-Z]/.test(name)) return true;
+  // Short singular nouns used as table names (trade, order, wallet) — not camelCase calls.
+  if (/^[a-z][a-z0-9]{2,24}$/.test(name) && !looksLikeCallExpression(name)) return true;
   return false;
 }
 
@@ -672,6 +674,10 @@ function scanSnippet(
   const truncHints: string[] = [];
   const emitDbCalls = opts?.emitDbCalls !== false;
 
+  // Line comments often use backticks (`IS`, `= NULL`) which otherwise steal
+  // the SQL template match and hide real FROM/INTO tables (positionsFor → trade).
+  const codeText = text.replace(/^\s*\/\/.*$/gm, "");
+
   const reqRe = /require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
   let m: RegExpExecArray | null;
   while ((m = reqRe.exec(text)) !== null) localRequires.push(m[1]!);
@@ -685,12 +691,12 @@ function scanSnippet(
   // already handled the quoted form; these two disagreed, silently.
   const sqlChunks: string[] = [];
 
-  const sqlRe = /`([^`]{10,4000})`/g;
-  while ((m = sqlRe.exec(text)) !== null) sqlChunks.push(m[1]!);
+  const sqlRe = /`([^`]{8,4000})`/g;
+  while ((m = sqlRe.exec(codeText)) !== null) sqlChunks.push(m[1]!);
 
   const quotedSqlRe =
     /['"]\s*((?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE)\s[^'"]{8,2000})['"]/gi;
-  while ((m = quotedSqlRe.exec(text)) !== null) sqlChunks.push(m[1]!);
+  while ((m = quotedSqlRe.exec(codeText)) !== null) sqlChunks.push(m[1]!);
 
   for (const chunk of sqlChunks) {
     if (!/\b(SELECT|INSERT|UPDATE|DELETE|FROM|INTO|JOIN|CREATE\s+TABLE)\b/i.test(chunk)) {
@@ -709,14 +715,14 @@ function scanSnippet(
 
   // knex('table') / prisma.model — tables
   const knexRe = /\b(?:knex|db)\(\s*['"]([a-zA-Z_][a-zA-Z0-9_]*)['"]/g;
-  while ((m = knexRe.exec(text)) !== null) {
+  while ((m = knexRe.exec(codeText)) !== null) {
     const t = m[1]!;
     if (looksLikeTableName(t) || !looksLikeCallExpression(t)) {
       resources.push({ kind: "db", name: t, evidence: `${fileRel}: knex/db('${t}')` });
     }
   }
   const prismaRe = /\bprisma\.([a-zA-Z_][a-zA-Z0-9_]*)\./g;
-  while ((m = prismaRe.exec(text)) !== null) {
+  while ((m = prismaRe.exec(codeText)) !== null) {
     resources.push({
       kind: "db",
       name: m[1]!,
@@ -725,8 +731,9 @@ function scanSnippet(
   }
 
   // db.method — call OR property reference (e.g. const fn = db.getPatient…; fn())
+  // Allow `db\n  .prepare` (common prettier style).
   if (emitDbCalls) {
-    const dbMethodRe = /\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
+    const dbMethodRe = /\bdb\s*\.\s*([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
     const skipDbProps = new Set([
       "db",
       "prepare",
@@ -742,13 +749,13 @@ function scanSnippet(
       "parallelize",
     ]);
     const seenMethods = new Set<string>();
-    while ((m = dbMethodRe.exec(text)) !== null) {
+    while ((m = dbMethodRe.exec(codeText)) !== null) {
       const method = m[1]!;
       if (skipDbProps.has(method) || method.length < 3) continue;
       if (seenMethods.has(method)) continue;
       seenMethods.add(method);
-      const line = text.slice(0, m.index).split("\n").length;
-      const lineText = text.split("\n")[line - 1]?.trim() ?? `db.${method}`;
+      const line = codeText.slice(0, m.index).split("\n").length;
+      const lineText = codeText.split("\n")[line - 1]?.trim() ?? `db.${method}`;
       resources.push({
         kind: "db_call",
         name: method,
@@ -759,10 +766,10 @@ function scanSnippet(
 
   // Generic db.prepare('SQL') / db.query("SQL") with literal — extract tables
   const litPrep =
-    /\bdb\.(?:prepare|query|exec|run)\(\s*(`([^`]{8,4000})`|'((?:SELECT|INSERT|UPDATE|DELETE)\s[^']{8,2000})')/gi;
-  while ((m = litPrep.exec(text)) !== null) {
+    /\bdb\s*\.\s*(?:prepare|query|exec|run)\(\s*(`([^`]{8,4000})`|'((?:SELECT|INSERT|UPDATE|DELETE)\s[^']{8,2000})')/gi;
+  while ((m = litPrep.exec(codeText)) !== null) {
     const sql = m[2] || m[3] || "";
-    const line = text.slice(0, m.index).split("\n").length;
+    const line = codeText.slice(0, m.index).split("\n").length;
     for (const table of extractSqlTables(sql)) {
       if (!looksLikeTableName(table) && looksLikeCallExpression(table)) continue;
       resources.push({
@@ -774,13 +781,13 @@ function scanSnippet(
   }
   // Runtime-built SQL into prepare/query — not-traced marker via truncHints
   if (
-    /\bdb\.(?:prepare|query)\(\s*(?!`|'|")/.test(text) ||
-    /\bdb\.(?:prepare|query)\(\s*[a-zA-Z_$][\w$]*\s*[,)]/.test(text)
+    /\bdb\s*\.\s*(?:prepare|query)\(\s*(?!`|'|")/.test(codeText) ||
+    /\bdb\s*\.\s*(?:prepare|query)\(\s*[a-zA-Z_$][\w$]*\s*[,)]/.test(codeText)
   ) {
     // Ignore if every prepare uses a literal (already handled). Flag remaining dynamic forms.
     const dyn =
-      /\bdb\.(?:prepare|query)\(\s*([a-zA-Z_$][\w$]*|[^`'"][^)]*)\)/g;
-    while ((m = dyn.exec(text)) !== null) {
+      /\bdb\s*\.\s*(?:prepare|query)\(\s*([a-zA-Z_$][\w$]*|[^`'"][^)]*)\)/g;
+    while ((m = dyn.exec(codeText)) !== null) {
       const arg = m[1] || "";
       if (/^[`']/.test(arg.trim())) continue;
       if (/^(SELECT|INSERT|UPDATE|DELETE)\b/i.test(arg.trim())) continue;
@@ -792,7 +799,7 @@ function scanSnippet(
   }
 
   const hostRe = /https?:\/\/([a-zA-Z0-9.-]+)/g;
-  while ((m = hostRe.exec(text)) !== null) {
+  while ((m = hostRe.exec(codeText)) !== null) {
     const host = m[1]!;
     if (/localhost|127\.0\.0\.1|0\.0\.0\.0|example\.com/.test(host)) continue;
     resources.push({ kind: "external", name: host, evidence: `${fileRel}: HTTP ${host}` });
@@ -823,7 +830,7 @@ function scanSnippet(
   }
 
   const hasGenericHttp =
-    /\baxios\.(get|post|put|patch|delete)\b/.test(text) || /\bfetch\s*\(/.test(text);
+    /\baxios\.(get|post|put|patch|delete)\b/.test(codeText) || /\bfetch\s*\(/.test(codeText);
   if (hasGenericHttp && litPaths.length === 0) {
     resources.push({
       kind: "external",
@@ -833,7 +840,7 @@ function scanSnippet(
   }
   const sdkRe =
     /\b(stripe|twilio|retell|openai|Anthropic|groq|SendGrid|aws-sdk|@aws-sdk)\b/g;
-  while ((m = sdkRe.exec(text)) !== null) {
+  while ((m = sdkRe.exec(codeText)) !== null) {
     resources.push({
       kind: "external",
       name: m[1]!.toLowerCase(),
@@ -842,7 +849,7 @@ function scanSnippet(
   }
   const fsRe =
     /\bfs\.(readFile|writeFile|appendFile|createReadStream|createWriteStream|promises\.(readFile|writeFile))\b/g;
-  while ((m = fsRe.exec(text)) !== null) {
+  while ((m = fsRe.exec(codeText)) !== null) {
     resources.push({ kind: "fs", name: m[1]!, evidence: `${fileRel}: fs.${m[1]}` });
   }
 
@@ -870,11 +877,32 @@ function scanSnippet(
 
 function parseFileBindings(source: string): Map<string, string> {
   const map = new Map<string, string>();
+  // const X = require('./y')
   const re =
     /(?:const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
     map.set(m[1]!, m[2]!);
+  }
+  // const { a, b: c } = require('./y') — trading tools often call destructured helpers
+  // (e.g. positionsFor) that own the SQL; without this, reach stops at inline requires only.
+  const destRe =
+    /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+  while ((m = destRe.exec(source)) !== null) {
+    const spec = m[2]!;
+    for (const part of m[1]!.split(",")) {
+      const bit = part.trim();
+      if (!bit || bit === "...") continue;
+      const renamed = bit.match(
+        /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)$/
+      );
+      if (renamed) {
+        map.set(renamed[2]!, spec);
+        continue;
+      }
+      const name = bit.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+      if (name) map.set(name[1]!, spec);
+    }
   }
   return map;
 }
@@ -1297,6 +1325,26 @@ export function traceToolHandler(
       truncNotes.push(hint);
     }
 
+    // Bare calls of destructured/local requires: positionsFor(...) — not only
+    // PascalCase.Module.method (which missed trading portfolio SQL behind helpers).
+    for (const [binding, spec] of item.bindings.entries()) {
+      if (!/^[a-z_]/.test(binding)) continue;
+      if (["require", "exports", "module"].includes(binding)) continue;
+      const resolved = resolveRequire(item.fileAbs, spec, repoRoot);
+      // getDb() / database accessors — tables come from SQL or helper modules, not the getter.
+      if (resolved && isDatabaseModule(resolved)) continue;
+      const bareRe = new RegExp(
+        `\\b${binding.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`
+      );
+      if (!bareRe.test(item.text)) continue;
+      if (
+        found.bindingCalls.some((b) => b.binding === binding && b.method === binding)
+      ) {
+        continue;
+      }
+      found.bindingCalls.push({ binding, method: binding });
+    }
+
     for (const r of found.resources) {
       if (r.kind === "db_call") {
         // Prefer resolving through database cache
@@ -1519,7 +1567,7 @@ export function detectAgentAuth(
       label: "requireUser / workspace access",
     },
     {
-      re: /\b(verifyCallerIdentity|assertCallerVerified|requireVerifiedCaller)\s*\(/,
+      re: /\b(verifyCallerIdentity|assertCallerVerified|requireVerifiedCaller|assertCaller)\s*\(/,
       label: "caller identity verification",
     },
   ];

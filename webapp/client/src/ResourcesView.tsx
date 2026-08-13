@@ -302,7 +302,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch, workspace
         </label>
         {selected.size > 0 && (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "#58a6ff" }}>{selected.size} selected →</span>
+            <span style={{ fontSize: 11, color: "#ef32a6" }}>{selected.size} selected →</span>
             {CLASS_BTNS.map((c) => (
               <button
                 key={c}
@@ -350,7 +350,7 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch, workspace
                   />
                 </td>
                 <td style={{ padding: "6px 8px", color: "#e6edf3" }}>
-                  <span style={{ color: "#58a6ff" }}>{row.kind}</span>:{row.name}
+                  <span style={{ color: "#ef32a6" }}>{row.kind}</span>:{row.name}
                 </td>
                 <td style={{ padding: "6px 8px", color: "#d29922", fontWeight: 600 }}>
                   {row.toolCount}
@@ -381,10 +381,10 @@ export default function ResourcesView({ agents, apiBase, onGraphPatch, workspace
                           borderRadius: 4,
                           border:
                             row.class === c
-                              ? "1px solid #58a6ff"
+                              ? "1px solid #ef32a6"
                               : "1px solid #30363d",
                           background:
-                            row.class === c ? "rgba(29,78,216,0.25)" : "transparent",
+                            row.class === c ? "rgba(239, 50, 166, 0.25)" : "transparent",
                           color: "#e6edf3",
                           cursor: busy ? "wait" : "pointer",
                         }}

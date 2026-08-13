@@ -18,6 +18,7 @@
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { assertWorkspaceAccess, assertCanEdit, type WorkspaceAccessRow } from "./workspaceAccess.js";
 
 const router = Router();
 
@@ -30,19 +31,22 @@ type ScanFinding = {
   agent?: string;
 };
 
-/** Confirms the caller owns this workspace. Mirrors the violations routes. */
-async function ownsWorkspace(
+/**
+ * Any workspace member (owner/editor/viewer) may access. Returns the
+ * caller's role, or sends the appropriate error response and returns null.
+ */
+async function requireMemberAccess(
   workspaceId: string,
-  userId: string
-): Promise<boolean> {
-  if (!supabaseAdmin) return false;
-  const { data } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", userId)
-    .maybeSingle();
-  return !!data;
+  userId: string,
+  res: import("express").Response
+): Promise<WorkspaceAccessRow | null> {
+  try {
+    return await assertWorkspaceAccess(supabaseAdmin, workspaceId, userId);
+  } catch (e) {
+    const err = e as { message?: string; statusCode?: number };
+    res.status(err.statusCode ?? 403).json({ error: err.message ?? "Access denied." });
+    return null;
+  }
 }
 
 async function appendLog(
@@ -69,10 +73,7 @@ router.get("/findings", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId is required." });
     return;
   }
-  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
-    res.status(403).json({ error: "Access denied." });
-    return;
-  }
+  if (!(await requireMemberAccess(workspaceId, req.user!.id, res))) return;
 
   const { data, error } = await supabaseAdmin
     .from("workspace_findings")
@@ -104,8 +105,13 @@ router.post("/findings/sync", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId and findings are required." });
     return;
   }
-  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
-    res.status(403).json({ error: "Access denied." });
+  const access = await requireMemberAccess(workspaceId, req.user!.id, res);
+  if (!access) return;
+  try {
+    assertCanEdit(access);
+  } catch (e) {
+    const err = e as { message?: string; statusCode?: number };
+    res.status(err.statusCode ?? 403).json({ error: err.message ?? "Viewers cannot edit this workspace." });
     return;
   }
 
@@ -140,6 +146,81 @@ router.post("/findings/sync", requireUser, async (req, res) => {
 });
 
 /**
+ * Epic 4/7 — mark a finding cleared after Approve + rescan (does not touch todo status).
+ * Emits a log entry kind `finding.cleared` for Rollup consumers.
+ */
+router.post("/findings/:findingId/cleared", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const findingId = decodeURIComponent(req.params.findingId);
+  const { workspaceId, actorName, ruleId, stillFailing } = req.body as {
+    workspaceId?: string;
+    actorName?: string;
+    ruleId?: string;
+    stillFailing?: boolean;
+  };
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required." });
+    return;
+  }
+  const access = await requireMemberAccess(workspaceId, req.user!.id, res);
+  if (!access) return;
+  try {
+    assertCanEdit(access);
+  } catch (e) {
+    const err = e as { message?: string; statusCode?: number };
+    res.status(err.statusCode ?? 403).json({ error: err.message ?? "Viewers cannot edit this workspace." });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const who = actorName || req.user!.email || req.user!.id;
+
+  if (stillFailing) {
+    await appendLog(workspaceId, findingId, {
+      at: now,
+      actor: req.user!.id,
+      actor_name: who,
+      kind: "finding.still_failing",
+      from: null,
+      to: null,
+      text: ruleId ? `Fix didn't resolve — still failing: ${ruleId}` : "Fix didn't resolve — still failing",
+    });
+    res.json({ ok: true, event: "finding.still_failing" });
+    return;
+  }
+
+  // Prefer marking absent / closed without deleting history.
+  const { error: updErr } = await supabaseAdmin
+    .from("workspace_findings")
+    .update({
+      state: "resolved",
+      updated_at: now,
+    })
+    .eq("workspace_id", workspaceId)
+    .eq("finding_id", findingId);
+
+  await appendLog(workspaceId, findingId, {
+    at: now,
+    actor: req.user!.id,
+    actor_name: who,
+    kind: "finding.cleared",
+    from: null,
+    to: "resolved",
+    text: ruleId ? `Cleared after Approve/rescan: ${ruleId}` : "Cleared after Approve/rescan",
+  });
+
+  if (updErr) {
+    // Column/state may not exist in all envs — log event still counts for Epic 7 wiring.
+    res.json({ ok: true, event: "finding.cleared", warning: updErr.message });
+    return;
+  }
+  res.json({ ok: true, event: "finding.cleared" });
+});
+
+/**
  * Change state, assignee or rationale. Every change is logged, so the
  * question "who decided this, when, and why" is always answerable.
  */
@@ -162,8 +243,13 @@ router.patch("/findings/:findingId", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId is required." });
     return;
   }
-  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
-    res.status(403).json({ error: "Access denied." });
+  const patchAccess = await requireMemberAccess(workspaceId, req.user!.id, res);
+  if (!patchAccess) return;
+  try {
+    assertCanEdit(patchAccess);
+  } catch (e) {
+    const err = e as { message?: string; statusCode?: number };
+    res.status(err.statusCode ?? 403).json({ error: err.message ?? "Viewers cannot edit this workspace." });
     return;
   }
 
@@ -276,8 +362,13 @@ router.post("/findings/:findingId/comment", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId and text are required." });
     return;
   }
-  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
-    res.status(403).json({ error: "Access denied." });
+  const commentAccess = await requireMemberAccess(workspaceId, req.user!.id, res);
+  if (!commentAccess) return;
+  try {
+    assertCanEdit(commentAccess);
+  } catch (e) {
+    const err = e as { message?: string; statusCode?: number };
+    res.status(err.statusCode ?? 403).json({ error: err.message ?? "Viewers cannot edit this workspace." });
     return;
   }
 
@@ -328,10 +419,7 @@ router.get("/scans/previous", requireUser, async (req, res) => {
     res.status(400).json({ error: "workspaceId is required." });
     return;
   }
-  if (!(await ownsWorkspace(workspaceId, req.user!.id))) {
-    res.status(403).json({ error: "Access denied." });
-    return;
-  }
+  if (!(await requireMemberAccess(workspaceId, req.user!.id, res))) return;
 
   const { data, error } = await supabaseAdmin
     .from("graphs")

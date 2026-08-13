@@ -75,6 +75,7 @@ function validateGraphCommand(raw: unknown): ValidationResult {
         fromId: o.fromId,
         toId: o.toId,
         edgeType: typeof o.edgeType === "string" ? o.edgeType : undefined,
+        relation: typeof o.relation === "string" ? o.relation : undefined,
       },
     };
   }

@@ -12,6 +12,18 @@ import type {
   ReachResource,
   ResourceClass,
 } from "./types";
+import {
+  INK,
+  SLATE,
+  LINE,
+  ACCENT,
+  GOOD,
+  WARN,
+  BAD,
+  FONT_MONO,
+  PAPER,
+  CANVAS,
+} from "./theme/tokens";
 
 type Props = {
   agents: AgentInventoryResult | undefined;
@@ -108,7 +120,7 @@ function CellMark({
 }) {
   if (state === "none") {
     return (
-      <span title="Walk completed — no path found" style={{ color: "#30363d" }}>
+      <span title="Walk completed — no path found" style={{ color: SLATE }}>
         ·
       </span>
     );
@@ -129,7 +141,7 @@ function CellMark({
               ? "1px solid #f472b6"
               : "1px dashed #b45309",
           background: disputed ? "rgba(244,114,182,0.15)" : "transparent",
-          color: "#d29922",
+          color: WARN,
           cursor: "pointer",
           padding: 0,
           fontSize: 10,
@@ -142,14 +154,14 @@ function CellMark({
   }
   const bg =
     cls === "patient"
-      ? "#f87171"
+      ? BAD
       : cls === "money"
-        ? "#d29922"
+        ? WARN
         : cls === "external"
-          ? "#58a6ff"
+          ? ACCENT
           : cls === "unclassified"
             ? "#a78bfa"
-            : "#7d8590";
+            : SLATE;
   const depthLabel = depth == null ? "" : String(depth);
   return (
     <button
@@ -163,7 +175,7 @@ function CellMark({
         height: 16,
         borderRadius: 3,
         border: active
-          ? "1px solid #58a6ff"
+          ? `1px solid ${ACCENT}`
           : disputed
             ? "1px solid #f472b6"
             : "1px solid transparent",
@@ -174,7 +186,7 @@ function CellMark({
         fontWeight: 700,
         color: disputed ? "#fce7f3" : "#0f172a",
         lineHeight: "14px",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontFamily: FONT_MONO,
       }}
     >
       {depthLabel}
@@ -199,26 +211,26 @@ function EvidenceChain({
       : null;
 
   return (
-    <div style={{ marginTop: 10, fontSize: 11, color: "#e6edf3", lineHeight: 1.55 }}>
-      <div style={{ color: "#f3f4f6", fontWeight: 600 }}>
+    <div style={{ marginTop: 10, fontSize: 11, color: INK, lineHeight: 1.55 }}>
+      <div style={{ color: INK, fontWeight: 600 }}>
         {tool.name}
-        <span style={{ color: "#8b949e", fontWeight: 400, marginLeft: 8 }}>
+        <span style={{ color: SLATE, fontWeight: 400, marginLeft: 8 }}>
           → {cls} ({cell.state}
           {cell.state === "reaches" && cell.depth != null ? ` · depth ${cell.depth}` : ""})
         </span>
       </div>
       {tool.description && (
-        <div style={{ marginTop: 4, color: "#8b949e" }}>
+        <div style={{ marginTop: 4, color: SLATE }}>
           model description: {tool.description}
         </div>
       )}
       {tool.handler && (
-        <div style={{ marginTop: 6, color: "#58a6ff" }}>
+        <div style={{ marginTop: 6, color: ACCENT }}>
           handler {tool.handler}
         </div>
       )}
       {!tool.handler && (
-        <div style={{ marginTop: 6, color: "#d29922" }}>
+        <div style={{ marginTop: 6, color: WARN }}>
           no handler resolved on {fileName(surface.file)}
         </div>
       )}
@@ -231,12 +243,12 @@ function EvidenceChain({
             borderRadius: 6,
             border: "1px dashed #b45309",
             background: "rgba(120,53,15,0.2)",
-            color: "#d29922",
+            color: WARN,
           }}
         >
           Stopped: {cell.reason}
           {(tool.reach?.truncationReasons?.length ?? 0) > 1 && (
-            <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: "#fcd34d" }}>
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: WARN }}>
               {tool.reach!.truncationReasons!.slice(0, 6).map((r) => (
                 <li key={r}>{r}</li>
               ))}
@@ -246,7 +258,7 @@ function EvidenceChain({
       )}
 
       {cell.state === "none" && (
-        <div style={{ marginTop: 8, color: "#7d8590" }}>
+        <div style={{ marginTop: 8, color: SLATE }}>
           Walk completed with no path to {cls}.
         </div>
       )}
@@ -268,15 +280,15 @@ function EvidenceChain({
               marginTop: 12,
               padding: "10px 12px",
               borderRadius: 6,
-              border: "1px solid #30363d",
-              background: "rgba(15,23,42,0.6)",
+              border: `1px solid ${LINE}`,
+              background: PAPER,
             }}
           >
-            <div style={{ color: "#58a6ff" }}>
+            <div style={{ color: ACCENT }}>
               {r.kind}:{r.name}{" "}
-              <span style={{ color: "#7d8590" }}>depth {r.depth}</span>
+              <span style={{ color: SLATE }}>depth {r.depth}</span>
               {r.guess && (
-                <span style={{ color: "#d29922", marginLeft: 8 }}>guess</span>
+                <span style={{ color: WARN, marginLeft: 8 }}>guess</span>
               )}
             </div>
             <div style={{ marginTop: 8 }}>
@@ -290,13 +302,13 @@ function EvidenceChain({
                     alignItems: "flex-start",
                   }}
                 >
-                  <span style={{ color: "#4b5563", minWidth: 14 }}>{i + 1}.</span>
+                  <span style={{ color: SLATE, minWidth: 14 }}>{i + 1}.</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ color: "#e6edf3" }}>
+                    <div style={{ color: INK }}>
                       {h.file}
                       {h.line != null ? `:${h.line}` : ""}
                       {h.label && h.label !== h.file && (
-                        <span style={{ color: "#7d8590", marginLeft: 8 }}>{h.label}</span>
+                        <span style={{ color: SLATE, marginLeft: 8 }}>{h.label}</span>
                       )}
                     </div>
                     {h.snippet && (
@@ -305,12 +317,12 @@ function EvidenceChain({
                           margin: "4px 0 0",
                           padding: "6px 8px",
                           borderRadius: 4,
-                          background: "#0b1220",
-                          color: "#a5b4fc",
+                          background: PAPER,
+                          color: ACCENT,
                           fontSize: 10,
                           whiteSpace: "pre-wrap",
                           wordBreak: "break-word",
-                          border: "1px solid #161b22",
+                          border: `1px solid ${LINE}`,
                         }}
                       >
                         {h.snippet}
@@ -321,7 +333,7 @@ function EvidenceChain({
               ))}
             </div>
             {(r.proof || r.evidence) && (
-              <div style={{ marginTop: 8, color: "#86efac", fontSize: 10 }}>
+              <div style={{ marginTop: 8, color: GOOD, fontSize: 10 }}>
                 proof: {r.proof ?? r.evidence}
               </div>
             )}
@@ -330,7 +342,7 @@ function EvidenceChain({
       })}
 
       {primary && cell.state === "reaches" && (
-        <div style={{ marginTop: 8, color: "#4b5563", fontSize: 10 }}>
+        <div style={{ marginTop: 8, color: SLATE, fontSize: 10 }}>
           shortest path: {(primary.path ?? []).join(" → ")}
         </div>
       )}
@@ -459,13 +471,13 @@ export default function ReachView({ agents }: Props) {
           minHeight: 0,
           padding: 32,
           overflow: "auto",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          color: "#e6edf3",
-          background: "rgba(6,12,26,0.4)",
+          fontFamily: FONT_MONO,
+          color: INK,
+          background: PAPER,
         }}
       >
-        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: "#f3f4f6" }}>No agents to measure</h2>
-        <p style={{ fontSize: 13, color: "#8b949e", maxWidth: 520, lineHeight: 1.5 }}>
+        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: INK }}>No agents to measure</h2>
+        <p style={{ fontSize: 13, color: SLATE, maxWidth: 520, lineHeight: 1.5 }}>
           Reach needs kind=agent surfaces with tools. Re-scan a repository that has tool-loop or
           hosted agents.
         </p>
@@ -481,15 +493,15 @@ export default function ReachView({ agents }: Props) {
           minHeight: 0,
           padding: 32,
           overflow: "auto",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          color: "#e6edf3",
-          background: "rgba(6,12,26,0.4)",
+          fontFamily: FONT_MONO,
+          color: INK,
+          background: PAPER,
         }}
       >
-        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: "#f3f4f6" }}>
+        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: INK }}>
           No tool handlers resolved
         </h2>
-        <p style={{ fontSize: 13, color: "#8b949e", maxWidth: 560, lineHeight: 1.5 }}>
+        <p style={{ fontSize: 13, color: SLATE, maxWidth: 560, lineHeight: 1.5 }}>
           Every tool is not-traced until a handler at file:line exists. Re-scan after handlers are
           in-repo, or open Resources once surfaces appear.
         </p>
@@ -509,16 +521,16 @@ export default function ReachView({ agents }: Props) {
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        background: "rgba(6,12,26,0.35)",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        background: PAPER,
+        fontFamily: FONT_MONO,
       }}
     >
       <div
         style={{
           padding: "10px 20px",
-          borderBottom: "1px solid #30363d",
+          borderBottom: `1px solid ${LINE}`,
           fontSize: 12,
-          color: "#d29922",
+          color: WARN,
           background: "rgba(120,53,15,0.25)",
         }}
       >
@@ -545,22 +557,22 @@ export default function ReachView({ agents }: Props) {
                   alignItems: "baseline",
                   padding: "10px 12px",
                   borderRadius: 8,
-                  border: "1px solid #30363d",
-                  background: "rgba(17,24,39,0.85)",
+                  border: `1px solid ${LINE}`,
+                  background: PAPER,
                   marginBottom: 10,
                 }}
               >
-                <span style={{ fontSize: 13, fontWeight: 600, color: "#f3f4f6" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: INK }}>
                   {fileName(surface.file)}
                 </span>
-                <span style={{ fontSize: 11, color: "#8b949e" }}>{tools.length} tools</span>
-                <span style={{ fontSize: 11, color: "#fca5a5" }}>{patientN} reach patient</span>
-                <span style={{ fontSize: 11, color: "#fcd34d" }}>{moneyN} reach money</span>
-                <span style={{ fontSize: 11, color: "#d29922" }}>{untracedHere} cells untraced</span>
+                <span style={{ fontSize: 11, color: SLATE }}>{tools.length} tools</span>
+                <span style={{ fontSize: 11, color: BAD }}>{patientN} reach patient</span>
+                <span style={{ fontSize: 11, color: WARN }}>{moneyN} reach money</span>
+                <span style={{ fontSize: 11, color: WARN }}>{untracedHere} cells untraced</span>
                 <span
                   style={{
                     fontSize: 11,
-                    color: auth?.found ? "#86efac" : "#f87171",
+                    color: auth?.found ? GOOD : BAD,
                     maxWidth: 420,
                   }}
                   title={auth?.evidence}
@@ -574,7 +586,7 @@ export default function ReachView({ agents }: Props) {
                   width: "100%",
                   borderCollapse: "collapse",
                   fontSize: 11,
-                  color: "#e6edf3",
+                  color: INK,
                 }}
               >
                 <thead>
@@ -583,8 +595,8 @@ export default function ReachView({ agents }: Props) {
                       style={{
                         textAlign: "left",
                         padding: "6px 8px",
-                        borderBottom: "1px solid #30363d",
-                        color: "#7d8590",
+                        borderBottom: `1px solid ${LINE}`,
+                        color: SLATE,
                         fontWeight: 500,
                         width: "28%",
                       }}
@@ -597,8 +609,8 @@ export default function ReachView({ agents }: Props) {
                         style={{
                           textAlign: "center",
                           padding: "6px 8px",
-                          borderBottom: "1px solid #30363d",
-                          color: c === "unclassified" ? "#d29922" : "#7d8590",
+                          borderBottom: `1px solid ${LINE}`,
+                          color: c === "unclassified" ? WARN : SLATE,
                           fontWeight: 500,
                           width: "14%",
                         }}
@@ -611,7 +623,7 @@ export default function ReachView({ agents }: Props) {
                               href="/resources.classify.json"
                               target="_blank"
                               rel="noreferrer"
-                              style={{ color: "#58a6ff", fontSize: 10 }}
+                              style={{ color: ACCENT, fontSize: 10 }}
                             >
                               open resources.classify.json
                             </a>
@@ -629,14 +641,14 @@ export default function ReachView({ agents }: Props) {
                       <td
                         style={{
                           padding: "5px 8px",
-                          borderBottom: "1px solid #21262d",
-                          color: tool.handler ? "#e6edf3" : "#7d8590",
+                          borderBottom: `1px solid ${LINE}`,
+                          color: tool.handler ? INK : SLATE,
                         }}
                         title={tool.handler ?? tool.note ?? "no handler"}
                       >
                         {tool.name}
                         {!tool.handler && (
-                          <span style={{ color: "#4b5563", marginLeft: 6 }}>no handler</span>
+                          <span style={{ color: SLATE, marginLeft: 6 }}>no handler</span>
                         )}
                       </td>
                       {COLUMNS.map((cls) => {
@@ -654,7 +666,7 @@ export default function ReachView({ agents }: Props) {
                             style={{
                               textAlign: "center",
                               padding: "5px 8px",
-                              borderBottom: "1px solid #21262d",
+                              borderBottom: `1px solid ${LINE}`,
                             }}
                           >
                             <CellMark
@@ -687,15 +699,15 @@ export default function ReachView({ agents }: Props) {
       {selected && selectedTool && selectedCell && (
         <div
           style={{
-            borderTop: "1px solid #30363d",
-            background: "rgba(17,24,39,0.97)",
+            borderTop: `1px solid ${LINE}`,
+            background: CANVAS,
             padding: "12px 20px 16px",
             maxHeight: 340,
             overflow: "auto",
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center" }}>
-            <div style={{ fontSize: 12, color: "#8b949e" }}>Evidence</div>
+            <div style={{ fontSize: 12, color: SLATE }}>Evidence</div>
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
               <button
                 type="button"
@@ -704,7 +716,7 @@ export default function ReachView({ agents }: Props) {
                 style={{
                   background: selectedDisputed ? "rgba(244,114,182,0.2)" : "transparent",
                   border: "1px solid #f472b6",
-                  color: "#f9a8d4",
+                  color: ACCENT,
                   borderRadius: 4,
                   padding: "4px 10px",
                   cursor: selectedDisputed ? "default" : "pointer",
@@ -722,7 +734,7 @@ export default function ReachView({ agents }: Props) {
                 style={{
                   background: "transparent",
                   border: "none",
-                  color: "#8b949e",
+                  color: SLATE,
                   cursor: "pointer",
                   fontSize: 11,
                 }}
@@ -732,7 +744,7 @@ export default function ReachView({ agents }: Props) {
             </div>
           </div>
           {disputeStatus && (
-            <div style={{ marginTop: 6, fontSize: 10, color: "#f9a8d4" }}>{disputeStatus}</div>
+            <div style={{ marginTop: 6, fontSize: 10, color: ACCENT }}>{disputeStatus}</div>
           )}
           <EvidenceChain
             tool={selectedTool.tool}

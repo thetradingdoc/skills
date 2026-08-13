@@ -249,7 +249,7 @@ async function runAudit(writeOut) {
   // Wait for workspace (Layers or any view button) OR visible error
   let scanOk = false;
   try {
-    await page.getByRole("button", { name: "Layers", exact: true }).waitFor({ timeout: usedSeed ? 60000 : 180000 });
+    await page.getByRole("button", { name: "Agent Layers", exact: true }).waitFor({ timeout: usedSeed ? 60000 : 180000 });
     scanOk = true;
   } catch {
     /* maybe auth modal or error */
@@ -436,7 +436,7 @@ async function runAudit(writeOut) {
   const views = [
     { name: "2D", btn: "2D", expect: /Search nodes|Overview|react-flow|Legend|Deep Dive/i },
     { name: "3D", btn: "3D", expect: /canvas|WebGL|3D|Orbit|Camera/i },
-    { name: "Layers", btn: "Layers", expect: /Ingress|Context|Reasoning/i },
+    { name: "Agent Layers", btn: "Agent Layers", expect: /Ingress|Context|Reasoning/i },
     { name: "Agents", btn: "Agents", expect: /agent|tool/i },
     { name: "Reach", btn: "Reach", expect: /patient|money|reach|tool/i },
     { name: "Resources", btn: "Resources", expect: /classif|resource|blast/i },
@@ -456,7 +456,7 @@ async function runAudit(writeOut) {
         await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
         await page.locator('input[placeholder*="github" i], .landing-scan-card input').first().fill(SOMO);
         await page.getByRole("button", { name: /Scan repository/i }).click({ force: true });
-        await page.getByRole("button", { name: "Layers", exact: true }).waitFor({ timeout: 30000 });
+        await page.getByRole("button", { name: "Agent Layers", exact: true }).waitFor({ timeout: 30000 });
       }
       const btn2 = page.getByRole("button", { name: v.btn, exact: true });
       if ((await btn2.count()) === 0) {
@@ -494,7 +494,7 @@ async function runAudit(writeOut) {
         await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
         await page.locator('input[placeholder*="github" i], .landing-scan-card input').first().fill(SOMO);
         await page.getByRole("button", { name: /Scan repository/i }).click({ force: true });
-        await page.getByRole("button", { name: "Layers", exact: true }).waitFor({ timeout: 30000 });
+        await page.getByRole("button", { name: "Agent Layers", exact: true }).waitFor({ timeout: 30000 });
         continue;
       }
       find(
@@ -510,7 +510,7 @@ async function runAudit(writeOut) {
         await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
         await page.locator('input[placeholder*="github" i], .landing-scan-card input').first().fill(SOMO);
         await page.getByRole("button", { name: /Scan repository/i }).click({ force: true });
-        await page.getByRole("button", { name: "Layers", exact: true }).waitFor({ timeout: 30000 });
+        await page.getByRole("button", { name: "Agent Layers", exact: true }).waitFor({ timeout: 30000 });
       } catch {}
     }
   }
@@ -631,7 +631,7 @@ async function runAudit(writeOut) {
   }
 
   // ========== LAYERS agent switch ==========
-  await page.getByRole("button", { name: "Layers", exact: true }).click();
+  await page.getByRole("button", { name: "Agent Layers", exact: true }).click();
   await page.waitForTimeout(400);
   const layersBefore = await page.evaluate(() => {
     const bands = [...document.querySelectorAll("*")].filter((el) =>
@@ -725,7 +725,7 @@ async function runAudit(writeOut) {
     // soft approach: location reload would lose graph. Re-fetch by remounting view.
   });
   // Toggle away and back; StandardView fetches on mount
-  await page.getByRole("button", { name: "Layers", exact: true }).click();
+  await page.getByRole("button", { name: "Agent Layers", exact: true }).click();
   await page.waitForTimeout(200);
   // Force network refetch of reference-model
   await page.route("**/reference-model.json", async (route) => {
@@ -1035,7 +1035,7 @@ async function runAudit(writeOut) {
       return {
         hasNoAgentEmpty: /No AI agent found/i.test(t),
         hasLayersBtn: [...document.querySelectorAll("button")].some((b) =>
-          /^Layers$/i.test((b.textContent || "").trim())
+          /^Agent Layers$/i.test((b.textContent || "").trim())
         ),
         sample: t.slice(0, 280),
       };

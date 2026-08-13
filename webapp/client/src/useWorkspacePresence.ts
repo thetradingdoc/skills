@@ -2,14 +2,30 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 
+export interface PresenceFocus {
+  kind: "node" | "layer" | "section";
+  id: string;
+  label?: string;
+}
+
 export interface PresenceUser {
   id: string;
   name: string;
   cursor?: { x: number; y: number } | null;
+  /** What this user currently has selected/inspecting, if anything. */
+  focus?: PresenceFocus | null;
 }
+
+type PresenceMeta = { userId: string; name: string; cursor?: { x: number; y: number } | null; focus?: PresenceFocus | null };
 
 /**
  * Subscribe to workspace presence channel. Fetches current user from Supabase when not provided.
+ *
+ * Multiple components in the tree may call this for the same workspace (the
+ * underlying Supabase channel is reused per topic). Every track() call reads
+ * the caller's own last-known presence meta first and merges into it, so a
+ * cursor update from one call site never clobbers a focus update from
+ * another.
  */
 export function useWorkspacePresence(
   workspaceId: string | null,
@@ -18,6 +34,8 @@ export function useWorkspacePresence(
 ): {
   users: PresenceUser[];
   trackCursor: (x: number, y: number) => void;
+  trackFocus: (focus: PresenceFocus | null) => void;
+  currentUserId: string | null;
 } {
   const [users, setUsers] = useState<PresenceUser[]>([]);
   const [currentUser, setCurrentUser] = useState<{ id: string; name: string } | null>(null);
@@ -48,15 +66,16 @@ export function useWorkspacePresence(
       setUsers([]);
       return;
     }
+    const sb = supabase;
 
     const channelName = `workspace:${workspaceId}`;
-    const channel = supabase.channel(channelName, {
+    const channel = sb.channel(channelName, {
       config: { presence: { key: effectiveUserId } },
     });
 
     channel
       .on("presence", { event: "sync" }, () => {
-        const state = channel.presenceState<{ userId: string; name: string; cursor?: { x: number; y: number } | null }>();
+        const state = channel.presenceState<PresenceMeta>();
         const list: PresenceUser[] = [];
         for (const key of Object.keys(state)) {
           for (const pres of state[key]) {
@@ -64,6 +83,7 @@ export function useWorkspacePresence(
               id: pres.userId,
               name: pres.name ?? "Anonymous",
               cursor: pres.cursor ?? null,
+              focus: pres.focus ?? null,
             });
           }
         }
@@ -75,6 +95,7 @@ export function useWorkspacePresence(
             userId: effectiveUserId,
             name: effectiveUserName,
             cursor: null,
+            focus: null,
           });
         }
       });
@@ -82,11 +103,19 @@ export function useWorkspacePresence(
     channelRef.current = channel;
 
     return () => {
-      supabase.removeChannel(channel);
+      sb.removeChannel(channel);
       channelRef.current = null;
       setUsers([]);
     };
   }, [workspaceId, effectiveUserId, effectiveUserName]);
+
+  /** Reads this client's own last-tracked meta so a partial update doesn't drop the other fields. */
+  const readOwnMeta = useCallback((): PresenceMeta | null => {
+    const ch = channelRef.current;
+    if (!ch || !effectiveUserId) return null;
+    const state = ch.presenceState<PresenceMeta>();
+    return state[effectiveUserId]?.[0] ?? null;
+  }, [effectiveUserId]);
 
   const trackCursor = useCallback(
     (x: number, y: number) => {
@@ -95,15 +124,32 @@ export function useWorkspacePresence(
       if (throttleRef.current) return;
       throttleRef.current = setTimeout(() => {
         throttleRef.current = null;
+        const mine = readOwnMeta();
         ch.track({
           userId: effectiveUserId,
           name: effectiveUserName,
           cursor: { x, y },
+          focus: mine?.focus ?? null,
         });
       }, 80);
     },
-    [effectiveUserId, effectiveUserName]
+    [effectiveUserId, effectiveUserName, readOwnMeta]
   );
 
-  return { users, trackCursor, currentUserId: effectiveUserId };
+  const trackFocus = useCallback(
+    (focus: PresenceFocus | null) => {
+      const ch = channelRef.current;
+      if (!ch || !effectiveUserId) return;
+      const mine = readOwnMeta();
+      ch.track({
+        userId: effectiveUserId,
+        name: effectiveUserName,
+        cursor: mine?.cursor ?? null,
+        focus,
+      });
+    },
+    [effectiveUserId, effectiveUserName, readOwnMeta]
+  );
+
+  return { users, trackCursor, trackFocus, currentUserId: effectiveUserId };
 }

@@ -267,7 +267,7 @@ function AllParticle({
     <mesh ref={meshRef}>
       <sphereGeometry args={[ALL_GLOW_R, 8, 6]} />
       <meshBasicMaterial
-        color="#58a6ff"
+        color="#ef32a6"
         transparent
         opacity={opacity}
       />

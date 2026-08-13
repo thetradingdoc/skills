@@ -79,6 +79,8 @@ check("llm_to_broker: blocker when agent calls Alpaca directly", () => {
   const findings = findingsFor("llm_to_broker", evaluateDesign(g));
   assert.equal(findings.length, 1);
   assert.equal(findings[0]!.severity, "blocker");
+  assert.deepEqual(findings[0]!.nodeIds, ["ag", "al"]);
+  assert.deepEqual(findings[0]!.edgeIds, [g.edges[0]!.id]);
 });
 
 check("missing_trading_spine: fires on trading scan without Payment/Policy/Risk/Execution", () => {
@@ -88,7 +90,27 @@ check("missing_trading_spine: fires on trading scan without Payment/Policy/Risk/
   (g as { projectName?: string }).projectName = "trading-agent";
   const findings = findingsFor("missing_trading_spine", evaluateDesign(g));
   assert.equal(findings.length, 1);
-  assert.equal(findings[0]!.severity, "blocker");
+  assert.equal(findings[0]!.severity, "risk");
+});
+
+check("missing_trading_spine: attributes to ingress + middleware, not arbitrary first nodes", () => {
+  const noiseA = node({ id: "noise-a", label: "Utils", layer: "Business Logic" });
+  const noiseB = node({ id: "noise-b", label: "Helpers", layer: "Business Logic" });
+  const noiseC = node({ id: "noise-c", label: "Config Loader", layer: "Configuration" });
+  const chat = node({ id: "trading-chat", label: "Trading Chat", layer: "Presentation" });
+  const mid = node({ id: "middleware-platform", label: "Middleware Platform", layer: "Data Access" });
+  const tg = node({ id: "telegram-bot", label: "Telegram Bot", layer: "Presentation" });
+  // Noise first so a naive slice(0,3) would wrongly pick noise-a/b/c.
+  const g = graphOf([noiseA, noiseB, noiseC, chat, mid, tg], []);
+  (g as { projectName?: string }).projectName = "trading-agent";
+  const findings = findingsFor("missing_trading_spine", evaluateDesign(g));
+  assert.equal(findings.length, 1);
+  const ids = new Set(findings[0]!.nodeIds);
+  assert.ok(ids.has("trading-chat"), "expected trading-chat ingress");
+  assert.ok(ids.has("middleware-platform"), "expected middleware shell");
+  assert.ok(ids.has("telegram-bot"), "expected telegram ingress");
+  assert.ok(!ids.has("noise-a") && !ids.has("noise-b") && !ids.has("noise-c"), "must not attribute to unrelated first nodes");
+  assert.ok(findings[0]!.nodeIds.length <= 12);
 });
 
 check("missing_trading_spine: silent when architectureBoard is set", () => {

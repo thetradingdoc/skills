@@ -10,9 +10,19 @@
  * document has to survive being copied into an email or a review doc, so it
  * is generated as markdown and shown close to how it will look elsewhere.
  */
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { buildAssessment, type EvalRow } from "./assessment";
 import { FindingsList } from "./FindingsList";
+import { LayersAssessmentView } from "./LayersAssessmentView";
+import {
+  INK,
+  SLATE,
+  LINE,
+  ACCENT,
+  GOOD,
+  FONT_MONO,
+  FONT_UI,
+} from "./theme/tokens";
 
 type Props = {
   graph: any;
@@ -20,7 +30,113 @@ type Props = {
   apiBase: string;
   accessToken: string | null;
   workspaceId: string | null;
+  onOpenFile?: (path: string, line?: number) => void;
 };
+
+type LayersDoc = {
+  present: boolean;
+  reason?: string;
+  assessed_at?: string;
+  generated_at?: string;
+  assessed_by?: string;
+  source?: string;
+  layers?: unknown[];
+};
+
+/**
+ * System layers panel above the assessment markdown.
+ *
+ * Fetches architecture.layers.json for the scanned repository and lets a
+ * reviewer declare a layer not applicable — that PATCH just writes
+ * architecture.layers.apply.json; refetching GET /api/layers re-merges the
+ * declaration onto the detected state, so this component stays dumb.
+ */
+function SystemLayersPanel({
+  projectRoot,
+  apiBase,
+  accessToken,
+  onOpenFile,
+}: {
+  projectRoot: string;
+  apiBase: string;
+  accessToken: string | null;
+  onOpenFile?: (path: string, line?: number) => void;
+}) {
+  const [doc, setDoc] = useState<LayersDoc | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    if (!projectRoot) {
+      setDoc(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const r = await fetch(
+        `${apiBase}/layers?projectRoot=${encodeURIComponent(projectRoot)}`,
+        accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined
+      );
+      const d = await r.json();
+      setDoc(d);
+    } catch {
+      setDoc({ present: false, reason: "Could not reach the layers endpoint." });
+    } finally {
+      setLoading(false);
+    }
+  }, [apiBase, accessToken, projectRoot]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const markNotApplicable = useCallback(
+    async (layerId: string) => {
+      if (!accessToken) return;
+      try {
+        await fetch(`${apiBase}/layers/applicability`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ projectRoot, layerId, state: "not_applicable" }),
+        });
+      } catch {
+        /* best effort — refetch below shows whatever state actually landed */
+      }
+      load();
+    },
+    [apiBase, accessToken, projectRoot, load]
+  );
+
+  if (loading) return null;
+
+  if (!doc?.present) {
+    return (
+      <div
+        style={{
+          maxWidth: 820,
+          marginBottom: 20,
+          fontSize: 12,
+          color: SLATE,
+        }}
+      >
+        Scan to generate architecture.layers.json.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 820, marginBottom: 8, border: `1px solid ${LINE}`, borderRadius: 8 }}>
+      <LayersAssessmentView
+        assessment={doc as any}
+        onOpenFile={onOpenFile}
+        onMarkNotApplicable={accessToken ? markNotApplicable : undefined}
+      />
+    </div>
+  );
+}
 
 /** Minimal markdown rendering — headings, bold, bullets, ordered items, rules. */
 function renderLine(line: string, i: number) {
@@ -30,7 +146,7 @@ function renderLine(line: string, i: number) {
     return (
       <hr
         key={key}
-        style={{ border: 0, borderTop: "1px solid #30363d", margin: "22px 0" }}
+        style={{ border: 0, borderTop: `1px solid ${LINE}`, margin: "22px 0" }}
       />
     );
   }
@@ -42,7 +158,7 @@ function renderLine(line: string, i: number) {
         style={{
           fontSize: 20,
           fontWeight: 600,
-          color: "#e6edf3",
+          color: INK,
           margin: "0 0 4px",
           letterSpacing: "-0.01em",
         }}
@@ -59,7 +175,7 @@ function renderLine(line: string, i: number) {
         style={{
           fontSize: 13,
           fontWeight: 600,
-          color: "#8b949e",
+          color: SLATE,
           textTransform: "uppercase",
           letterSpacing: "0.09em",
           margin: "26px 0 10px",
@@ -77,7 +193,7 @@ function renderLine(line: string, i: number) {
         key={key}
         style={{
           fontSize: 12,
-          color: "#6e7681",
+          color: SLATE,
           margin: "0 0 6px",
           fontStyle: "italic",
         }}
@@ -90,7 +206,7 @@ function renderLine(line: string, i: number) {
   const bold = (text: string) =>
     text.split(/\*\*(.+?)\*\*/g).map((part, j) =>
       j % 2 === 1 ? (
-        <strong key={j} style={{ color: "#e6edf3", fontWeight: 600 }}>
+        <strong key={j} style={{ color: INK, fontWeight: 600 }}>
           {part}
         </strong>
       ) : (
@@ -106,12 +222,12 @@ function renderLine(line: string, i: number) {
           display: "flex",
           gap: 10,
           fontSize: 13.5,
-          color: "#c9d1d9",
+          color: INK,
           lineHeight: 1.65,
           margin: "0 0 6px",
         }}
       >
-        <span style={{ color: "#484f58", flexShrink: 0 }}>—</span>
+        <span style={{ color: SLATE, flexShrink: 0 }}>—</span>
         <span>{bold(line.slice(2))}</span>
       </div>
     );
@@ -127,15 +243,15 @@ function renderLine(line: string, i: number) {
           gridTemplateColumns: "22px 1fr",
           gap: 8,
           fontSize: 13.5,
-          color: "#c9d1d9",
+          color: INK,
           lineHeight: 1.65,
           margin: "0 0 12px",
         }}
       >
         <span
           style={{
-            color: "#58a6ff",
-            fontFamily: "JetBrains Mono, ui-monospace, monospace",
+            color: ACCENT,
+            fontFamily: FONT_MONO,
             fontSize: 12,
             paddingTop: 2,
           }}
@@ -154,7 +270,7 @@ function renderLine(line: string, i: number) {
       key={key}
       style={{
         fontSize: 13.5,
-        color: "#c9d1d9",
+        color: INK,
         lineHeight: 1.7,
         margin: "0 0 10px",
         maxWidth: "78ch",
@@ -165,9 +281,8 @@ function renderLine(line: string, i: number) {
   );
 }
 
-const MONO_F = "JetBrains Mono, ui-monospace, monospace";
 
-export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, workspaceId }: Props) {
+export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, workspaceId, onOpenFile }: Props) {
   const [copied, setCopied] = useState(false);
 
   const markdown = useMemo(
@@ -189,8 +304,8 @@ export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, 
 
   if (!graph) {
     return (
-      <div style={{ padding: 24, fontSize: 13, color: "#8b949e" }}>
-        Scan a repository to generate an assessment.
+      <div style={{ padding: 24, fontSize: 13, color: SLATE, fontFamily: FONT_UI }}>
+        Scan a repository to generate a review.
       </div>
     );
   }
@@ -201,6 +316,9 @@ export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, 
         height: "100%",
         overflowY: "auto",
         padding: "20px 26px 60px",
+        background: "transparent",
+        color: INK,
+        fontFamily: FONT_UI,
       }}
     >
       <div
@@ -217,11 +335,11 @@ export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, 
           style={{
             padding: "4px 12px",
             fontSize: 11,
-            fontFamily: "JetBrains Mono, ui-monospace, monospace",
+            fontFamily: FONT_MONO,
             borderRadius: 6,
-            border: "1px solid #30363d",
+            border: `1px solid ${LINE}`,
             background: copied ? "rgba(63,185,80,0.15)" : "transparent",
-            color: copied ? "#3fb950" : "#8b949e",
+            color: copied ? GOOD : SLATE,
             cursor: "pointer",
           }}
           title="Copy the assessment as markdown"
@@ -232,6 +350,15 @@ export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, 
 
       <FindingsList graph={graph} evaluations={evaluations} apiBase={apiBase} accessToken={accessToken} workspaceId={workspaceId} />
 
+      {graph?.projectRoot && accessToken && (
+        <SystemLayersPanel
+          projectRoot={graph.projectRoot}
+          apiBase={apiBase}
+          accessToken={accessToken}
+          onOpenFile={onOpenFile}
+        />
+      )}
+
       <article style={{ maxWidth: 820 }}>
         {lines.map((line, i) => renderLine(line, i))}
       </article>
@@ -240,7 +367,7 @@ export function AssessmentView({ graph, evaluations = [], apiBase, accessToken, 
         style={{
           marginTop: 32,
           fontSize: 11.5,
-          color: "#484f58",
+          color: SLATE,
           maxWidth: "70ch",
           lineHeight: 1.6,
         }}

@@ -10,7 +10,7 @@ export const LAYER_COLORS: Record<
   Safety: { top: "#fbbf24", accent: "#d97706", dim: "#1c1917", glow: "rgba(251,191,36,0.18)" },
   "Data Access": { top: "#34d399", accent: "#059669", dim: "#071a12", glow: "rgba(52,211,153,0.18)" },
   "External Services": { top: "#fb923c", accent: "#c2410c", dim: "#1f0d06", glow: "rgba(251,146,60,0.18)" },
-  Infrastructure: { top: "#60a5fa", accent: "#1d4ed8", dim: "#071020", glow: "rgba(96,165,250,0.18)" },
+  Infrastructure: { top: "#ef32a6", accent: "#ef32a6", dim: "#071020", glow: "rgba(96,165,250,0.18)" },
   Utilities: { top: "#94a3b8", accent: "#475569", dim: "#0d1117", glow: "rgba(148,163,184,0.12)" },
   Configuration: { top: "#fbbf24", accent: "#b45309", dim: "#1a1200", glow: "rgba(251,191,36,0.18)" },
   Uncategorized: { top: "#4b5563", accent: "#374151", dim: "#0d1117", glow: "rgba(75,85,99,0.10)" },

@@ -6,6 +6,7 @@ import {
   NodeLayer,
 } from "../types";
 import { isLayerViolation } from "../architecture/layerModel";
+import { refineGraphNodeLabels } from "../nodeLabel";
 
 const UTILITY_LAYERS: Set<NodeLayer> = new Set([
   "Utilities",
@@ -127,11 +128,11 @@ export function analyseGraph(graph: ArchGraph): ArchGraph {
     depth: depths.get(node.id) ?? 0,
   }));
 
-  return {
+  return refineGraphNodeLabels({
     ...graph,
     nodes: enrichedNodes,
     edges: enrichedEdges,
-  };
+  });
 }
 
 export type EdgeFilter = "all" | "architectural" | "drift" | "violations" | "jira";

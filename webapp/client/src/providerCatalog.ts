@@ -39,6 +39,11 @@ export type PlatformBinding = {
   /** detected | declared — how we know about this binding */
   source: "detected" | "declared";
   evidence?: string;
+  /**
+   * LLM routing role when bound on an Agent node (static scan / spine apply).
+   * Not a live health probe.
+   */
+  role?: "primary" | "fallback";
 };
 
 /** Full catalog shown in inventory + bind picker. */
@@ -283,6 +288,16 @@ export const PROVIDER_CATALOG: ProviderDef[] = [
     packages: ["@slack/web-api"],
   },
   {
+    id: "telegram",
+    name: "Telegram",
+    category: "third_party",
+    icon: "/provider-icons/telegram.svg",
+    color: "#26A5E4",
+    packages: ["node-telegram-bot-api", "telegraf", "grammy"],
+    credentialEnv: ["TELEGRAM_BOT_TOKEN"],
+    aliases: ["tg", "telegram-bot"],
+  },
+  {
     id: "datadog",
     name: "Datadog",
     category: "observability",
@@ -446,11 +461,11 @@ export function categoryLabel(c: ProviderCategory): string {
 export function bindingStatusLabel(s: BindingStatus): string {
   switch (s) {
     case "connected":
-      return "connected";
+      return "bound";
     case "missing_credentials":
-      return "missing credentials";
+      return "NOT CONFIGURED";
     case "unknown":
-      return "unknown";
+      return "detected · not bound";
     case "unbound":
       return "unbound";
     default:
@@ -461,14 +476,14 @@ export function bindingStatusLabel(s: BindingStatus): string {
 export function bindingStatusColor(s: BindingStatus): string {
   switch (s) {
     case "connected":
-      return "#3fb950";
+      return "#16A34A";
     case "missing_credentials":
-      return "#d29922";
+      return "#D97706";
     case "unknown":
-      return "#8b949e";
+      return "#6B7280";
     case "unbound":
-      return "#f85149";
+      return "#DC2626";
     default:
-      return "#8b949e";
+      return "#6B7280";
   }
 }

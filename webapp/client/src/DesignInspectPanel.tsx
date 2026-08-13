@@ -403,10 +403,10 @@ function NodeExplainPanel({ node, onChange, onDelete, onAddNeighbours, workspace
                   </span>
                 ))}
               </div>
-              {onAddNeighbours && (
+              {onAddNeighbours && neighbourLabels.length > 0 && (
                 <button
                   type="button"
-                  data-testid="design-inspect-add-neighbours"
+                  data-testid="design-inspect-add-neighbours-teach"
                   onClick={onAddNeighbours}
                   style={{
                     width: "100%",

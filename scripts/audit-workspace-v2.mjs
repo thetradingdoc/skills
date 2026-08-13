@@ -159,7 +159,7 @@ async function main() {
   }
 
   // ========== TOP BAR ==========
-  const views = ["Layers", "Reach", "Flow", "Standard", "Guard"];
+  const views = ["Agent Layers", "Reach", "Flow", "Standard", "Guard"];
   for (const v of views) {
     const btn = page.locator(`[data-view]`).filter({ hasText: new RegExp(`^${v}$`) });
     if ((await btn.count()) === 0) {

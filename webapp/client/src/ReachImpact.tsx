@@ -35,7 +35,7 @@ function changeColour(c: Change): string {
     case "tool-added":
       return c.weight >= 90 ? "#f85149" : "#d29922";
     case "agent-added":
-      return c.weight >= 90 ? "#f85149" : "#58a6ff";
+      return c.weight >= 90 ? "#f85149" : "#ef32a6";
     case "auth-gained":
     case "layer-filled":
       return "#3fb950";
@@ -120,7 +120,7 @@ export function ReachImpact({ graph, apiBase, accessToken, onNewGraph }: Props) 
             borderRadius: 5,
             border: "1px solid #30363d",
             background: "transparent",
-            color: state === "scanning" ? "#6e7681" : "#58a6ff",
+            color: state === "scanning" ? "#6e7681" : "#ef32a6",
             cursor: state === "scanning" ? "default" : "pointer",
           }}
         >

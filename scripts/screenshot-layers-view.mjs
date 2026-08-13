@@ -43,7 +43,7 @@ async function main() {
 
   // Default should be Layers after scan — wait for band
   await page.getByText("Ingress", { exact: true }).first().waitFor({ timeout: 30000 }).catch(async () => {
-    await page.getByRole("button", { name: "Layers", exact: true }).click();
+    await page.getByRole("button", { name: "Agent Layers", exact: true }).click();
   });
   await page.waitForTimeout(500);
 

@@ -32,6 +32,7 @@ export type NodeLayer =
   | "Reasoning"
   | "Business Logic"
   | "Memory"
+  | "Evaluation"
   | "Data Access"
   | "Safety"
   | "External Services"
@@ -206,10 +207,70 @@ export interface ArchNode {
   runtimeRoles?: string[];
   /** Inferred tier (core/supporting/peripheral). Set by SystemModel builder. */
   tier?: NodeTier;
+  /**
+   * Quant cockpit functional subsystem (not the same as tier).
+   * ingress | strategy | risk_execution | data_obs | unclassified
+   */
+  subsystem?: NodeSubsystem;
+  /** Trading capability readiness (quant vocabulary). Design mode still uses planned/building. */
+  buildStatus?: TradingBuildStatus;
+  /** Design mode: authored canvas position, set on drop/drag. Absent nodes fall back to auto-layout. */
+  position?: { x: number; y: number };
+  /**
+   * P4: explicit platform bindings (provider catalog id + account status).
+   * Detected llmProvider/cloudProvider still apply when this is empty.
+   */
+  platformBindings?: Array<{
+    providerId: string;
+    accountLabel?: string;
+    status: "connected" | "missing_credentials" | "unknown" | "unbound";
+    source: "detected" | "declared";
+    evidence?: string;
+    role?: "primary" | "fallback";
+  }>;
+  /** P6: LLMOps refs for agent-like nodes — prompt/config lineage, linked memory/eval nodes. */
+  llmops?: { promptRef?: string; configRef?: string; memoryNodeId?: string; evalNodeId?: string };
+  /**
+   * Stable external identity for re-import (n8n, etc.).
+   * n8n form: `n8n:{workflowId}:{variantKey}:{n8nNodeId}` — variantKey is required because
+   * timezone forks share the same n8n workflow id.
+   */
+  externalId?: string;
+  /** Source workflow id when importSource is n8n (or similar). */
+  workflowId?: string;
+  /** Config fork key within a workflow (default | AEST | EST | …). */
+  variantKey?: string;
+  importSource?: "n8n" | "scan" | "design";
+  /** Polymorphic property bag (n8n params summary, typeVersion, subtitle, etc.). */
+  properties?: Record<string, string | number | boolean | null>;
+  /** n8n: node.disabled → deactivated on canvas. */
+  disabled?: boolean;
+  /** n8n: trigger / webhook / schedule entry nodes. */
+  isTrigger?: boolean;
 }
 
 /** Node tier: core = critical path, supporting = used by core, peripheral = utilities/config. */
 export type NodeTier = "core" | "supporting" | "peripheral";
+
+/** Quant cockpit subsystem (car systems). Distinct from NodeTier. */
+export type NodeSubsystem =
+  | "ingress"
+  | "strategy"
+  | "risk_execution"
+  | "data_obs"
+  | "unclassified";
+
+/**
+ * Trading readiness + design-plan status.
+ * paper/stub/missing are quant-facing; planned/building remain for design boards.
+ */
+export type TradingBuildStatus =
+  | "planned"
+  | "building"
+  | "built"
+  | "paper"
+  | "stub"
+  | "missing";
 
 /** Runtime roles inferred from path, layer, and semantic signals. */
 export type RuntimeRole =
@@ -236,6 +297,20 @@ export interface EnrichmentResult {
 /** Request/flow edge semantics: dependency (static), runtime_path (observed), event (async), job (scheduled). */
 export type FlowKind = "dependency" | "runtime_path" | "event" | "job";
 
+/** Design-graph edge meaning (optional; scanned import graphs leave this unset). */
+export type EdgeRelation =
+  | "calls"
+  | "uses"
+  | "retrieves"
+  | "reads"
+  | "writes"
+  | "publishes"
+  | "subscribes"
+  | "authenticates_via"
+  | "caches"
+  | "depends_on"
+  | "channel_to";
+
 export interface ArchEdge {
   id: string;
   source: ArchNodeId;
@@ -243,12 +318,21 @@ export interface ArchEdge {
   type: "import" | "reexport" | "dynamic" | "runtime";
   /** Request/flow semantics for runtime and path analysis. */
   flowKind?: FlowKind;
+  /**
+   * Semantic relation for design graphs (calls/reads/…).
+   * Optional so scanned graphs remain unchanged.
+   */
+  relation?: EdgeRelation;
   isDrift: boolean;
   driftReason?: string;
   /** architectural = cross-layer load-bearing, utility = helpers/config, config = env reads */
   importance?: EdgeImportance;
   /** Edge violates layer hierarchy (e.g. Data Access → Presentation) */
   isLayerViolation?: boolean;
+  /** Display label (e.g. n8n branch true/false / switch rule / error). */
+  label?: string;
+  /** Upstream handle / branch key when preserved from import. */
+  sourceHandle?: string;
 }
 
 /**
@@ -271,6 +355,20 @@ export interface ScaffoldNodeDefinition {
   template?: string;
 }
 
+/** Canvas grouping container (n8n sticky notes, authored regions). */
+export interface ArchGraphGroup {
+  id: string;
+  label: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** n8n sticky color index (1–7) or CSS color. */
+  color?: number | string;
+  workflowId?: string;
+  source?: "n8n-sticky" | string;
+}
+
 export interface ArchGraph {
   nodes: ArchNode[];
   edges: ArchEdge[];
@@ -279,8 +377,40 @@ export interface ArchGraph {
   projectName?: string;
   /** Last time the workspace was manually saved (ms since epoch). */
   lastSavedAt?: number;
+  /**
+   * Post-V1 multiplayer: monotonic revision counter bumped on each save/merge.
+   * See webapp/server/src/graphSync.ts (mergeGraphs) and the /save endpoint's
+   * optimistic-concurrency check (baseRevision).
+   */
+  revision?: number;
   /** Agent inventory from scripts/agent-inventory.ts (scan-time). */
   agents?: AgentInventoryResult;
+  /**
+   * Static provider probe from scan (scripts/lib/scanProviders.ts).
+   * Not live runtime health.
+   */
+  providers?: {
+    static: true;
+    note: string;
+    providers: Array<{
+      id: string;
+      detected: boolean;
+      hasCredential: boolean;
+      boundToNode: boolean;
+      credentialEnv: string[];
+      configuredEnvKeys: string[];
+      evidence: string[];
+    }>;
+    llmRouting: {
+      primary: string;
+      fallback: string;
+      source: "detected" | "default";
+      kellyPrimaryProvider: string | null;
+      note: string;
+    };
+  };
+  /** Grouping containers (n8n sticky regions). Absolute canvas coords. */
+  groups?: ArchGraphGroup[];
   layers?: Array<{
     id: string;
     name: string;
@@ -500,6 +630,8 @@ export type GraphCommand =
       fromId: string;
       toId: string;
       edgeType?: "import" | "reexport" | "dynamic";
+      /** Design semantic relation; client defaults to calls when absent. */
+      relation?: EdgeRelation;
     }
   // Pulse: visualize a runtime trace across nodes
   | { action: "trace_path"; nodeIds: string[]; intensity?: number };

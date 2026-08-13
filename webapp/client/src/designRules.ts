@@ -16,15 +16,24 @@ import type {
   GraphCommand,
   NodeLayer,
 } from "./types";
+import {
+  type Severity,
+  fromDesignFindingSeverity,
+  toBadgeChromeSeverity,
+} from "./severity";
 
 // ── Public types ──────────────────────────────────────────────────────────
 
+/** @deprecated Prefer Severity from severity.ts — mapped via fromDesignFindingSeverity. */
 export type DesignFindingSeverity = "blocker" | "risk" | "suggestion";
 
 export interface DesignFinding {
   id: string;
   ruleId: string;
+  /** Legacy chrome severity; prefer `sharedSeverity`. */
   severity: DesignFindingSeverity;
+  /** Shared Blanko severity (D3). */
+  sharedSeverity: Severity;
   title: string;
   /** Plain language explanation for non-experts: why this matters. */
   whyItMatters: string;
@@ -32,7 +41,25 @@ export interface DesignFinding {
   edgeIds: string[];
   /** Optional one-click fix. Additive only (create_node / connect). */
   fix?: GraphCommand[];
+  /** Remediation class: spine = Apply spine; code = Fix with agent / auto-enqueue. */
+  remediation?: "spine" | "code" | "chat";
 }
+
+function finding(
+  partial: Omit<DesignFinding, "sharedSeverity" | "remediation"> & {
+    remediation?: DesignFinding["remediation"];
+  }
+): DesignFinding {
+  return {
+    ...partial,
+    sharedSeverity: fromDesignFindingSeverity(partial.severity),
+    remediation: partial.remediation ?? (partial.severity === "blocker" ? "code" : "chat"),
+  };
+}
+
+type DraftFinding = Omit<DesignFinding, "sharedSeverity" | "remediation"> & {
+  remediation?: DesignFinding["remediation"];
+};
 
 export const RULE_IDS = [
   "client_to_db",
@@ -169,7 +196,7 @@ function makeConnect(fromId: string, toId: string, relation: EdgeRelation): Grap
 
 // ── Rules ─────────────────────────────────────────────────────────────────
 
-function ruleClientToDb(graph: ArchGraph): DesignFinding[] {
+function ruleClientToDb(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   for (const edge of graph.edges) {
     const source = nodeById(graph, edge.source);
@@ -203,7 +230,7 @@ function ruleClientToDb(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleApiNoAuth(graph: ArchGraph): DesignFinding[] {
+function ruleApiNoAuth(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   const apiNodes = graph.nodes.filter(isApiNode);
   for (const api of apiNodes) {
@@ -241,7 +268,7 @@ function ruleApiNoAuth(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleOrphanNode(graph: ArchGraph): DesignFinding[] {
+function ruleOrphanNode(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   for (const node of graph.nodes) {
     const hasEdge = graph.edges.some((e) => e.source === node.id || e.target === node.id);
@@ -260,7 +287,7 @@ function ruleOrphanNode(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleLayerInversion(graph: ArchGraph): DesignFinding[] {
+function ruleLayerInversion(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   for (const edge of graph.edges) {
     const source = nodeById(graph, edge.source);
@@ -282,7 +309,7 @@ function ruleLayerInversion(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleSingleExternalNoFallback(graph: ArchGraph): DesignFinding[] {
+function ruleSingleExternalNoFallback(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   const externals = graph.nodes.filter(isExternalServiceNode);
   if (externals.length !== 1) return findings;
@@ -303,7 +330,7 @@ function ruleSingleExternalNoFallback(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleWritesNoQueue(graph: ArchGraph): DesignFinding[] {
+function ruleWritesNoQueue(graph: ArchGraph): DraftFinding[] {
   const findings: DesignFinding[] = [];
   const hasQueue = graph.nodes.some(isQueueOrWorkerNode);
   if (hasQueue) return findings;
@@ -336,7 +363,7 @@ function ruleWritesNoQueue(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleNoObservability(graph: ArchGraph): DesignFinding[] {
+function ruleNoObservability(graph: ArchGraph): DraftFinding[] {
   if (graph.nodes.length < 5) return [];
   const hasObservability = graph.nodes.some(isObservabilityNode);
   if (hasObservability) return [];
@@ -355,7 +382,7 @@ function ruleNoObservability(graph: ArchGraph): DesignFinding[] {
   ];
 }
 
-function ruleNoConfigSecrets(graph: ArchGraph): DesignFinding[] {
+function ruleNoConfigSecrets(graph: ArchGraph): DraftFinding[] {
   const needsConfig = graph.nodes.some(
     (n) => isAuthNode(n) || isExternalServiceNode(n) || isDatastoreNode(n)
   );
@@ -386,7 +413,7 @@ function ruleNoConfigSecrets(graph: ArchGraph): DesignFinding[] {
   ];
 }
 
-function ruleLlmToBroker(graph: ArchGraph): DesignFinding[] {
+function ruleLlmToBroker(graph: ArchGraph): DraftFinding[] {
   const isAgentish = (n: ArchNode) =>
     includesAny(labelOf(n), ["agent", "llm", "claude", "gpt", "model"]);
   const isBrokerish = (n: ArchNode) =>
@@ -412,7 +439,78 @@ function ruleLlmToBroker(graph: ArchGraph): DesignFinding[] {
   return findings;
 }
 
-function ruleMissingTradingSpine(graph: ArchGraph): DesignFinding[] {
+const TRADING_SPINE_KEYWORDS = ["payment", "policy", "risk", "execution"] as const;
+const MISSING_SPINE_NODE_CAP = 12;
+
+function nodeBlob(node: ArchNode): string {
+  return `${node.label ?? ""} ${node.id ?? ""} ${(node.files ?? []).join(" ")}`.toLowerCase();
+}
+
+/** Human ingress: Telegram / Trading Chat / execute-turn, or Presentation that looks like chat UI. */
+function looksLikeTradingIngress(node: ArchNode): boolean {
+  const blob = nodeBlob(node);
+  if (/telegram|trading.?chat|execute-turn|investment.?agent/.test(blob)) return true;
+  if (isPresentationNode(node) && includesAny(blob, ["chat", "bot", "ingress", "ui", "dashboard"])) {
+    return true;
+  }
+  return false;
+}
+
+function looksLikeMiddlewareShell(node: ArchNode): boolean {
+  const id = (node.id ?? "").replace(/\\/g, "/").toLowerCase();
+  const blob = nodeBlob(node);
+  if (id === "middleware-platform" || id.endsWith("/middleware-platform")) return true;
+  return includesAny(blob, ["middleware-platform", "middleware platform"]);
+}
+
+/** Scan modules that should hang off the spine (or already name a spine role). */
+function looksLikeSpineRelatedModule(node: ArchNode, missingKeywords: string[]): boolean {
+  const blob = nodeBlob(node);
+  if (missingKeywords.some((k) => blob.includes(k))) return true;
+  return includesAny(blob, [
+    "payment",
+    "policy",
+    "risk",
+    "execution",
+    "identity",
+    "wallet",
+    "broker",
+    "alpaca",
+    "kraken",
+    "strategy",
+    "paper_orders",
+    "paper-orders",
+  ]);
+}
+
+function looksLikeTradingScanRelated(node: ArchNode): boolean {
+  return (
+    looksLikeTradingIngress(node) ||
+    looksLikeMiddlewareShell(node) ||
+    looksLikeSpineRelatedModule(node, []) ||
+    includesAny(nodeBlob(node), ["trading", "middleware", "investment agent"])
+  );
+}
+
+/** Prefer ingress + middleware shell + spine-gap modules; never arbitrary first-N. */
+function selectMissingTradingSpineNodeIds(graph: ArchGraph, missingKeywords: string[]): string[] {
+  const preferred = graph.nodes
+    .filter(
+      (n) =>
+        looksLikeTradingIngress(n) ||
+        looksLikeMiddlewareShell(n) ||
+        looksLikeSpineRelatedModule(n, missingKeywords)
+    )
+    .map((n) => n.id);
+  if (preferred.length > 0) return [...new Set(preferred)].slice(0, MISSING_SPINE_NODE_CAP);
+
+  const tradingRelated = graph.nodes.filter(looksLikeTradingScanRelated).map((n) => n.id);
+  if (tradingRelated.length > 0) return [...new Set(tradingRelated)].slice(0, MISSING_SPINE_NODE_CAP);
+
+  return graph.nodes.map((n) => n.id).slice(0, MISSING_SPINE_NODE_CAP);
+}
+
+function ruleMissingTradingSpine(graph: ArchGraph): DraftFinding[] {
   // Pure heuristic: trading-ish scan without Payment/Policy/Risk/Execution boxes.
   if ((graph as { architectureBoard?: boolean }).architectureBoard) return [];
   const blob = [
@@ -427,26 +525,27 @@ function ruleMissingTradingSpine(graph: ArchGraph): DesignFinding[] {
   );
   if (!tradingish) return [];
   const labels = graph.nodes.map((n) => (n.label ?? "").toLowerCase());
-  const need = ["payment", "policy", "risk", "execution"];
-  const missing = need.filter((k) => !labels.some((l) => l.includes(k)));
+  const missing = TRADING_SPINE_KEYWORDS.filter((k) => !labels.some((l) => l.includes(k)));
   if (missing.length === 0) return [];
   return [
     {
       id: "missing_trading_spine",
       ruleId: "missing_trading_spine",
-      severity: "blocker",
-      title: "Trading scan is missing the architecture spine",
+      // Board setup gap — not a code defect (Insights shows SETUP, not dual BLOCKers).
+      severity: "risk",
+      title: "Trading money path not on canvas yet",
       whyItMatters:
-        "This canvas looks like a code scan (modules), not Telegram → Identity → Payment → Policy → Risk → Execution. Use Export · Apply trading agent spine (or Insights CTA) to place the locked board.",
-      nodeIds: graph.nodes.slice(0, 3).map((n) => n.id),
+        "This workspace is still a code-scan layout (modules). Apply the trading spine to place Payment, Policy, Risk, and Execution and wire ingress into that path.",
+      nodeIds: selectMissingTradingSpineNodeIds(graph, missing),
       edgeIds: [],
+      remediation: "spine",
     },
   ];
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────
 
-type RuleFn = (graph: ArchGraph) => DesignFinding[];
+type RuleFn = (graph: ArchGraph) => DraftFinding[];
 
 const RULES: Record<RuleId, RuleFn> = {
   client_to_db: ruleClientToDb,
@@ -462,11 +561,25 @@ const RULES: Record<RuleId, RuleFn> = {
 };
 
 export function evaluateDesign(graph: ArchGraph): DesignFinding[] {
-  const findings: DesignFinding[] = [];
+  const out: DesignFinding[] = [];
   for (const ruleId of RULE_IDS) {
-    findings.push(...RULES[ruleId](graph));
+    for (const draft of RULES[ruleId](graph)) {
+      const remediation: DesignFinding["remediation"] =
+        draft.remediation ??
+        (ruleId === "missing_trading_spine"
+          ? "spine"
+          : draft.severity === "blocker" || draft.severity === "risk"
+            ? "code"
+            : "chat");
+      out.push(
+        finding({
+          ...draft,
+          remediation,
+        })
+      );
+    }
   }
-  return findings;
+  return out;
 }
 
 const SEVERITY_PENALTY: Record<DesignFindingSeverity, number> = {
@@ -478,8 +591,12 @@ const SEVERITY_PENALTY: Record<DesignFindingSeverity, number> = {
 /** 0-100 design health score. Blockers hurt the most, suggestions the least. Floors at 0. */
 export function designScore(findings: DesignFinding[]): number {
   let score = 100;
-  for (const finding of findings) {
-    score -= SEVERITY_PENALTY[finding.severity];
+  for (const f of findings) {
+    score -= SEVERITY_PENALTY[f.severity];
   }
   return Math.max(0, Math.min(100, score));
 }
+
+// Re-export for callers that only need mapping helpers
+export { toBadgeChromeSeverity, fromDesignFindingSeverity };
+export type { Severity };

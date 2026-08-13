@@ -45,6 +45,13 @@ type Props = {
   workspaceId: string | null;
 };
 
+type WorkspaceMember = {
+  id: string;
+  user_id: string;
+  role: string;
+  displayName: string;
+};
+
 const STATE_LABEL: Record<string, string> = {
   open: "open",
   accepted: "accepted",
@@ -54,7 +61,7 @@ const STATE_LABEL: Record<string, string> = {
 
 const STATE_COLOR: Record<string, string> = {
   open: "#8b949e",
-  accepted: "#58a6ff",
+  accepted: "#ef32a6",
   waived: "#a371f7",
   resolved: "#3fb950",
 };
@@ -96,8 +103,33 @@ export function FindingsList({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
 
   const canPersist = !!accessToken && !!workspaceId;
+
+  useEffect(() => {
+    if (!canPersist) {
+      setMembers([]);
+      return;
+    }
+    (async () => {
+      try {
+        const r = await fetch(apiBase + "/workspaces/" + encodeURIComponent(workspaceId!) + "/members", {
+          headers: { Authorization: "Bearer " + accessToken },
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        setMembers(d.members ?? []);
+      } catch {
+        /* assignee dropdown is a nice-to-have, not a blocker */
+      }
+    })();
+  }, [apiBase, accessToken, workspaceId, canPersist]);
+
+  const memberName = useCallback(
+    (userId: string | null) => members.find((m) => m.user_id === userId)?.displayName ?? userId?.slice(0, 8) ?? "",
+    [members]
+  );
 
   const load = useCallback(async () => {
     if (!canPersist) return;
@@ -245,17 +277,17 @@ export function FindingsList({
             fontFamily: MONO,
             fontSize: 10,
             letterSpacing: "0.09em",
-            color: "#6e7681",
+            color: "#6B7280",
           }}
         >
           FINDINGS, RANKED
         </span>
-        <span style={{ fontSize: 11, color: "#6e7681" }}>
+        <span style={{ fontSize: 11, color: "#6B7280" }}>
           {openCount} open
           {decided > 0 ? " · " + decided + " decided" : ""}
         </span>
         {!canPersist && (
-          <span style={{ fontSize: 11, color: "#6e7681" }}>
+          <span style={{ fontSize: 11, color: "#6B7280" }}>
             — sign in to record decisions
           </span>
         )}
@@ -465,6 +497,36 @@ export function FindingsList({
                     )
                   )}
                 </div>
+
+                {members.length > 0 && (
+                  <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 10, color: "#8b949e", fontFamily: MONO }}>assignee</span>
+                    <select
+                      value={s?.assignee_id ?? ""}
+                      disabled={busy === f.id}
+                      onChange={(e) => patch(f.id, { assigneeId: e.target.value || null }, "assign")}
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 11,
+                        padding: "3px 6px",
+                        borderRadius: 5,
+                        border: "1px solid #30363d",
+                        background: "#0d1117",
+                        color: "#e6edf3",
+                      }}
+                    >
+                      <option value="">unassigned</option>
+                      {members.map((m) => (
+                        <option key={m.id} value={m.user_id}>
+                          {m.displayName}
+                        </option>
+                      ))}
+                    </select>
+                    {s?.assignee_id && !members.some((m) => m.user_id === s.assignee_id) && (
+                      <span style={{ fontSize: 10, color: "#6e7681" }}>({memberName(s.assignee_id)})</span>
+                    )}
+                  </div>
+                )}
 
                 {log.length > 0 && (
                   <div style={{ marginBottom: 10 }}>

@@ -84,7 +84,7 @@
       "name": "Safety",
       "question": "What validates, moderates, or redacts model output?",
       "whatFillsIt": "Moderation endpoints, guardrail libraries, and PII/PHI redaction on the agent path.",
-      "whyItMatters": "Without safety, sensitive tools can leak through unchecked model text.",
+      "whyItMatters": "Without safety on this agent's path, sensitive tools can leak through unchecked model text. System-wide guardrails on other services do not fill this row.",
       "requirement": {
         "whenSensitive": "essential",
         "whenNotSensitive": "optional"
@@ -93,9 +93,9 @@
     {
       "id": "observability",
       "name": "Observability",
-      "question": "Are model and tool calls traced as first-class events?",
-      "whatFillsIt": "Tracing SDKs and logging that specifically records model calls or tool calls — not generic HTTP access logs.",
-      "whyItMatters": "You cannot debug or audit an agent that only leaves request logs.",
+      "question": "Are model and tool calls on this agent path traced as first-class events?",
+      "whatFillsIt": "Tracing SDKs and logging that specifically records model calls or tool calls on this agent's path — not generic HTTP access logs, and not traces on a different service.",
+      "whyItMatters": "You cannot debug or audit an agent that only leaves request logs on its own path. Observability elsewhere in the system does not fill this row.",
       "requirement": {
         "whenSensitive": "essential",
         "whenNotSensitive": "expected"

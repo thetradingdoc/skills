@@ -72,6 +72,63 @@ const AUTO_BIND: Record<string, string> = {
   "bp-ta-telegram": "telegram",
 };
 
+function providerCredStatus(
+  providers: ArchGraph["providers"] | undefined,
+  providerId: string
+): { status: "connected" | "missing_credentials" | "unknown"; accountLabel: string; evidence: string } {
+  const row = providers?.providers?.find((p) => p.id === providerId);
+  if (!row) {
+    return {
+      status: "unknown",
+      accountLabel: `${providerId} — credentials unknown (no scan providers payload)`,
+      evidence: "spine-auto-bind; no providers payload",
+    };
+  }
+  if (row.hasCredential) {
+    return {
+      status: "connected",
+      accountLabel: `${providerId} — configured in scanned repo .env (static)`,
+      evidence: `scan-providers; keys=${row.configuredEnvKeys.join(",") || "set"}`,
+    };
+  }
+  return {
+    status: "missing_credentials",
+    accountLabel: `${providerId} — NOT CONFIGURED in scanned repo .env (static)`,
+    evidence: `scan-providers; detected=${row.detected}; empty credentialEnv`,
+  };
+}
+
+/**
+ * Bind LLM primary/fallback onto bp-ta-agent from Fix A providers payload.
+ * Static only — not live :4100.
+ */
+function bindAgentLlmRoles(node: ArchNode, from: ArchGraph | null): ArchNode {
+  const routing = from?.providers?.llmRouting;
+  const primary = routing?.primary ?? "anthropic";
+  const fallback = routing?.fallback ?? "groq";
+  const sourceNote =
+    routing?.source === "detected"
+      ? routing.note
+      : "Default Anthropic primary / Groq fallback (not detected from scanned tree).";
+
+  const primaryCred = providerCredStatus(from?.providers, primary);
+  const fallbackCred = providerCredStatus(from?.providers, fallback);
+
+  let next = setNodeProviderBinding(node, primary, {
+    role: "primary",
+    status: primaryCred.status,
+    accountLabel: `primary: ${primaryCred.accountLabel}`,
+    evidence: `llm-role:primary; ${sourceNote}; ${primaryCred.evidence}`,
+  });
+  next = setNodeProviderBinding(next, fallback, {
+    role: "fallback",
+    status: fallbackCred.status,
+    accountLabel: `fallback: ${fallbackCred.accountLabel}`,
+    evidence: `llm-role:fallback; ${sourceNote}; ${fallbackCred.evidence}`,
+  });
+  return next;
+}
+
 export function looksLikeTradingScan(graph: ArchGraph | null | undefined): boolean {
   if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return false;
   const blob = [
@@ -175,9 +232,23 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
     }
     const providerId = AUTO_BIND[next.id];
     if (providerId) {
+      const cred = providerCredStatus(from?.providers, providerId);
+      const fileBuilt = next.buildStatus === "built" || (next.files ?? []).length > 0;
+      // Prefer credential truth from Fix A when available; else fall back to file-based connected/unknown.
       const status =
-        next.buildStatus === "built" || (next.files ?? []).length > 0 ? "connected" : "unknown";
-      next = setNodeProviderBinding(next, providerId, { status });
+        from?.providers != null
+          ? cred.status
+          : fileBuilt
+            ? "connected"
+            : "unknown";
+      next = setNodeProviderBinding(next, providerId, {
+        status,
+        accountLabel: from?.providers != null ? cred.accountLabel : undefined,
+        evidence: from?.providers != null ? cred.evidence : "spine-auto-bind",
+      });
+    }
+    if (next.id === "bp-ta-agent") {
+      next = bindAgentLlmRoles(next, from);
     }
     return next;
   });
@@ -202,6 +273,7 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
     architectureBoard: true,
     scannedCommit: from?.scannedCommit,
     agents: from?.agents,
+    providers: from?.providers,
     revision: typeof from?.revision === "number" ? from.revision : undefined,
   };
 }

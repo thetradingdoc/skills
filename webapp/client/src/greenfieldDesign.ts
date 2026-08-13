@@ -53,9 +53,16 @@ export const DESIGN_PALETTE: DesignPaletteItem[] = [
 
   // Strategies
   { id: "strategy", label: "Strategy", layer: "Reasoning", description: "A named decision policy or trading/playbook module the agent uses.", group: "Strategies" },
+  { id: "policy", label: "Policy engine", layer: "Safety", description: "Allows, blocks, or rewrites proposed trades before risk.", group: "Strategies" },
+  { id: "risk", label: "Risk engine", layer: "Safety", description: "Sizes and caps exposure after policy allows a proposal.", group: "Strategies" },
+  { id: "execution", label: "Execution", layer: "Infrastructure", description: "Turns approved plans into broker orders (submit path).", group: "Strategies" },
+  { id: "broker", label: "Broker", layer: "External Services", techKind: "external-saas", description: "External venue (Alpaca paper/live) for fills.", group: "Strategies" },
+  { id: "payment", label: "Payment / wallet", layer: "Data Access", description: "Paper wallet ledger (Telegram /fund) — not Stripe billing.", group: "Strategies" },
 
   // Channels
   { id: "retell-channel", label: "Voice (Retell)", layer: "Presentation", techKind: "external-saas", description: "Voice channel — callers talk to Retell; blanko designs the agent behind it.", group: "Channels" },
+  { id: "telegram", label: "Telegram", layer: "Presentation", techKind: "external-saas", description: "Chat ingress bot into Identity → Agent.", group: "Channels" },
+  { id: "trading-chat", label: "Trading Chat", layer: "Presentation", techKind: "web-ui", description: "Browser trading chat UI/API for research turns.", group: "Channels" },
   { id: "api-channel", label: "API / Webhook", layer: "Presentation", techKind: "http-api", description: "HTTP API or webhook channel into the agent system.", group: "Channels" },
   { id: "frontend", label: "Frontend", layer: "Presentation", techKind: "web-ui", description: "Web or client UI users interact with.", group: "Channels" },
   { id: "api", label: "API / Gateway", layer: "Presentation", techKind: "http-api", description: "HTTP API or gateway other services call.", group: "Channels" },
@@ -117,6 +124,10 @@ export function createBlankDesignGraph(projectName = "New Design"): ArchGraph {
 
 export function isDesignGraph(graph: ArchGraph | null | undefined): boolean {
   if (!graph) return false;
+  // Scanned architecture board (Apply spine on a real repo) → analysis mode so
+  // Ask chat grounds on the scanned graph, not greenfield invention (BK-CHAT-API-002).
+  if (graph.architectureBoard && graph.projectRoot?.trim()) return false;
+  // Scratch spine / blueprint with no projectRoot stays design/greenfield.
   if (graph.architectureBoard) return true;
   return !(graph.projectRoot && graph.projectRoot.trim());
 }

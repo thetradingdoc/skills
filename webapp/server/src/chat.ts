@@ -4,8 +4,15 @@ import { runArchitectureTask } from "../../../src/ai/manager.js";
 import type { ArchGraph, AgentMode, ContractFinding, CriticViolation } from "../../../src/types.js";
 import { ArchError, toUserMessage, logArchError } from "../../../src/ai/errors.js";
 import { requireUser } from "./middleware/requireUser.js";
+import {
+  consumeDesignMessageCredit,
+  evaluateChatAccess,
+  getEntitlement,
+  resolveChatMode,
+} from "./entitlements.js";
 import { validateGraphCommandMiddleware } from "./middleware/validateGraphCommand.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
+import { recordUsageEvent } from "./usage.js";
 import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
 import {
   getMemoriesForContext,
@@ -31,7 +38,7 @@ import {
 import { getUserJiraConfig, JiraDecryptError } from "./jiraConfig.js";
 import { getWorkspaceProjectKey } from "./jira.js";
 import { createJiraTicketForViolation } from "./jiraViolation.js";
-import { saveDraft, type DraftNode } from "./greenfieldDraft.js";
+import { saveDraft, type DraftNode, type DraftEdge } from "./greenfieldDraft.js";
 import type { Rail, RailTrigger, Task as RailTask } from "../../../src/agent/types.js";
 import { createRail } from "../../../src/agent/rail/manager.js";
 import { createTask as createRailTask } from "../../../src/agent/rail/manager.js";
@@ -291,6 +298,20 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
     return;
   }
 
+  // V1 launch gate: free design (greenfield) vs Pro analysis agent
+  if (req.user?.id) {
+    const gateMode = resolveChatMode(req.body?.mode, graph);
+    const ent = await getEntitlement(req.user.id);
+    const access = evaluateChatAccess(ent, gateMode);
+    if (!access.allowed) {
+      res.status(access.status).json(access.body);
+      return;
+    }
+    if (gateMode === "greenfield" && !ent.canUseAiAgent) {
+      await consumeDesignMessageCredit(req.user.id);
+    }
+  }
+
   const railIntent = parseRailIntent(question);
   if (railIntent && workspaceId && req.user?.id) {
     const sessionRailsList = getSessionRails(threadId ?? undefined, workspaceId, req.user.id);
@@ -353,7 +374,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       const projectRoot = graph?.projectRoot ?? undefined;
       const projectName = graph?.projectName ?? undefined;
       const results: Array<{ key: string; url?: string; error?: string }> = [];
-      for (const v of pendingViolations.slice(0, 10)) {
+      for (const v of pendingViolations.slice(0, 10) as CriticViolation[]) {
         const srcNode = graph?.nodes?.find((n) => n.id === v.sourceNodeId || n.path === v.sourceNodeId);
         const archModulePath = srcNode?.path ?? v.sourceNodeId;
         const archModuleFiles = srcNode?.files;
@@ -800,6 +821,18 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
                 typeof result.criticScore === "number" ? String(result.criticScore) : null,
             })
             .throwOnError();
+          if (workspaceId) {
+            void recordUsageEvent(supabaseAdmin, {
+              workspaceId,
+              userId: (req as { user?: { id?: string } }).user?.id ?? null,
+              nodeId: nodeId ?? null,
+              source: "chat",
+              model: "claude-sonnet-4-6",
+              promptTokens: tokenUsage?.agentInput ?? 0,
+              completionTokens: tokenUsage?.agentOutput ?? 0,
+              metadata: { path: "chat-sync" },
+            });
+          }
         } catch (err) {
           if (process.env.METRICS_LOG === "1") {
             console.warn(
@@ -882,7 +915,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
     ) {
       const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
       const nodes: DraftNode[] = [];
-      const edges: Array<{ source: string; target: string }> = [];
+      const edges: DraftEdge[] = [];
       for (const cmd of cmds) {
         if (cmd.action === "create_node" && "id" in cmd) {
           nodes.push({
@@ -897,7 +930,11 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
           });
         }
         if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
-          edges.push({ source: cmd.fromId, target: cmd.toId });
+          edges.push({
+            source: cmd.fromId,
+            target: cmd.toId,
+            relation: "relation" in cmd ? cmd.relation : undefined,
+          });
         }
       }
       if (nodes.length > 0 || edges.length > 0) {
@@ -1075,6 +1112,20 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
   if (pdfBase64 != null && (typeof pdfBase64 !== "string" || pdfBase64.length > 50_000_000)) {
     res.status(400).json({ error: "PDF too large. Max ~25MB." });
     return;
+  }
+
+  // V1 launch gate: free design (greenfield) vs Pro analysis agent
+  if (req.user?.id) {
+    const gateMode = resolveChatMode(req.body?.mode, graph);
+    const ent = await getEntitlement(req.user.id);
+    const access = evaluateChatAccess(ent, gateMode);
+    if (!access.allowed) {
+      res.status(access.status).json(access.body);
+      return;
+    }
+    if (gateMode === "greenfield" && !ent.canUseAiAgent) {
+      await consumeDesignMessageCredit(req.user.id);
+    }
   }
 
   const railIntent = parseRailIntent(question);
@@ -1303,7 +1354,7 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
       ) {
         const cmds = result.graphCommands ?? (result.graphCommand ? [result.graphCommand] : []);
       const nodes: DraftNode[] = [];
-      const edges: Array<{ source: string; target: string }> = [];
+      const edges: DraftEdge[] = [];
       for (const cmd of cmds) {
         if (cmd.action === "create_node" && "id" in cmd) {
           nodes.push({
@@ -1318,7 +1369,11 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
           });
           }
           if (cmd.action === "connect" && "fromId" in cmd && "toId" in cmd) {
-            edges.push({ source: cmd.fromId, target: cmd.toId });
+            edges.push({
+              source: cmd.fromId,
+              target: cmd.toId,
+              relation: "relation" in cmd ? cmd.relation : undefined,
+            });
           }
         }
         if (nodes.length > 0 || edges.length > 0) {
@@ -1353,6 +1408,18 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
         const in_ = tu.agentInput ?? 0;
         const out_ = tu.agentOutput ?? 0;
         console.log(`[chat-async] tokens in=${in_} out=${out_} total=${in_ + out_}`);
+      }
+      if (workspaceId && tu) {
+        void recordUsageEvent(supabaseAdmin, {
+          workspaceId,
+          userId: req.user?.id ?? null,
+          nodeId: null,
+          source: mode === "design" || mode === "greenfield" ? "greenfield" : "chat",
+          model: "claude-sonnet-4-6",
+          promptTokens: tu.agentInput ?? 0,
+          completionTokens: tu.agentOutput ?? 0,
+          metadata: { path: "chat-async", mode },
+        });
       }
       let railsForResult: Array<{ id: string }> | undefined = (result as any).rails;
       if (isExecutionIntent && workspaceId && req.user?.id) {

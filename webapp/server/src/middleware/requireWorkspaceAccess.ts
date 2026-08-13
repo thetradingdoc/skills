@@ -18,9 +18,10 @@ export async function requireWorkspaceAccess(
   }
   try {
     const ws = await assertWorkspaceAccess(supabaseAdmin, workspaceId, req.user?.id);
-    (req as Request & { workspace?: { id: string; owner_id: string } }).workspace = {
+    (req as Request & { workspace?: { id: string; owner_id: string; role?: string } }).workspace = {
       id: ws.id,
       owner_id: ws.owner_id,
+      role: ws.role,
     };
     next();
   } catch (e) {

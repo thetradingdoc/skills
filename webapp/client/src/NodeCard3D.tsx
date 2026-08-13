@@ -8,7 +8,7 @@ import { useSceneAnimation } from "./SceneAnimations";
 
 const STATUS_COLOR: Record<string, string> = {
   stable: "#3fb950",
-  new: "#58a6ff",
+  new: "#ef32a6",
   warning: "#d29922",
   error: "#f85149",
   deprecated: "#7d8590",
@@ -29,8 +29,8 @@ const TECH_COLOR: Record<string, string> = {
   "cache": "#f97316",
   "queue": "#eab308",
   "message-bus": "#a855f7",
-  "http-api": "#58a6ff",
-  "web-ui": "#38bdf8",
+  "http-api": "#ef32a6",
+  "web-ui": "#f472b6",
   "mobile-app": "#f472b6",
   "kubernetes": "#1f6feb",
   "container-service": "#a78bfa",

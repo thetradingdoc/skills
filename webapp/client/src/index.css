@@ -3,8 +3,54 @@
    cannot live on an element: interaction feedback, focus rings, scrollbars.
    Component appearance stays inline. */
 
+@font-face {
+  font-family: "Bubbleboddy Neue";
+  src: url("/fonts/BubbleboddyNeue-Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Bubbleboddy Neue";
+  src: url("/fonts/BubbleboddyNeue-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Bubbleboddy Neue";
+  src: url("/fonts/BubbleboddyNeue-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Bubbleboddy Neue";
+  src: url("/fonts/BubbleboddyNeue-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Mirrors src/theme/tokens.ts — keep both in sync. */
 :root {
-  color-scheme: dark;
+  color-scheme: light;
+
+  --blanko-ink: #12131a;
+  --blanko-slate: #6b7280;
+  --blanko-line: #e5e7eb;
+  --blanko-paper: #fafafa;
+  --blanko-canvas: #ffffff;
+  --blanko-accent: #ef32a6;
+  --blanko-accent-wash: #fdf2f8;
+
+  --blanko-good: #16a34a;
+  --blanko-warn: #d97706;
+  --blanko-bad: #dc2626;
+
+  --blanko-font-brand: "Bubbleboddy Neue", system-ui, sans-serif;
+  --blanko-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --blanko-font-mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
 }
 
 html, body, #root {
@@ -13,9 +59,9 @@ html, body, #root {
 }
 
 body {
-  background: #0d1117;
-  color: #e6edf3;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--blanko-canvas);
+  color: var(--blanko-ink);
+  font-family: var(--blanko-font-ui);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -26,10 +72,10 @@ button:not(:disabled) {
   transition: filter 120ms ease, opacity 120ms ease;
 }
 button:not(:disabled):hover {
-  filter: brightness(1.35);
+  filter: brightness(1.08);
 }
 button:not(:disabled):active {
-  filter: brightness(0.92);
+  filter: brightness(0.96);
 }
 button:disabled {
   opacity: 0.5;
@@ -42,17 +88,38 @@ input:focus-visible,
 textarea:focus-visible,
 select:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid #58a6ff;
+  outline: 2px solid var(--blanko-accent);
   outline-offset: 1px;
 }
 
 /* Rows and cards that behave as controls. */
 [role="button"]:hover {
-  filter: brightness(1.2);
+  filter: brightness(1.04);
 }
 
 input, textarea, select {
-  transition: border-color 120ms ease;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+/* Inspect / Insights form fields — clearer hover + mouse focus (Gate 4). */
+[data-testid="design-inspect"] input:hover,
+[data-testid="design-inspect"] textarea:hover,
+[data-testid="design-inspect"] select:hover,
+[data-testid="blanko-insights-edit"] input:hover,
+[data-testid="blanko-insights-edit"] textarea:hover,
+[data-testid="blanko-insights-edit"] select:hover {
+  border-color: color-mix(in srgb, var(--blanko-accent) 45%, #d4d4d8);
+}
+
+[data-testid="design-inspect"] input:focus,
+[data-testid="design-inspect"] textarea:focus,
+[data-testid="design-inspect"] select:focus,
+[data-testid="blanko-insights-edit"] input:focus,
+[data-testid="blanko-insights-edit"] textarea:focus,
+[data-testid="blanko-insights-edit"] select:focus {
+  outline: none;
+  border-color: var(--blanko-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blanko-accent) 22%, transparent);
 }
 
 ::-webkit-scrollbar {
@@ -63,16 +130,68 @@ input, textarea, select {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #30363d;
+  background: #d1d5db;
   border-radius: 5px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: #9ca3af;
 }
 
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
     animation: none !important;
+  }
+  /* BK-A11Y: harness force classes must not re-enable infinite motion */
+  .a11y-force-driftGlow,
+  .a11y-force-nodePulse,
+  [class*="a11y-force"] {
+    animation: none !important;
+  }
+}
+
+/*
+ * React Flow defaults grab on BOTH the pane and every .react-flow__node.
+ * That fights Blanko View (pan only — nodes locked) and makes pointer + grab
+ * flicker as you move across cards, boxes, and badges.
+ */
+.react-flow.blanko-canvas-view .react-flow__pane {
+  cursor: grab;
+}
+.react-flow.blanko-canvas-view .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+.react-flow.blanko-canvas-view .react-flow__node,
+.react-flow.blanko-canvas-view .react-flow__node.draggable {
+  cursor: pointer;
+}
+.react-flow.blanko-canvas-view .react-flow__handle {
+  cursor: pointer;
+}
+
+.react-flow.blanko-canvas-edit .react-flow__pane {
+  cursor: grab;
+}
+.react-flow.blanko-canvas-edit .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+.react-flow.blanko-canvas-edit .react-flow__node {
+  cursor: grab;
+}
+.react-flow.blanko-canvas-edit .react-flow__node.dragging {
+  cursor: grabbing;
+}
+.react-flow.blanko-canvas-edit .react-flow__handle {
+  cursor: crosshair;
+}
+
+@keyframes blankoFlash {
+  0% {
+    opacity: 1;
+    box-shadow: 0 0 24px rgba(239, 50, 166, 0.55);
+  }
+  100% {
+    opacity: 0;
+    box-shadow: 0 0 0 rgba(239, 50, 166, 0);
   }
 }

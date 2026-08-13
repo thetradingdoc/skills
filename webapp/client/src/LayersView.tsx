@@ -4,6 +4,18 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import type { AgentInventoryResult, AgentSurface } from "./types";
+import {
+  INK,
+  SLATE,
+  LINE,
+  ACCENT,
+  ACCENT_WASH,
+  WARN,
+  BAD,
+  FONT_MONO,
+  PAPER,
+  CANVAS,
+} from "./theme/tokens";
 
 type LayerComponent = {
   id: string;
@@ -20,6 +32,8 @@ type AgentLayerResult = {
   status: "filled" | "thin" | "empty" | "unsearched";
   emptyReason?: string;
   components: LayerComponent[];
+  /** agent = evidence is scoped to this agent's own turn path (e.g. safety, observability). */
+  scope?: "agent" | "system";
 };
 
 type Props = {
@@ -44,7 +58,7 @@ function fileName(file: string): string {
 }
 
 const STATUS_BORDER: Record<string, string> = {
-  filled: "#30363d",
+  filled: LINE,
   thin: "#4b5563",
   empty: "#b45309",
   unsearched: "#7c3aed",
@@ -76,7 +90,7 @@ function EvidenceLink({
             border: 0,
             padding: 0,
             font: "inherit",
-            color: "#58a6ff",
+            color: ACCENT,
             cursor: "pointer",
           }}
         >
@@ -142,8 +156,8 @@ export default function LayersView({
         style={{
           flex: 1,
           padding: 32,
-          color: "#8b949e",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          color: SLATE,
+          fontFamily: FONT_MONO,
         }}
       >
         Scan a repository to see agent layers.
@@ -159,31 +173,33 @@ export default function LayersView({
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        background: "rgba(6,12,26,0.4)",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        background: PAPER,
+        fontFamily: FONT_MONO,
       }}
     >
       <div
         style={{
           padding: "10px 16px",
-          borderBottom: "1px solid #30363d",
+          borderBottom: `1px solid ${LINE}`,
           display: "flex",
           flexWrap: "wrap",
           gap: 8,
           alignItems: "center",
-          background: "rgba(15,23,42,0.95)",
+          background: CANVAS,
         }}
       >
-        <span style={{ color: "#58a6ff", fontWeight: 600, fontSize: 12 }}>Layers</span>
-        <span style={{ color: "#7d8590", fontSize: 11 }}>Agent</span>
+        <span style={{ color: ACCENT, fontWeight: 600, fontSize: 12 }}>Agent Layers</span>
+        <span style={{ color: SLATE, fontSize: 11 }}>
+          Per-agent path · Safety/Observability are agent-scoped
+        </span>
         <select
           data-testid="layers-agent-select"
           value={agentFile ?? ""}
           onChange={(e) => pickAgent(e.target.value)}
           style={{
-            background: "#0b1220",
-            color: "#e6edf3",
-            border: "1px solid #30363d",
+            background: PAPER,
+            color: INK,
+            border: `1px solid ${LINE}`,
             borderRadius: 4,
             padding: "4px 8px",
             fontSize: 11,
@@ -197,7 +213,7 @@ export default function LayersView({
           ))}
         </select>
         {surface?.loopKind === "hosted" && (
-          <span style={{ fontSize: 11, color: "#d29922" }}>
+          <span style={{ fontSize: 11, color: WARN }}>
             hosted — control loop lives outside this repo
           </span>
         )}
@@ -210,7 +226,7 @@ export default function LayersView({
         style={{ flex: 1, overflow: "auto", padding: "8px 12px 24px" }}
       >
         {layers.length === 0 && (
-          <div style={{ color: "#d29922", padding: 24, fontSize: 12 }}>
+          <div style={{ color: WARN, padding: 24, fontSize: 12 }}>
             No layer data on this agent — re-scan after reference-model detection is wired.
           </div>
         )}
@@ -236,10 +252,10 @@ export default function LayersView({
                 borderRadius: 6,
                 border: `1px solid ${STATUS_BORDER[layer.status]}`,
                 background: isEmpty
-                  ? "rgba(120,53,15,0.35)"
+                  ? "rgba(217,119,6,0.12)"
                   : isUnsearched
-                    ? "rgba(76,29,149,0.25)"
-                    : "rgba(17,24,39,0.75)",
+                    ? "rgba(239,50,166,0.08)"
+                    : PAPER,
                 overflow: "hidden",
               }}
             >
@@ -248,27 +264,47 @@ export default function LayersView({
                   width: 220,
                   flexShrink: 0,
                   padding: "10px 12px",
-                  borderRight: "1px solid #21262d",
+                  borderRight: `1px solid ${LINE}`,
                   display: "flex",
                   flexDirection: "column",
                   gap: 4,
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
-                  <span
-                    style={{
-                      color: loud ? "#fde68a" : "#f3f4f6",
-                      fontWeight: 700,
-                      fontSize: loud ? 13 : 12,
-                    }}
-                  >
-                    {layer.name}
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 6, alignItems: "baseline" }}>
+                  <span style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+                    <span
+                      style={{
+                        color: loud ? WARN : INK,
+                        fontWeight: 700,
+                        fontSize: loud ? 13 : 12,
+                      }}
+                    >
+                      {layer.name}
+                    </span>
+                    {(layer.scope === "agent" || layer.id === "safety" || layer.id === "observability") && (
+                      <span
+                        title="Scoped to this agent's own turn path, not the whole system"
+                        style={{
+                          fontSize: 8.5,
+                          fontWeight: 600,
+                          color: ACCENT,
+                          border: `1px solid ${ACCENT}66`,
+                          borderRadius: 3,
+                          padding: "1px 4px",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.05em",
+                          flexShrink: 0,
+                        }}
+                      >
+                        agent path
+                      </span>
+                    )}
                   </span>
-                  <span style={{ color: "#7d8590", fontSize: 10 }}>
+                  <span style={{ color: SLATE, fontSize: 10 }}>
                     {layer.components.length}
                   </span>
                 </div>
-                <div style={{ color: "#8b949e", fontSize: 10, lineHeight: 1.35 }}>
+                <div style={{ color: SLATE, fontSize: 10, lineHeight: 1.35 }}>
                   {question}
                 </div>
               </div>
@@ -288,19 +324,19 @@ export default function LayersView({
                   <div
                     style={{
                       width: "100%",
-                      border: "1px dashed #d29922",
+                      border: `1px dashed ${WARN}`,
                       borderRadius: 4,
                       padding: "10px 12px",
-                      background: "rgba(0,0,0,0.2)",
+                      background: PAPER,
                     }}
                   >
-                    <div style={{ color: "#fde68a", fontWeight: 700, fontSize: 12 }}>
+                    <div style={{ color: WARN, fontWeight: 700, fontSize: 12 }}>
                       Missing — {layer.name}
                     </div>
-                    <div style={{ color: "#fcd34d", fontSize: 11, marginTop: 4 }}>
+                    <div style={{ color: WARN, fontSize: 11, marginTop: 4 }}>
                       {layer.emptyReason || "Searched and found nothing."}
                     </div>
-                    <div style={{ color: "#fdba74", fontSize: 11, marginTop: 6, lineHeight: 1.4 }}>
+                    <div style={{ color: WARN, fontSize: 11, marginTop: 6, lineHeight: 1.4 }}>
                       Why it matters: {why}
                     </div>
                   </div>
@@ -309,15 +345,15 @@ export default function LayersView({
                   <div
                     style={{
                       width: "100%",
-                      border: "1px dashed #a78bfa",
+                      border: `1px dashed ${ACCENT}`,
                       borderRadius: 4,
                       padding: "10px 12px",
                     }}
                   >
-                    <div style={{ color: "#ddd6fe", fontWeight: 700, fontSize: 12 }}>
+                    <div style={{ color: INK, fontWeight: 700, fontSize: 12 }}>
                       Could not search — {layer.name}
                     </div>
-                    <div style={{ color: "#c4b5fd", fontSize: 11, marginTop: 4 }}>
+                    <div style={{ color: SLATE, fontSize: 11, marginTop: 4 }}>
                       {layer.emptyReason || "Detection could not run for this layer."}
                     </div>
                   </div>
@@ -337,13 +373,13 @@ export default function LayersView({
                           padding: "5px 8px",
                           borderRadius: 4,
                           border: sens
-                            ? `1px solid ${sens === "patient" ? "#f87171" : "#d29922"}`
-                            : "1px solid #30363d",
+                            ? `1px solid ${sens === "patient" ? BAD : WARN}`
+                            : `1px solid ${LINE}`,
                           background:
                             selectedComponent?.component.id === c.id
-                              ? "rgba(37,99,235,0.25)"
-                              : "rgba(15,23,42,0.9)",
-                          color: "#e6edf3",
+                              ? ACCENT_WASH
+                              : CANVAS,
+                          color: INK,
                           fontSize: 10,
                           cursor: "pointer",
                           maxWidth: 200,
@@ -363,7 +399,7 @@ export default function LayersView({
                             style={{
                               marginTop: 2,
                               fontSize: 9,
-                              color: sens === "patient" ? "#fca5a5" : "#fcd34d",
+                              color: sens === "patient" ? BAD : WARN,
                             }}
                           >
                             reaches {sens}
@@ -375,12 +411,12 @@ export default function LayersView({
                 {!isEmpty &&
                   !isUnsearched &&
                   layer.components.length > 24 && (
-                    <span style={{ color: "#7d8590", fontSize: 10 }}>
+                    <span style={{ color: SLATE, fontSize: 10 }}>
                       +{layer.components.length - 24} more
                     </span>
                   )}
                 {layer.status === "thin" && layer.components.length > 0 && (
-                  <span style={{ color: "#8b949e", fontSize: 10, marginLeft: 4 }}>
+                  <span style={{ color: SLATE, fontSize: 10, marginLeft: 4 }}>
                     thin
                   </span>
                 )}
@@ -393,15 +429,15 @@ export default function LayersView({
       {selectedComponent && (
         <div
           style={{
-            borderTop: "1px solid #30363d",
-            background: "rgba(17,24,39,0.97)",
+            borderTop: `1px solid ${LINE}`,
+            background: CANVAS,
             padding: "12px 16px 14px",
             maxHeight: 180,
             overflow: "auto",
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <div style={{ fontSize: 12, color: "#f3f4f6" }}>
+            <div style={{ fontSize: 12, color: INK }}>
               {selectedComponent.layer.name} → {selectedComponent.component.label}
             </div>
             <button
@@ -410,7 +446,7 @@ export default function LayersView({
               style={{
                 background: "transparent",
                 border: "none",
-                color: "#8b949e",
+                color: SLATE,
                 cursor: "pointer",
                 fontSize: 11,
               }}
@@ -418,14 +454,14 @@ export default function LayersView({
               close
             </button>
           </div>
-          <div style={{ marginTop: 8, fontSize: 11, color: "#58a6ff", lineHeight: 1.5 }}>
+          <div style={{ marginTop: 8, fontSize: 11, color: ACCENT, lineHeight: 1.5 }}>
             <EvidenceLink
               evidence={selectedComponent.component.evidence}
               onOpenFile={onOpenFile}
             />
           </div>
           {selectedComponent.component.sensitive && (
-            <div style={{ marginTop: 6, fontSize: 11, color: "#fca5a5" }}>
+            <div style={{ marginTop: 6, fontSize: 11, color: BAD }}>
               Marked: reaches {selectedComponent.component.sensitive}
             </div>
           )}

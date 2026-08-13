@@ -5,6 +5,7 @@
 
 import type { ArchGraph, ArchNode, ArchEdge, SystemModel, SystemModelNode } from "../../../src/types.js";
 import type { NodeTier, RuntimeRole } from "../../../src/types.js";
+import { classifySubsystem } from "../../../src/analyzer/subsystemClassify.js";
 
 /** Known domain keywords for inference (auth, payments, users, analytics, notifications, etc.). */
 const DOMAIN_KEYWORDS: Record<string, string[]> = {
@@ -120,11 +121,13 @@ export function buildSystemModel(graph: ArchGraph, options?: { graphId?: string 
     const domain = inferDomain(node);
     const runtimeRoles = inferRuntimeRoles(node);
     const tier = inferTier(node, nodeById, graph.edges, domain);
+    const { subsystem } = classifySubsystem(node);
     return {
       ...node,
       domain,
       runtimeRoles,
       tier,
+      subsystem,
     };
   });
 

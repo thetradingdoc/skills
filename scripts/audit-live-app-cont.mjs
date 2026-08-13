@@ -42,7 +42,7 @@ async function boot(page) {
   await page.goto(BASE + "/", { waitUntil: "domcontentloaded" });
   await page.locator('input[placeholder*="github" i], .landing-scan-card input').first().fill(SOMO);
   await page.getByRole("button", { name: /Scan repository/i }).click({ force: true });
-  await page.getByRole("button", { name: "Layers", exact: true }).waitFor({ timeout: 30000 });
+  await page.getByRole("button", { name: "Agent Layers", exact: true }).waitFor({ timeout: 30000 });
 }
 
 async function main() {
@@ -80,7 +80,7 @@ async function main() {
   );
 
   // ===== Layers agent switch (compare safety counts) =====
-  await page.getByRole("button", { name: "Layers", exact: true }).click({ force: true });
+  await page.getByRole("button", { name: "Agent Layers", exact: true }).click({ force: true });
   await page.waitForTimeout(300);
   const sel = page.locator("select").first();
   const opts = await sel.locator("option").allTextContents();

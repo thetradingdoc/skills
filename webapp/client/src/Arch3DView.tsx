@@ -826,7 +826,7 @@ export function Arch3DView({
                 padding: "2px 6px",
                 borderRadius: 999,
                 border:
-                  gridDensity === d ? "1px solid #38bdf8" : "1px solid transparent",
+                  gridDensity === d ? "1px solid #f472b6" : "1px solid transparent",
                 background:
                   gridDensity === d ? "rgba(56,189,248,0.16)" : "transparent",
                 color: gridDensity === d ? "#e0f2fe" : "#7d8590",

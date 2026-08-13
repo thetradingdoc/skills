@@ -8,7 +8,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { ArchitectureChatHistory, GraphCommand } from "../types";
-import { validateGraphCommand, VALID_LAYERS } from "./validateGraphCommand";
+import { validateGraphCommand, VALID_LAYERS, VALID_EDGE_RELATIONS } from "./validateGraphCommand";
 import { executeJiraCreateTicket, executeJiraSearchByArchNodeId } from "./tools";
 
 export type { GraphCommandValidationResult } from "./validateGraphCommand";
@@ -50,6 +50,10 @@ You must:
 - Justify design decisions in your answer
 
 ALWAYS use the answer tool with graphCommands: an array of create_node and connect actions for the full architecture.
+
+For every create_node, write a description that is a real, specific sentence about what that module does in this design (its responsibility, what it talks to, why it exists) — not a placeholder like "handles X" with no detail. A non-expert reading only the description should understand the module's job.
+
+For every connect, set relation to the semantic meaning of that edge, chosen from: ${VALID_EDGE_RELATIONS.join(", ")}. Pick the relation that actually describes what crosses the edge (e.g. "calls" for a request, "reads"/"writes" for data access, "publishes"/"subscribes" for async messaging, "authenticates_via" for auth checks, "caches" for cache reads, "depends_on" for a generic build-time/runtime dependency with no clearer relation). Do not leave relation unset — every connect should carry one.
 
 Rules:
 - Do NOT include secrets, shell commands, or executable code in your design.
@@ -116,11 +120,21 @@ const GREENFIELD_TOOLS_BASE: Anthropic.Tool[] = [
                 enum: VALID_LAYERS,
                 description: "Architectural layer",
               },
-              description: { type: "string" },
+              description: {
+                type: "string",
+                description:
+                  "Required for create_node. A specific sentence describing this module's responsibility and role in the design — not a generic placeholder.",
+              },
               archNodeId: { type: "string" },
               fromId: { type: "string" },
               toId: { type: "string" },
               edgeType: { type: "string", enum: ["import", "reexport", "dynamic"] },
+              relation: {
+                type: "string",
+                enum: VALID_EDGE_RELATIONS,
+                description:
+                  "Required for connect. The semantic meaning of this edge (calls, reads, writes, publishes, subscribes, authenticates_via, caches, depends_on).",
+              },
               skeletonCode: {
                 type: "string",
                 description:

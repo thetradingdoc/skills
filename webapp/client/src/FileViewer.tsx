@@ -151,7 +151,7 @@ export function FileViewer({
         </span>
 
         {line ? (
-          <span style={{ fontFamily: MONO, fontSize: 10.5, color: "#58a6ff" }}>
+          <span style={{ fontFamily: MONO, fontSize: 10.5, color: "#ef32a6" }}>
             :{line}
           </span>
         ) : null}
@@ -236,7 +236,7 @@ export function FileViewer({
                 style={{
                   display: "flex",
                   background: isTarget ? "rgba(88,166,255,0.10)" : "transparent",
-                  borderLeft: isTarget ? "2px solid #58a6ff" : "2px solid transparent",
+                  borderLeft: isTarget ? "2px solid #ef32a6" : "2px solid transparent",
                 }}
               >
                 <span
@@ -245,7 +245,7 @@ export function FileViewer({
                     flexShrink: 0,
                     textAlign: "right",
                     paddingRight: 10,
-                    color: isTarget ? "#58a6ff" : "#484f58",
+                    color: isTarget ? "#ef32a6" : "#484f58",
                     userSelect: "none",
                   }}
                 >

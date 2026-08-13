@@ -1,14 +1,18 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+export type WorkspaceRole = "owner" | "editor" | "viewer";
+
 export type WorkspaceAccessRow = {
   id: string;
   owner_id: string;
   archived_at?: string | null;
+  /** Role of the requesting user in this workspace. */
+  role: WorkspaceRole;
 };
 
 /**
  * Centralized workspace access check used by all workspace-scoped routes.
- * Ensures the current user owns the workspace and it is not archived.
+ * Returns the caller's role (owner if workspace owner, else workspace_members.role).
  */
 export async function assertWorkspaceAccess(
   supabase: SupabaseClient | null,
@@ -43,29 +47,26 @@ export async function assertWorkspaceAccess(
     if ((ws as { archived_at?: string | null }).archived_at) {
       throw Object.assign(new Error("Workspace is archived."), { statusCode: 403 });
     }
-    // Lazy backfill: ensure owner exists in workspace_members (handles pre-migration workspaces)
     try {
       await supabase.from("workspace_members").upsert(
         { workspace_id: workspaceId, user_id: userId, role: "owner" },
         { onConflict: "workspace_id,user_id", ignoreDuplicates: true }
       );
     } catch {
-      /* non-fatal: owner access already granted above */
+      /* non-fatal */
     }
-    return ws as WorkspaceAccessRow;
+    return { ...(ws as WorkspaceAccessRow), role: "owner" };
   }
 
-  // Non-owner: require workspace_members row. On query error (e.g. table missing pre-migration),
-  // deny non-owners (owner already returned above).
-  let member: { id: string } | null = null;
+  let member: { id: string; role: string } | null = null;
   try {
-    const { data, error } = await supabase
+    const { data, error: memErr } = await supabase
       .from("workspace_members")
-      .select("id")
+      .select("id, role")
       .eq("workspace_id", workspaceId)
       .eq("user_id", userId)
       .maybeSingle();
-    if (!error) member = data;
+    if (!memErr) member = data as { id: string; role: string } | null;
   } catch {
     // workspace_members may not exist; deny non-owners
   }
@@ -73,10 +74,16 @@ export async function assertWorkspaceAccess(
   if (!member) {
     throw Object.assign(new Error("Workspace not found or access denied."), { statusCode: 404 });
   }
-  const data = ws;
-  if ((data as { archived_at?: string | null }).archived_at) {
+  if ((ws as { archived_at?: string | null }).archived_at) {
     throw Object.assign(new Error("Workspace is archived."), { statusCode: 403 });
   }
-  return data as WorkspaceAccessRow;
+  const role = (member.role as WorkspaceRole) || "viewer";
+  return { ...(ws as WorkspaceAccessRow), role };
 }
 
+/** Throws 403 if the caller's role is viewer (read-only). */
+export function assertCanEdit(access: WorkspaceAccessRow): void {
+  if (access.role === "viewer") {
+    throw Object.assign(new Error("Viewers cannot edit this workspace."), { statusCode: 403 });
+  }
+}

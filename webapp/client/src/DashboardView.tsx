@@ -207,7 +207,7 @@ export function DashboardView({
                 fontSize: 10,
                 background: "none",
                 border: 0,
-                color: "#58a6ff",
+                color: "#ef32a6",
                 cursor: "pointer",
                 padding: 0,
               }}

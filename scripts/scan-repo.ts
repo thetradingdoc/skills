@@ -19,6 +19,7 @@ import { enrichGraph } from "../src/ai/enricher-v2";
 import { analyseGraph } from "../src/analysis/graphAnalyser";
 import { getClonesDir, authUrl, cloneToStablePath, refreshStableClone } from "../webapp/server/src/cloneRepo.js";
 import { buildAgentInventory } from "./agent-inventory";
+import { buildScanProvidersPayload } from "./lib/scanProviders";
 
 /**
  * Agents that share an identical tool list (e.g. several Retell handlers routing
@@ -96,6 +97,8 @@ async function main() {
     graph = analyseGraph(graph);
 
     const agents = packToolCatalogs(buildAgentInventory(absoluteCloneDir));
+    // Fix A: static providers payload (scanned repo .env / packages — not live health).
+    const providers = buildScanProvidersPayload(absoluteCloneDir);
 
     let scannedCommit: string | undefined;
     try {
@@ -110,10 +113,12 @@ async function main() {
     // Normalize for JSON output:
     // - projectRoot: absolute path to the cloned repo (server uses this as rootPath)
     // - node.files: always relative to projectRoot to avoid double-joining
+    // - providers: additive field; flat graph shape unchanged
     const out = {
       ...graph,
       projectRoot: absoluteCloneDir,
       agents,
+      providers,
       scannedCommit,
       generatedAt,
       nodes: graph.nodes.map((n) => ({

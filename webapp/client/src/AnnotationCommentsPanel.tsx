@@ -62,7 +62,7 @@ function renderContentWithMentions(content: string): React.ReactNode {
     parts.push(
       <span
         key={`${m.index}-${m[1]}`}
-        style={{ color: "#58a6ff", fontWeight: 500 }}
+        style={{ color: "#ef32a6", fontWeight: 500 }}
         title={`Mention @${m[1]}`}
       >
         @{m[1]}
@@ -345,7 +345,7 @@ export function AnnotationCommentsPanel({
                         marginTop: 6,
                         background: "none",
                         border: "none",
-                        color: "#58a6ff",
+                        color: "#ef32a6",
                         fontSize: 11,
                         cursor: "pointer",
                       }}

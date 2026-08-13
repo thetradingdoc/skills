@@ -17,6 +17,7 @@ import { jiraViolationRoutes } from "./jiraViolation.js";
 import { integrationRoutes } from "./integrationRoutes.js";
 import { scaffoldRoutes } from "./scaffold.js";
 import { materializeRoutes } from "./materialize.js";
+import { designMaterializeRoutes } from "./designMaterialize.js";
 import { authRoutes } from "./auth.js";
 import { workspaceRoutes } from "./workspaces.js";
 import { todosRoutes } from "./todos.js";
@@ -47,9 +48,18 @@ import { repoDiffRoutes } from "./repoDiff.js";
 import { githubPrCommentRoutes } from "./githubPrComments.js";
 import { githubConnectRoutes } from "./githubConnect.js";
 import { soloWorkspaceRoutes } from "./soloWorkspace.js";
+import { n8nRoutes } from "./n8nRoutes.js";
 import { resourceClassifyRoutes } from "./resourceClassify.js";
 import { traceDisputesRoutes } from "./traceDisputes.js";
 import { reachRulesRoutes } from "./reachRulesRoutes.js";
+import { billingRoutes, handleStripeWebhook } from "./billing.js";
+import { githubArchEventsRoutes } from "./githubArchEvents.js";
+import { sectionClaimsRoutes } from "./sectionClaims.js";
+import { notificationsRoutes } from "./notifications.js";
+import { usageRoutes } from "./usageRoutes.js";
+import { llmopsRoutes } from "./llmopsRoutes.js";
+import { managementRollupRoutes } from "./managementRollupRoutes.js";
+import { deployHealthRoutes } from "./deployHealthRoutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distPath = path.resolve(__dirname, "../../client/dist");
@@ -64,6 +74,15 @@ app.use(
   "/api/webhooks/github",
   express.raw({ type: "application/json", limit: "1mb" }),
   githubWebhookRoutes
+);
+/** Stripe webhooks need the raw body for signature verification. */
+app.post(
+  "/api/billing/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    (req as express.Request & { rawBody?: Buffer }).rawBody = req.body as Buffer;
+    void handleStripeWebhook(req, res);
+  }
 );
 app.use(
   express.json({
@@ -90,7 +109,9 @@ app.use("/api", localFileRoutes);
 app.use("/api", scanStalenessRoutes);
 app.use("/api", scaffoldRoutes);
 app.use("/api", materializeRoutes);
+app.use("/api", designMaterializeRoutes);
 app.use("/api", authRoutes);
+app.use("/api", billingRoutes);
 app.use("/api", workspaceRoutes);
 app.use("/api", todosRoutes);
 app.use("/api", todosImportRoutes);
@@ -114,6 +135,14 @@ app.use("/api", feedbackRoutes);
 app.use("/api", dependencyRisksRoutes);
 app.use("/api", telemetryRoutes);
 app.use("/api", soloWorkspaceRoutes);
+app.use("/api", n8nRoutes);
+app.use("/api", githubArchEventsRoutes);
+app.use("/api", sectionClaimsRoutes);
+app.use("/api", notificationsRoutes);
+app.use("/api", usageRoutes);
+app.use("/api", llmopsRoutes);
+app.use("/api", managementRollupRoutes);
+app.use("/api", deployHealthRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });

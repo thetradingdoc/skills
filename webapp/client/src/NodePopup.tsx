@@ -524,7 +524,7 @@ export function NodePopup({ node, graph, repoUrl, onClose, workspaceId, accessTo
                               ? isActive
                                 ? "#22d3ee"
                                 : isOpen
-                                  ? "#58a6ff"
+                                  ? "#ef32a6"
                                   : "#8b949e"
                               : "#7d8590",
                             cursor: baseRepo ? "pointer" : "default",

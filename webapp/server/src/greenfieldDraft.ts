@@ -5,6 +5,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import type { EdgeRelation } from "../../../src/types.js";
 
 const GREENFIELD_DIR = ".agent/greenfield";
 const DEFAULT_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -23,11 +24,17 @@ export interface DraftNode {
   layoutHint?: string;
   /** Optional group ID to cluster nodes visually */
   group?: string;
+  /** P1 assisted design loop: build-plan status, round-tripped from ArchNode.buildStatus. */
+  buildStatus?: "planned" | "building" | "built";
+  /** P1 assisted design loop: authored canvas position, round-tripped from ArchNode.position. */
+  position?: { x: number; y: number };
 }
 
 export interface DraftEdge {
   source: string;
   target: string;
+  /** P1 assisted design loop: semantic edge meaning, round-tripped from ArchEdge.relation. */
+  relation?: EdgeRelation;
 }
 
 export interface GreenfieldDraft {

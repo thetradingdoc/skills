@@ -1,7 +1,24 @@
+/**
+ * Public read-only view of a shared workspace. This is the "look before you
+ * join" journey: no account, no AI, no editing — just the picture plus a
+ * clear path into signup. The canvas itself keeps its own theme (Phase 5).
+ */
 import { useEffect, useState } from "react";
 import { ArchCanvas } from "./ArchCanvas";
 import { analyseGraph } from "./analysis/graphAnalyser";
 import type { ArchGraph } from "./types";
+import {
+  ACCENT,
+  BAD,
+  CANVAS,
+  FONT_BRAND,
+  FONT_MONO,
+  FONT_UI,
+  INK,
+  LINE,
+  PAPER,
+  SLATE,
+} from "./theme/tokens";
 
 const API_BASE = "/api";
 
@@ -36,10 +53,10 @@ export function SharedView({ slug }: { slug: string }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "#0d1117",
-          color: "#f85149",
+          background: CANVAS,
+          color: BAD,
           padding: 24,
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+          fontFamily: FONT_UI,
         }}
       >
         {error}
@@ -55,10 +72,10 @@ export function SharedView({ slug }: { slug: string }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          background: "#0d1117",
-          color: "#7d8590",
+          background: CANVAS,
+          color: SLATE,
           padding: 24,
-          fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+          fontFamily: FONT_UI,
         }}
       >
         Loading…
@@ -67,33 +84,70 @@ export function SharedView({ slug }: { slug: string }) {
   }
 
   return (
-    <div style={{ width: "100vw", height: "100vh", background: "#0d1117" }}>
+    <div style={{ width: "100vw", height: "100vh", background: CANVAS }}>
       <div
+        data-testid="shared-view-chrome"
         style={{
           position: "fixed",
           top: 16,
           left: 16,
           zIndex: 20,
-          background: "rgba(7,13,26,0.9)",
-          border: "1px solid #1e2d45",
-          borderRadius: 8,
-          padding: "6px 12px",
+          background: CANVAS,
+          border: `1px solid ${LINE}`,
+          borderRadius: 12,
+          padding: "8px 14px",
           display: "flex",
           alignItems: "center",
-          gap: 8,
-          backdropFilter: "blur(8px)",
+          gap: 12,
+          boxShadow: "0 8px 24px rgba(18,19,26,0.10)",
+          fontFamily: FONT_UI,
         }}
       >
-        <span style={{ fontSize: 11, fontFamily: "monospace", color: "#8b949e", letterSpacing: "0.1em" }}>
-          LITTLELABS
+        <span
+          style={{
+            fontSize: 16,
+            fontFamily: FONT_BRAND,
+            fontWeight: 400,
+            color: INK,
+            letterSpacing: "-0.01em",
+          }}
+        >
+          blanko
+        </span>
+        <span
+          data-testid="shared-view-only-badge"
+          style={{
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: SLATE,
+            background: PAPER,
+            border: `1px solid ${LINE}`,
+            borderRadius: 6,
+            padding: "3px 8px",
+          }}
+        >
+          View only
         </span>
         <a
-          href="/"
-          style={{ fontSize: 10, color: "#58a6ff", textDecoration: "none" }}
-          onMouseEnter={(e) => { e.currentTarget.style.textDecoration = "underline"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; }}
+          href="/?get-started=1&intent=Create%20an%20account%20to%20keep%2C%20share%2C%20and%20use%20AI%20on%20designs%20you%20view."
+          data-testid="shared-view-join"
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            color: ACCENT,
+            textDecoration: "none",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.textDecoration = "underline";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.textDecoration = "none";
+          }}
         >
-          Try it with your repo →
+          Get started free →
         </a>
       </div>
       <ArchCanvas

@@ -149,7 +149,7 @@ export default function CodeViewerPanel({ node, graph, selectedNodeId }: CodeVie
               borderRadius: 6,
               border: "1px solid #30363d",
               background: "transparent",
-              color: "#58a6ff",
+              color: "#ef32a6",
               cursor: "pointer",
               fontFamily:
                 "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",

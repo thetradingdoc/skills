@@ -218,7 +218,7 @@ export function FileBrowser({ graph, openPath, onOpen }: Props) {
                           background: active ? "rgba(88,166,255,0.10)" : "transparent",
                           border: 0,
                           borderLeft: active
-                            ? "2px solid #58a6ff"
+                            ? "2px solid #ef32a6"
                             : "2px solid transparent",
                           padding: "4px 6px 4px 14px",
                           cursor: "pointer",
@@ -228,7 +228,7 @@ export function FileBrowser({ graph, openPath, onOpen }: Props) {
                           style={{
                             fontFamily: MONO,
                             fontSize: 11.5,
-                            color: active ? "#58a6ff" : "#c9d1d9",
+                            color: active ? "#ef32a6" : "#c9d1d9",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",

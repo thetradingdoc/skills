@@ -238,9 +238,9 @@ export function SnapButtons3D({ onSnap, onExport, onSavePreset, presetSlots }: S
                   fontSize: 9,
                   fontFamily: "monospace",
                   borderRadius: 6,
-                  border: has ? "1px solid #58a6ff66" : "1px solid transparent",
+                  border: has ? "1px solid #ef32a666" : "1px solid transparent",
                   background: has ? "#0b1220" : "transparent",
-                  color: has ? "#58a6ff" : "#8b949e",
+                  color: has ? "#ef32a6" : "#8b949e",
                   cursor: "pointer",
                 }}
               >

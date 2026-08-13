@@ -12,6 +12,8 @@ export default defineConfig({
       "**/scripts/**/*.spec.js",
       "**/scripts/**/*.spec.tsx",
       "**/playwright-template.spec.ts",
+      // Audit dump of trading middleware — not Blanko vitest (jest-based).
+      "docs/ops/_audit_86a9ac1/**",
     ],
   },
   resolve: {

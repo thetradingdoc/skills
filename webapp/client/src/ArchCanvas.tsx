@@ -9,15 +9,18 @@ import ReactFlow, {
   Node,
   Edge,
   EdgeProps,
+  EdgeLabelRenderer,
   getBezierPath,
   Position,
   Handle,
   NodeProps,
+  ConnectionMode,
 } from "reactflow";
 import "reactflow/dist/style.css";
 import type {
   ArchGraph,
   ArchNode,
+  EdgeRelation,
   NodeLayer,
   ArchNodeViolationState,
   Persona,
@@ -25,20 +28,92 @@ import type {
   WorkspaceAnnotation,
   WorkspaceRuntimeSnapshot,
 } from "./types";
+import {
+  DEFAULT_DESIGN_RELATION,
+  EDGE_RELATIONS,
+  relationLabel,
+} from "./greenfieldDesign";
 import { NodePopup } from "./NodePopup";
 import { NodeIntelPanel } from "./NodeIntelPanel";
 import { Arch3DView } from "./Arch3DView";
 import { computeDepthLayout } from "./layout/depthLayout";
 import { computeDomainLayout, domainFromPath, type DomainRegion } from "./layout/domainLayout";
 import { computeElkLayout } from "./layout/elkLayout";
-import type { LayoutMode } from "./types";
-import { NODE_W } from "./layout/canvasConstants";
+import { computeLayerLayout } from "./layout/layerLayout";
+import {
+  computeSubsystemLayout,
+  fitSubsystemRegionsToNodes,
+  type SubsystemRegion,
+} from "./layout/subsystemLayout";
+import type { LayoutMode, NodeSubsystem } from "./types";
+import { NODE_W, NODE_W_LIGHT } from "./layout/canvasConstants";
 import { LAYER_COLORS, LAYER_CFG } from "./layerPalette";
 import { canvasTheme, densityScale, type CanvasDensity, type CanvasThemeName } from "./theme";
 import { filterEdges, filterNodes, type EdgeFilter, type NodeFilter } from "./analysis/graphAnalyser";
 import { computeBlastRadius, computeBlastRadiusWithSeverity } from "./analysis/blastRadius";
 import { isFlagEnabled } from "./featureFlags";
+import { DESIGN_DND_MIME } from "./greenfieldDesign";
 import { PresenceCursorsOverlay } from "./PresenceCursorsOverlay";
+import { ProviderIcon } from "./ProviderIcon";
+import { resolveNodeProviderId } from "./nodeProviderIcon";
+import { primaryBinding } from "./platformInventory";
+import { bindingStatusColor } from "./providerCatalog";
+import type { LayerSummary } from "./agentNodeJoin";
+import { buildAgentLayerSummaryByNodeId } from "./agentNodeJoin";
+import { ACCENT, ACCENT_WASH, CANVAS, FONT_MONO, FONT_UI, INK, LINE, PAPER, SLATE } from "./theme/tokens";
+import {
+  classifySubsystem,
+} from "./subsystemClassify";
+
+function agentRoleBadge(node: {
+  layer?: string | null;
+  techKind?: string | null;
+  kind?: string | null;
+  label?: string | null;
+  providerId?: string | null;
+}): string {
+  const label = String(node.label ?? "").toLowerCase();
+  const tech = String(node.techKind ?? "").toLowerCase();
+  const kind = String(node.kind ?? "").toLowerCase();
+  const layer = String(node.layer ?? "");
+  if (/retell|voice/.test(label) || node.providerId === "retell") return "Channel";
+  if (/strategy/.test(label)) return "Strategy";
+  if (/vector|rag|pinecone|embedding/.test(label) || tech.includes("vector")) return "RAG";
+  if (/memory/.test(label) && layer.includes("Memory")) return "Memory";
+  if (kind === "agent" || /^agent\b/.test(label) || (layer.includes("Reasoning") && /agent/.test(label)))
+    return "Agent";
+  if (/llm|openai|anthropic|claude|gpt/.test(label) || layer.includes("Reasoning")) return "Brain";
+  if (/eval/.test(label) || layer.includes("Evaluation")) return "Eval";
+  if (/tool/.test(label)) return "Tool";
+  if (tech.includes("database") || layer.includes("Data")) return "Data";
+  if (layer.includes("External") || tech.includes("saas")) return "Channel";
+  if (layer.includes("Presentation") || tech.includes("http") || tech.includes("web")) return "Surface";
+  const short = layerShortTag(node.layer);
+  return short || "Node";
+}
+
+function layerShortTag(layer: string | undefined | null): string {
+  const l = String(layer ?? "");
+  if (l.includes("Presentation")) return "PRE";
+  if (l.includes("Orchestration")) return "ORC";
+  if (l.includes("Reasoning")) return "REA";
+  if (l.includes("Business")) return "BUS";
+  if (l.includes("Memory")) return "MEM";
+  if (l.includes("Evaluation") || l.includes("Eval")) return "EVA";
+  if (l.includes("Safety")) return "SAF";
+  if (l.includes("Data")) return "DAT";
+  if (l.includes("External")) return "EXT";
+  if (l.includes("Infrastructure")) return "INF";
+  if (l.includes("Utilities")) return "UTL";
+  if (l.includes("Configuration")) return "CFG";
+  return l ? l.slice(0, 3).toUpperCase() : "";
+}
+
+function shortenNodeLabel(label: string, max = 28): string {
+  const t = label.replace(/^n8n:\s*/i, "").trim();
+  if (t.length <= max) return t;
+  return `${t.slice(0, max - 1)}…`;
+}
 
 const DEFAULT_EDGE_FILTER = new Set<EdgeFilter>(["all"]);
 const DEFAULT_NODE_FILTER = new Set<NodeFilter>(["all"]);
@@ -48,7 +123,7 @@ import type { GraphCommand } from "./types";
 
 const STATUS_COLOR: Record<string, string> = {
   stable: "#3fb950",
-  new: "#58a6ff",
+  new: "#ef32a6",
   warning: "#d29922",
   error: "#f85149",
   deprecated: "#7d8590",
@@ -118,19 +193,19 @@ const TECH_COLOR: Record<string, string> = {
   "object-storage": "#3fb950",
   "cache": "#238636",
   "redis": "#f85149",
-  "mysql": "#0ea5e9",
+  "mysql": "#ef32a6",
   // edge / messaging
   "queue": "#eab308",
   "message-bus": "#eab308",
-  "cdn": "#38bdf8",
-  "api-gateway": "#38bdf8",
+  "cdn": "#f472b6",
+  "api-gateway": "#f472b6",
   // compute / orchestration
   "kubernetes": "#1f6feb",
   "container-service": "#a78bfa",
   "serverless": "#f97316",
   // ui / client
-  "http-api": "#58a6ff",
-  "web-ui": "#38bdf8",
+  "http-api": "#ef32a6",
+  "web-ui": "#f472b6",
   "mobile-app": "#f472b6",
   "user": "#f97316",
   "device": "#7d8590",
@@ -143,6 +218,48 @@ const TECH_COLOR: Record<string, string> = {
 };
 
 // ── Custom Node ───────────────────────────────────────────────────────────────
+/** Tan/neutral badge — distinct from amber reach highlight; matches LayersView Missing rows. */
+function LayerSummaryBadge({ summary, isLight }: { summary: LayerSummary; isLight: boolean }) {
+  const missing = summary.missingLayerNames;
+  const tip =
+    missing.length > 0
+      ? `Missing agent layers: ${missing.join(", ")}`
+      : "All searched agent layers filled on this module";
+  const label =
+    missing.length > 0
+      ? `${missing.length} missing`
+      : "agent layers ok";
+  return (
+    <div
+      data-testid="blanko-layer-summary-badge"
+      title={tip}
+      style={{
+        position: "absolute",
+        left: -4,
+        bottom: -6,
+        zIndex: 4,
+        maxWidth: 130,
+        padding: "2px 6px",
+        borderRadius: 6,
+        border: `1px solid ${isLight ? "#b45309" : "#92400e"}`,
+        background: isLight ? "rgba(180, 83, 9, 0.1)" : "rgba(180, 83, 9, 0.22)",
+        color: isLight ? "#92400e" : "#fde68a",
+        fontSize: 9,
+        fontWeight: 700,
+        fontFamily: FONT_MONO,
+        lineHeight: 1.25,
+        pointerEvents: "none",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      {label}
+      {summary.agentCount > 1 ? ` · ${summary.agentCount} agents` : ""}
+    </div>
+  );
+}
+
 function ArchNodeComponent({
   data,
 }: NodeProps<
@@ -154,6 +271,7 @@ function ArchNodeComponent({
     density?: CanvasDensity;
     theme?: CanvasThemeName;
     runtimeMetrics?: { errorRate?: number };
+    layerSummary?: LayerSummary;
   }
 >) {
   const node = data;
@@ -168,6 +286,13 @@ function ArchNodeComponent({
   const statusColor =
     STATUS_COLOR[node.status ?? "unknown"] ?? STATUS_COLOR["unknown"];
   const label = node.suggestedLabel ?? node.role ?? node.label;
+  const subtitle =
+    typeof (node as { properties?: { subtitle?: unknown } }).properties?.subtitle === "string"
+      ? String((node as { properties?: { subtitle?: string } }).properties!.subtitle)
+      : node.summary && node.summary !== label
+        ? node.summary
+        : undefined;
+  const isDeactivated = !!(node as { disabled?: boolean }).disabled;
   const isPulsing = ["new", "warning", "error"].includes(node.status ?? "");
   const traceLayers = ["Reasoning", "Orchestration", "Memory"];
   const isMissingTraces =
@@ -217,10 +342,28 @@ function ArchNodeComponent({
   const runtimeMetrics = (node as any).runtimeMetrics as { errorRate?: number } | undefined;
   const hasHighErrorRate = (runtimeMetrics?.errorRate ?? 0) > 0.05;
   const hasDependencyRisk = (node as any).hasDependencyRisk === true;
+  const hasDesignAlert = (node as any).hasDesignAlert === true;
+  const findingMeta = (node as any).findingMeta as
+    | { count: number; severity: "blocker" | "risk" | "suggestion" }
+    | undefined;
+  const showHealthBadges = (node as any).showHealthBadges !== false;
+  const onHealthBadgeClick = (node as any).onHealthBadgeClick as
+    | ((nodeId: string) => void)
+    | undefined;
+  const isFlash = (node as any).isFlash === true;
+  const isLight = th === "light";
+  const providerId = resolveNodeProviderId(node);
+  const binding = primaryBinding(node);
+  const bindStatus = binding?.status ?? (providerId ? "unbound" : undefined);
+  const buildStatus = (node as any).buildStatus as "planned" | "building" | "built" | undefined;
   const fanOut = (node as any).fanOut as number | undefined;
   const hasHighFanOut = (fanOut ?? 0) >= 10;
   const miniRoles = (node as any).miniRoles as string[] | undefined;
   const domain = (node as any).domain as string | undefined;
+  const layerSummary = (node as any).layerSummary as LayerSummary | undefined;
+  const cockpitQuiet = (node as any).cockpitQuiet === true;
+  const showStrategyMarker = (node as any).showStrategyMarker === true;
+  const cockpitShowBindBuild = (node as any).cockpitShowBindBuild !== false;
   const domainColor = domain
     ? `hsl(${(domain.split("").reduce((a, c) => a + c.charCodeAt(0), 0) % 360)}, 55%, 50%)`
     : undefined;
@@ -230,16 +373,307 @@ function ArchNodeComponent({
   const iconSize = 18 * sizeFactor;
   const labelSize = 11 * sizeFactor;
   const iconMode = zoom < 0.8;
-  const showLayer = zoom >= 0.55;
-  const showKindTech = !iconMode && zoom >= 0.85;
-  const showDescription = !iconMode && zoom >= 0.95 && densityKey === "standard";
-  const showProviderModel = !iconMode && zoom >= 0.9;
-  const showFileCount = zoom >= 0.75;
-  const showHealth = !iconMode && zoom >= 0.9;
-  const showTags = !iconMode && zoom >= 0.9;
+  const showLayer = zoom >= 0.55 && !cockpitQuiet;
+  const showKindTech = !iconMode && zoom >= 0.85 && !cockpitQuiet;
+  const showDescription = !iconMode && zoom >= 0.95 && densityKey === "standard" && !cockpitQuiet;
+  const showProviderModel = !iconMode && zoom >= 0.9 && !cockpitQuiet;
+  const showFileCount = zoom >= 0.75 && !cockpitQuiet;
+  const showHealth = !iconMode && zoom >= 0.9 && !cockpitQuiet;
+  const showTags = !iconMode && zoom >= 0.9 && !cockpitQuiet;
+  const showMicroBadges = !cockpitQuiet && zoom >= 1.0;
+  const showExtraChrome = !cockpitQuiet;
   const fileCount =
     (node.semanticSignals?.fileCount as number | undefined) ??
     (Array.isArray(node.files) ? node.files.length : 0);
+
+  // ── blanko light / n8n-inspired card (icon-first, readable) ───────────────
+  if (isLight) {
+    const roleBadge = agentRoleBadge({
+      layer: node.layer,
+      techKind,
+      kind: node.kind,
+      label,
+      providerId,
+    });
+    const shortTitle = shortenNodeLabel(label, 28);
+    const sub =
+      subtitle && subtitle !== label
+        ? shortenNodeLabel(subtitle, 32)
+        : techKind !== "unknown"
+          ? techKind
+          : undefined;
+    const cardW = 148;
+    const handleStyle = {
+      background: CANVAS,
+      width: 10,
+      height: 10,
+      border: `2px solid ${LINE}`,
+      zIndex: 10,
+    } as const;
+
+    return (
+      <div
+        data-testid="blanko-arch-node"
+        data-node-id={node.id}
+        data-provider-id={providerId ?? ""}
+        style={{
+          width: cardW,
+          minWidth: 0,
+          position: "relative",
+          opacity: isDeactivated ? 0.5 : 1,
+          fontFamily: FONT_UI,
+        }}
+      >
+        {node.isSelected && (
+          <div
+            data-testid="blanko-selection-ring"
+            style={{
+              position: "absolute",
+              inset: -5,
+              borderRadius: 18,
+              border: `2px solid ${ACCENT}`,
+              boxShadow: `0 0 0 3px ${ACCENT}22`,
+              pointerEvents: "none",
+              zIndex: 0,
+            }}
+          />
+        )}
+        {isFlash && (
+          <div
+            data-testid="blanko-node-flash"
+            style={{
+              position: "absolute",
+              inset: -6,
+              borderRadius: 18,
+              border: `2px solid ${ACCENT}`,
+              boxShadow: `0 0 18px ${ACCENT}55`,
+              pointerEvents: "none",
+              zIndex: 3,
+              animation: "blankoFlash 1.6s ease-out",
+            }}
+          />
+        )}
+        {showHealthBadges && (findingMeta?.count || hasDesignAlert) ? (
+          <button
+            type="button"
+            data-testid="blanko-health-badge"
+            data-severity={findingMeta?.severity ?? "risk"}
+            title={`${findingMeta?.count ?? 1} finding(s)`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onHealthBadgeClick?.(node.id);
+            }}
+            style={{
+              position: "absolute",
+              top: -6,
+              right: -6,
+              minWidth: 18,
+              height: 18,
+              padding: "0 5px",
+              borderRadius: 999,
+              background:
+                findingMeta?.severity === "blocker" || !findingMeta
+                  ? "#ef4444"
+                  : findingMeta.severity === "risk"
+                    ? "#d97706"
+                    : "#22c55e",
+              border: `2px solid ${CANVAS}`,
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 700,
+              fontFamily: FONT_MONO,
+              zIndex: 4,
+              cursor: onHealthBadgeClick ? "pointer" : "default",
+              lineHeight: "14px",
+            }}
+          >
+            {findingMeta?.count ?? "!"}
+          </button>
+        ) : null}
+
+        {layerSummary ? <LayerSummaryBadge summary={layerSummary} isLight /> : null}
+        {showStrategyMarker ? (
+          <div
+            data-testid="blanko-strategy-marker"
+            title="Strategy module"
+            style={{
+              position: "absolute",
+              top: 6,
+              right: 6,
+              zIndex: 5,
+              fontSize: 9,
+              fontWeight: 800,
+              letterSpacing: "0.06em",
+              color: "#047857",
+              background: "rgba(16, 185, 129, 0.15)",
+              border: "1px solid rgba(16, 185, 129, 0.45)",
+              borderRadius: 4,
+              padding: "2px 5px",
+              fontFamily: FONT_MONO,
+            }}
+          >
+            STR
+          </div>
+        ) : null}
+
+        <div
+          style={{
+            background: CANVAS,
+            border: `1px solid ${node.isSelected ? ACCENT : LINE}`,
+            borderRadius: 14,
+            padding: "14px 12px 12px",
+            boxShadow: "0 1px 2px rgba(18,19,26,0.04), 0 4px 12px rgba(18,19,26,0.04)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          <div
+            data-testid="blanko-node-icon"
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 12,
+              background: PAPER,
+              border: `1px solid ${LINE}`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              position: "relative",
+              flexShrink: 0,
+            }}
+          >
+            {providerId ? (
+              <ProviderIcon providerId={providerId} size={28} chip={false} />
+            ) : (
+              <span style={{ fontSize: 22, lineHeight: 1, color: ACCENT }} title={techKind}>
+                {techIcon}
+              </span>
+            )}
+            {cockpitShowBindBuild && bindStatus && (
+              <span
+                data-testid="blanko-bind-status"
+                data-status={bindStatus}
+                title={`Bind: ${bindStatus}`}
+                style={{
+                  position: "absolute",
+                  bottom: -2,
+                  right: -2,
+                  width: 9,
+                  height: 9,
+                  borderRadius: "50%",
+                  background:
+                    bindStatus === "connected"
+                      ? ACCENT
+                      : bindStatus === "missing_credentials"
+                        ? SLATE
+                        : LINE,
+                  border: `1.5px solid ${CANVAS}`,
+                }}
+              />
+            )}
+            {(node as { isTrigger?: boolean }).isTrigger && (
+              <span
+                title="Trigger"
+                style={{
+                  position: "absolute",
+                  top: -4,
+                  left: -4,
+                  width: 14,
+                  height: 14,
+                  borderRadius: "50%",
+                  background: ACCENT,
+                  color: CANVAS,
+                  fontSize: 9,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  border: `1.5px solid ${CANVAS}`,
+                }}
+              >
+                ⚡
+              </span>
+            )}
+          </div>
+          <div style={{ textAlign: "center", width: "100%", minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 650,
+                color: isDeactivated ? SLATE : INK,
+                lineHeight: 1.25,
+                letterSpacing: "-0.01em",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                textDecoration: isDeactivated ? "line-through" : undefined,
+              }}
+              title={label}
+            >
+              {shortTitle}
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+                flexWrap: "wrap",
+              }}
+            >
+              {roleBadge && (
+                <span
+                  data-testid="blanko-node-role"
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 9,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    color: SLATE,
+                    background: PAPER,
+                    border: `1px solid ${LINE}`,
+                    borderRadius: 6,
+                    padding: "2px 6px",
+                  }}
+                >
+                  {roleBadge}
+                </span>
+              )}
+              {isDeactivated && (
+                <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: "#ef4444" }}>OFF</span>
+              )}
+            </div>
+            {sub && zoom >= 0.7 && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 10,
+                  color: SLATE,
+                  lineHeight: 1.3,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={sub}
+              >
+                {sub}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Handle type="target" position={Position.Left} style={{ ...handleStyle, left: -5 }} />
+        <Handle type="source" position={Position.Right} style={{ ...handleStyle, right: -5 }} />
+        <Handle type="target" position={Position.Top} id="top" style={{ ...handleStyle, top: -5 }} />
+        <Handle type="source" position={Position.Bottom} id="bottom" style={{ ...handleStyle, bottom: -5 }} />
+      </div>
+    );
+  }
+
   const sizeBucket =
     fileCount === 0
       ? "empty"
@@ -251,21 +685,128 @@ function ArchNodeComponent({
             ? "medium"
             : "large";
 
+  const defaultBorderColor = node.isSelected
+    ? isLight
+      ? ACCENT
+      : cfg.color
+    : node.isDrift
+      ? "#f85149"
+      : isLight
+        ? LINE
+        : `${cfg.accent}88`;
+  // Design mode build plan (workstream D): dashed = planned, accent = building, default solid = built.
+  const buildStatusBorderCss =
+    buildStatus === "planned"
+      ? `1.5px dashed ${isLight ? ACCENT : cfg.accent}99`
+      : buildStatus === "building"
+        ? `2px solid ${ACCENT}`
+        : `1px solid ${defaultBorderColor}`;
+
   return (
-    <div style={{ width: NODE_W, minWidth: 0, position: "relative" }}>
+    <div
+      data-testid="blanko-arch-node"
+      data-node-id={node.id}
+      data-provider-id={providerId ?? ""}
+      style={{
+        width: NODE_W,
+        minWidth: 0,
+        position: "relative",
+        opacity: isDeactivated ? 0.55 : 1,
+      }}
+    >
       {node.isSelected && (
         <div
+          data-testid="blanko-selection-ring"
           style={{
             position: "absolute",
-            inset: -12,
+            inset: isLight ? -6 : -12,
             borderRadius: 16,
-            background: cfg.glow,
+            background: isLight ? "transparent" : cfg.glow,
+            border: isLight ? `2px solid ${ACCENT}` : undefined,
+            boxShadow: isLight ? `0 0 0 4px ${ACCENT}22` : undefined,
             pointerEvents: "none",
             zIndex: 0,
-            filter: "blur(8px)",
+            filter: isLight ? undefined : "blur(8px)",
           }}
         />
       )}
+      {isFlash && (
+        <div
+          data-testid="blanko-node-flash"
+          style={{
+            position: "absolute",
+            inset: -8,
+            borderRadius: 14,
+            border: `2px solid ${ACCENT}`,
+            boxShadow: `0 0 20px ${ACCENT}66`,
+            pointerEvents: "none",
+            zIndex: 3,
+            animation: "blankoFlash 1.6s ease-out",
+          }}
+        />
+      )}
+      {showHealthBadges && (findingMeta?.count || hasDesignAlert) ? (
+        <button
+          type="button"
+          data-testid="blanko-health-badge"
+          data-severity={findingMeta?.severity ?? "risk"}
+          title={`${findingMeta?.count ?? 1} finding(s) — open Insights`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onHealthBadgeClick?.(node.id);
+          }}
+          style={{
+            position: "absolute",
+            top: -6,
+            right: -6,
+            minWidth: 18,
+            height: 18,
+            padding: "0 5px",
+            borderRadius: 999,
+            background:
+              findingMeta?.severity === "blocker" || !findingMeta
+                ? "#ef4444"
+                : findingMeta.severity === "risk"
+                  ? "#d97706"
+                  : "#22c55e",
+            border: `2px solid ${isLight ? CANVAS : "#0d1117"}`,
+            color: "#fff",
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: "monospace",
+            zIndex: 4,
+            cursor: onHealthBadgeClick ? "pointer" : "default",
+            lineHeight: "14px",
+          }}
+        >
+          {findingMeta?.count ?? "!"}
+        </button>
+      ) : null}
+
+      {layerSummary ? <LayerSummaryBadge summary={layerSummary} isLight={isLight} /> : null}
+      {showStrategyMarker ? (
+        <div
+          data-testid="blanko-strategy-marker"
+          title="Strategy module"
+          style={{
+            position: "absolute",
+            top: 4,
+            left: 4,
+            zIndex: 5,
+            fontSize: 9,
+            fontWeight: 800,
+            letterSpacing: "0.06em",
+            color: "#34d399",
+            background: "rgba(16, 185, 129, 0.2)",
+            border: "1px solid rgba(52, 211, 153, 0.5)",
+            borderRadius: 4,
+            padding: "2px 5px",
+            fontFamily: FONT_MONO,
+          }}
+        >
+          STR
+        </div>
+      ) : null}
 
       {data.isHighlighted && (
         <div
@@ -397,9 +938,13 @@ function ArchNodeComponent({
 
       <div
         style={{
-          background: node.isDrift
-            ? "linear-gradient(150deg,#1a0606,#150c0c)"
-            : `linear-gradient(150deg,${cfg.dim},#0c1220)`,
+          background: isLight
+            ? node.isDrift
+              ? "#FFF5F5"
+              : CANVAS
+            : node.isDrift
+              ? "linear-gradient(150deg,#1a0606,#150c0c)"
+              : `linear-gradient(150deg,${cfg.dim},#0c1220)`,
           borderTop: "none",
           borderRight: isVirtual
             ? isVirtualError
@@ -415,13 +960,7 @@ function ArchNodeComponent({
                 ? "2px solid #f97316"
                 : hasMedium
                   ? "1px dashed #eab308"
-                  : `1px solid ${
-                      node.isSelected
-                        ? cfg.color
-                        : node.isDrift
-                          ? "#f85149"
-                          : `${cfg.accent}88`
-                    }`,
+                  : buildStatusBorderCss,
           borderBottom: isVirtual
             ? isVirtualError
               ? "2px dashed #f85149"
@@ -436,13 +975,7 @@ function ArchNodeComponent({
                 ? "2px solid #f97316"
                 : hasMedium
                   ? "1px dashed #eab308"
-                  : `1px solid ${
-                      node.isSelected
-                        ? cfg.color
-                        : node.isDrift
-                          ? "#f85149"
-                          : `${cfg.accent}88`
-                    }`,
+                  : buildStatusBorderCss,
           borderLeft: isVirtual
             ? isVirtualError
               ? "2px dashed #f85149"
@@ -457,18 +990,16 @@ function ArchNodeComponent({
                 ? "2px solid #f97316"
                 : hasMedium
                   ? "1px dashed #eab308"
-                  : `1px solid ${
-                      node.isSelected
-                        ? cfg.color
-                        : node.isDrift
-                          ? "#f85149"
-                          : `${cfg.accent}88`
-                    }`,
+                  : buildStatusBorderCss,
           borderRadius: "0 0 8px 8px",
           padding: `${8 * densityFactor}px 12px ${12 * densityFactor}px`,
           position: "relative",
           zIndex: 1,
-          boxShadow: node.isDrift
+          boxShadow: isLight
+            ? node.isDrift
+              ? "0 1px 2px rgba(18,19,26,0.06), 0 0 0 1px #f8514933"
+              : "0 1px 2px rgba(18,19,26,0.06)"
+            : node.isDrift
             ? "0 4px 0 #f8514933, 0 7px 0 #f8514918, 0 10px 0 #f851490a, 0 16px 28px rgba(0,0,0,0.6), 0 0 0 1px #f85149"
             : isVirtual
               ? isVirtualError
@@ -483,7 +1014,11 @@ function ArchNodeComponent({
               ]
                 .filter(Boolean)
                 .join(", "),
-          animation: node.isDrift ? "driftGlow 2s ease infinite" : undefined,
+          animation:
+            node.isDrift &&
+            !(typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+              ? "driftGlow 2s ease infinite"
+              : undefined,
         }}
       >
         <div
@@ -495,42 +1030,103 @@ function ArchNodeComponent({
           }}
         >
           <div
+            data-testid="blanko-node-icon"
             style={{
-              width: Math.round(28 * sizeFactor),
-              height: Math.round(28 * sizeFactor),
+              width: Math.round(32 * sizeFactor),
+              height: Math.round(32 * sizeFactor),
               borderRadius: 8,
-              background: "#020617",
+              background: isLight ? "#FAFAFA" : "#020617",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              boxShadow: `0 0 0 1px ${techColor}33`,
+              boxShadow: isLight ? `0 0 0 1px ${LINE}` : `0 0 0 1px ${techColor}33`,
+              position: "relative",
+              flexShrink: 0,
             }}
           >
-            <span
-              style={{
-                fontSize: iconSize,
-                lineHeight: 1,
-              }}
-              title={techKind}
-            >
-              {techIcon}
-            </span>
+            {providerId ? (
+              <ProviderIcon providerId={providerId} size={Math.round(20 * sizeFactor)} chip={false} />
+            ) : (
+              <span
+                style={{
+                  fontSize: iconSize,
+                  lineHeight: 1,
+                  color: isLight ? ACCENT : undefined,
+                }}
+                title={techKind}
+              >
+                {techIcon}
+              </span>
+            )}
+            {cockpitShowBindBuild && bindStatus && (
+              <span
+                data-testid="blanko-bind-status"
+                data-status={bindStatus}
+                title={`Bind: ${bindStatus}`}
+                style={{
+                  position: "absolute",
+                  bottom: -2,
+                  right: -2,
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background:
+                    bindStatus === "connected"
+                      ? ACCENT
+                      : bindStatus === "missing_credentials"
+                        ? SLATE
+                        : LINE,
+                  border: `1.5px solid ${isLight ? CANVAS : "#020617"}`,
+                  boxSizing: "border-box",
+                }}
+              />
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
             <span
               style={{
                 fontSize: labelSize,
                 fontWeight: 600,
-                color: "#e2e8f0",
+                color: isDeactivated ? SLATE : isLight ? INK : "#e2e8f0",
                 fontFamily: "'JetBrains Mono','Fira Code',monospace",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
+                textDecoration: isDeactivated ? "line-through" : undefined,
               }}
-              title={label}
+              title={isDeactivated ? `${label} (Deactivated)` : label}
             >
               {label}
             </span>
+            {subtitle && (
+              <span
+                style={{
+                  fontSize: 8 * sizeFactor,
+                  color: "#8b949e",
+                  fontFamily: "monospace",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: NODE_W - 48,
+                }}
+                title={subtitle}
+              >
+                {subtitle}
+              </span>
+            )}
+            {isDeactivated && (
+              <span
+                style={{
+                  fontSize: 7 * sizeFactor,
+                  color: "#f85149",
+                  fontFamily: "monospace",
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Deactivated
+              </span>
+            )}
             {showLayer && (
             <div style={{ display: "flex", alignItems: "center", gap: 4, maxWidth: NODE_W - 60 }}>
               <span
@@ -572,19 +1168,39 @@ function ArchNodeComponent({
           </div>
         </div>
 
-        {showProviderModel && (node.llmProvider || node.modelVersion) && (
-          <div
-            style={{
-              fontSize: 8,
-              color: "#8b949e",
-              marginBottom: 4,
-              fontFamily: "monospace",
-            }}
-            title={`${node.llmProvider ?? ""} ${node.modelVersion ?? ""}`.trim()}
-          >
-            {[node.llmProvider, node.modelVersion].filter(Boolean).join(" · ")}
-          </div>
-        )}
+        {showProviderModel && (node.llmProvider || node.modelVersion) && (() => {
+          const binding = primaryBinding(node);
+          const providerId = binding?.providerId ?? node.llmProvider;
+          return (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 8,
+                color: "#8b949e",
+                marginBottom: 4,
+                fontFamily: "monospace",
+              }}
+              title={`${node.llmProvider ?? ""} ${node.modelVersion ?? ""}`.trim()}
+            >
+              {providerId && <ProviderIcon providerId={providerId} size={12} />}
+              <span>{[node.llmProvider, node.modelVersion].filter(Boolean).join(" · ")}</span>
+              {binding && (
+                <span
+                  title={`Platform binding: ${binding.status}`}
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: bindingStatusColor(binding.status),
+                    flexShrink: 0,
+                  }}
+                />
+              )}
+            </div>
+          );
+        })()}
 
         {showTags && tags.length > 0 && (
           <div
@@ -647,6 +1263,7 @@ function ArchNodeComponent({
           </div>
         )}
 
+        {showMicroBadges && (
         <div
           style={{
             display: "flex",
@@ -737,6 +1354,7 @@ function ArchNodeComponent({
             </span>
           )}
         </div>
+        )}
 
         {showFileCount && (
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5 }}>
@@ -973,7 +1591,7 @@ const EDGE_PALETTE = {
   drift: { stroke: "#f85149", glow: "rgba(239,68,68,0.4)" },
   violation: { stroke: "#d29922", glow: "rgba(245,158,11,0.35)" },
   trace: { stroke: "#c084fc", glow: "rgba(192,132,252,0.25)" },
-  architectural: { stroke: "#58a6ff", glow: "rgba(96,165,250,0.2)" },
+  architectural: { stroke: "#ef32a6", glow: "rgba(96,165,250,0.2)" },
   utility: { stroke: "#8b949e", glow: "rgba(148,163,184,0.1)" },
 };
 
@@ -986,8 +1604,9 @@ function ArchEdgeComponent({
   sourcePosition,
   targetPosition,
   data,
+  selected,
 }: EdgeProps) {
-  const [path] = getBezierPath({
+  const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
@@ -1002,17 +1621,30 @@ function ArchEdgeComponent({
   const runtimeErrorRate = (data as any)?.runtimeErrorRate as number | undefined;
   const importance = data?.importance as "architectural" | "utility" | "config" | undefined;
   const sourceLayer = (data as any)?.sourceLayer as string | undefined;
+  const relation = (data as any)?.relation as EdgeRelation | undefined;
+  const showRelationLabel = !!(data as any)?.designMode && relation;
+  const branchLabel = (data as any)?.branchLabel as string | undefined;
+  const showBranchLabel = !!branchLabel;
+  const edgeCaption = showBranchLabel
+    ? branchLabel
+    : showRelationLabel
+      ? relationLabel(relation)
+      : null;
   const layerCfg = sourceLayer && LAYER_CFG[sourceLayer] ? LAYER_CFG[sourceLayer] : null;
   const isArchitectural = importance === "architectural" || isDrift || isLayerViolation;
+  const isLight = (data as any)?.theme === "light";
 
   let runtimeStroke: string | null = null;
   const hasHighEdgeErrorRate = (runtimeErrorRate ?? 0) > 0.1;
-  if (hasHighEdgeErrorRate) {
-    runtimeStroke = "#f85149";
-  } else if (typeof runtimeLatencyMs === "number") {
-    if (runtimeLatencyMs < 100) runtimeStroke = "#3fb950";
-    else if (runtimeLatencyMs < 300) runtimeStroke = "#eab308";
-    else runtimeStroke = "#f85149";
+  // Light canvas: keep edges slate — no runtime rainbow spaghetti.
+  if (!isLight) {
+    if (hasHighEdgeErrorRate) {
+      runtimeStroke = "#f85149";
+    } else if (typeof runtimeLatencyMs === "number") {
+      if (runtimeLatencyMs < 100) runtimeStroke = "#3fb950";
+      else if (runtimeLatencyMs < 300) runtimeStroke = "#eab308";
+      else runtimeStroke = "#f85149";
+    }
   }
   const stroke = isDrift
     ? EDGE_PALETTE.drift.stroke
@@ -1022,19 +1654,39 @@ function ArchEdgeComponent({
         ? EDGE_PALETTE.trace.stroke
         : runtimeStroke
           ? runtimeStroke
-          : isArchitectural
-            ? layerCfg?.accent ?? EDGE_PALETTE.architectural.stroke
-            : EDGE_PALETTE.utility.stroke;
+          : isLight
+            ? selected
+              ? ACCENT
+              : isArchitectural
+                ? "#9CA3AF"
+                : "#D1D5DB"
+            : isArchitectural
+              ? layerCfg?.accent ?? EDGE_PALETTE.architectural.stroke
+              : EDGE_PALETTE.utility.stroke;
   const glow = isDrift
     ? EDGE_PALETTE.drift.glow
     : isLayerViolation
       ? EDGE_PALETTE.violation.glow
       : inTrace
         ? EDGE_PALETTE.trace.glow
-        : isArchitectural
-          ? layerCfg ? `${layerCfg.color}33` : EDGE_PALETTE.architectural.glow
-          : EDGE_PALETTE.utility.glow;
-  const strokeOpacity = isArchitectural || inTrace || runtimeStroke ? 1 : 0.55;
+        : isLight
+          ? selected
+            ? `${ACCENT}33`
+            : "rgba(107,114,128,0.06)"
+          : isArchitectural
+            ? layerCfg
+              ? `${layerCfg.color}33`
+              : EDGE_PALETTE.architectural.glow
+            : EDGE_PALETTE.utility.glow;
+  const strokeOpacity = isLight
+    ? selected || showBranchLabel
+      ? 1
+      : isArchitectural
+        ? 0.75
+        : 0.45
+    : isArchitectural || inTrace || runtimeStroke
+      ? 1
+      : 0.55;
 
   const violationStrokeDash = "2 4";
   const driftStrokeDash = "6 3";
@@ -1062,15 +1714,55 @@ function ArchEdgeComponent({
         markerEnd={`url(#arrowhead-${isDrift ? "drift" : isLayerViolation ? "violation" : "normal"})`}
       >
         <title>
-          {isDrift
-            ? (data as any)?.driftReason ?? "Architecture drift"
-            : isLayerViolation
-              ? "Layer violation"
-              : importance === "architectural"
-                ? "Architectural import edge"
-                : "Import edge"}
+          {edgeCaption
+            ? edgeCaption
+            : isDrift
+              ? (data as any)?.driftReason ?? "Architecture drift"
+              : isLayerViolation
+                ? "Layer violation"
+                : importance === "architectural"
+                  ? "Architectural import edge"
+                  : "Import edge"}
         </title>
       </path>
+      {edgeCaption && (
+        <EdgeLabelRenderer>
+          <div
+            data-testid="design-edge-relation-label"
+            style={{
+              position: "absolute",
+              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+              pointerEvents: "all",
+              fontSize: isLight ? 11 : 10,
+              fontFamily: isLight ? FONT_UI : "monospace",
+              fontWeight: isLight ? 600 : 400,
+              padding: isLight ? "3px 8px" : "2px 6px",
+              borderRadius: isLight ? 6 : 4,
+              background: selected
+                ? isLight
+                  ? `${ACCENT}18`
+                  : "rgba(88,166,255,0.25)"
+                : isLight
+                  ? CANVAS
+                  : "rgba(22,27,34,0.92)",
+              border: selected
+                ? `1px solid ${ACCENT}`
+                : (data as any)?.hasDesignAlert
+                  ? "1px solid #f85149"
+                  : isLight
+                    ? `1px solid ${LINE}`
+                    : "1px solid #30363d",
+              color: isLight ? INK : "#e6edf3",
+              whiteSpace: "nowrap",
+              zIndex: 1,
+              boxShadow: isLight ? "0 1px 3px rgba(18,19,26,0.08)" : undefined,
+            }}
+            className="nodrag nopan"
+          >
+            {edgeCaption}
+          </div>
+        </EdgeLabelRenderer>
+      )}
       {isDrift && (
         <circle r={3.5} fill="#f85149" className="arch-edge-drift-dot">
           <animateMotion dur="1.8s" repeatCount="indefinite" path={path} />
@@ -1089,7 +1781,7 @@ function ArchEdgeComponent({
       {!isDrift && !isLayerViolation && !inTrace && (runtimeStroke || (data as any)?.runtimeLive) && (
         <circle
           r={2}
-          fill={runtimeStroke ?? "#58a6ff"}
+          fill={runtimeStroke ?? "#ef32a6"}
           opacity={0.8}
         >
           <animateMotion dur="2s" repeatCount="indefinite" path={path} />
@@ -1099,6 +1791,8 @@ function ArchEdgeComponent({
   );
 }
 
+// P3d gate: no mousemove-driven setState; regions are static nodes rendered
+// once from layout data, not re-rendered on hover/pointer position.
 function DomainRegionComponent({
   data,
 }: NodeProps<{ domain: string; colors: { fill: string; border: string } }>) {
@@ -1132,6 +1826,154 @@ function DomainRegionComponent({
         }}
       >
         {domain}
+      </div>
+    </div>
+  );
+}
+
+const SUBSYSTEM_REGION_COLORS: Record<NodeSubsystem, { fill: string; border: string; title: string }> = {
+  ingress: { fill: "rgba(56, 189, 248, 0.10)", border: "rgba(14, 165, 233, 0.45)", title: "#0369a1" },
+  strategy: { fill: "rgba(52, 211, 153, 0.10)", border: "rgba(16, 185, 129, 0.45)", title: "#047857" },
+  risk_execution: { fill: "rgba(251, 146, 60, 0.10)", border: "rgba(234, 88, 12, 0.45)", title: "#c2410c" },
+  data_obs: { fill: "rgba(167, 139, 250, 0.10)", border: "rgba(124, 58, 237, 0.4)", title: "#6d28d9" },
+  unclassified: { fill: "rgba(148, 163, 184, 0.10)", border: "rgba(100, 116, 139, 0.4)", title: "#475569" },
+};
+
+function SubsystemRegionComponent({
+  data,
+}: NodeProps<{
+  subsystem: NodeSubsystem;
+  label: string;
+  readiness: string;
+  nodeCount: number;
+  highlighted?: boolean;
+}>) {
+  const colors = SUBSYSTEM_REGION_COLORS[data.subsystem] ?? SUBSYSTEM_REGION_COLORS.unclassified;
+  return (
+    <div
+      data-testid={`blanko-subsystem-region-${data.subsystem}`}
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: colors.fill,
+        border: data.highlighted ? `2px solid ${colors.border}` : `1px solid ${colors.border}`,
+        borderRadius: 14,
+        pointerEvents: "all",
+        cursor: "pointer",
+        boxShadow: data.highlighted
+          ? `0 0 0 3px ${colors.border}33`
+          : "inset 0 0 0 1px rgba(255,255,255,0.03)",
+      }}
+      title={`${data.label} — click for Insights`}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 14,
+          right: 14,
+          fontFamily: FONT_UI,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: colors.title,
+            letterSpacing: "0.02em",
+          }}
+        >
+          {data.label}
+          <span style={{ fontWeight: 500, opacity: 0.7, marginLeft: 8 }}>
+            {data.nodeCount} module{data.nodeCount === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div
+          data-testid={`blanko-subsystem-readiness-${data.subsystem}`}
+          style={{
+            marginTop: 4,
+            fontSize: 10,
+            color: colors.title,
+            opacity: 0.85,
+            lineHeight: 1.35,
+          }}
+        >
+          {data.readiness}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** n8n sticky-note grouping containers — absolute coords, behind nodes. */
+const N8N_STICKY_FILL: Record<number, { fill: string; border: string; title: string }> = {
+  1: { fill: "rgba(255, 198, 92, 0.18)", border: "rgba(255, 198, 92, 0.55)", title: "#e3b341" },
+  2: { fill: "rgba(125, 211, 252, 0.16)", border: "rgba(125, 211, 252, 0.5)", title: "#7dd3fc" },
+  3: { fill: "rgba(134, 239, 172, 0.16)", border: "rgba(134, 239, 172, 0.5)", title: "#86efac" },
+  4: { fill: "rgba(252, 165, 165, 0.16)", border: "rgba(252, 165, 165, 0.5)", title: "#fca5a5" },
+  5: { fill: "rgba(196, 181, 253, 0.16)", border: "rgba(196, 181, 253, 0.5)", title: "#c4b5fd" },
+  6: { fill: "rgba(253, 186, 116, 0.16)", border: "rgba(253, 186, 116, 0.5)", title: "#fdba74" },
+  7: { fill: "rgba(165, 180, 252, 0.16)", border: "rgba(165, 180, 252, 0.5)", title: "#a5b4fc" },
+};
+
+/** Light sticky groups — amber/gold like n8n sticky notes, readable on white. */
+const N8N_STICKY_FILL_LIGHT: Record<
+  number,
+  { fill: string; border: string; title: string }
+> = {
+  1: { fill: "rgba(245, 158, 11, 0.14)", border: "rgba(217, 119, 6, 0.45)", title: "#92400E" },
+  2: { fill: "rgba(251, 191, 36, 0.16)", border: "rgba(245, 158, 11, 0.5)", title: "#B45309" },
+  3: { fill: "rgba(253, 230, 138, 0.35)", border: "rgba(217, 119, 6, 0.4)", title: "#92400E" },
+  4: { fill: "rgba(254, 243, 199, 0.55)", border: "rgba(180, 83, 9, 0.35)", title: "#78350F" },
+  5: { fill: "rgba(245, 158, 11, 0.1)", border: "rgba(180, 83, 9, 0.3)", title: "#92400E" },
+  6: { fill: "rgba(251, 191, 36, 0.12)", border: "rgba(217, 119, 6, 0.38)", title: "#B45309" },
+  7: { fill: "rgba(253, 224, 71, 0.18)", border: "rgba(202, 138, 4, 0.4)", title: "#854D0E" },
+};
+
+function N8nGroupComponent({
+  data,
+}: NodeProps<{ label: string; color?: number | string; theme?: CanvasThemeName }>) {
+  const colorIdx = typeof data.color === "number" ? data.color : Number(data.color) || 5;
+  const light = data.theme === "light";
+  const colors = light
+    ? N8N_STICKY_FILL_LIGHT[colorIdx] ?? N8N_STICKY_FILL_LIGHT[5]!
+    : N8N_STICKY_FILL[colorIdx] ?? N8N_STICKY_FILL[5]!;
+  return (
+    <div
+      data-testid="blanko-n8n-group"
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        background: colors.fill,
+        border: light ? `1.5px solid ${colors.border}` : `1px solid ${colors.border}`,
+        borderRadius: light ? 14 : 10,
+        pointerEvents: "none",
+        boxShadow: light
+          ? "inset 0 0 0 1px rgba(146,64,14,0.04)"
+          : "inset 0 0 0 1px rgba(255,255,255,0.03)",
+      }}
+      title={data.label}
+    >
+      <div
+        style={{
+          position: "absolute",
+          top: light ? 12 : 10,
+          left: 14,
+          right: 14,
+          fontSize: light ? 13 : 12,
+          fontWeight: 700,
+          fontFamily: light ? FONT_UI : undefined,
+          color: colors.title,
+          opacity: light ? 1 : 0.85,
+          letterSpacing: "0.01em",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {data.label}
       </div>
     </div>
   );
@@ -1286,6 +2128,8 @@ const NODE_TYPES = {
   arch: ArchNodeComponent,
   band: LayerBandComponent,
   domainRegion: DomainRegionComponent,
+  subsystemRegion: SubsystemRegionComponent,
+  n8nGroup: N8nGroupComponent,
   annotation: AnnotationStickyComponent,
 } as const;
 const EDGE_TYPES = { arch: ArchEdgeComponent } as const;
@@ -1337,6 +2181,11 @@ interface Props {
   selectedNodeData?: ArchNode | null;
   repoUrl?: string;
   onNodeSelect: (id: string | null) => void;
+  /** Colored cockpit box (ingress / strategy / …) → Insights. */
+  selectedSubsystem?: NodeSubsystem | null;
+  onSubsystemSelect?: (subsystem: NodeSubsystem | null) => void;
+  /** Double-click opens Inspect overlay (blanko shell). */
+  onNodeDoubleClick?: (id: string) => void;
   edgeFilter?: EdgeFilter | Set<EdgeFilter>;
   /** Filter which node subsets to show (core, databases, queues, utilities, external). */
   nodeFilter?: NodeFilter | Set<NodeFilter>;
@@ -1397,6 +2246,36 @@ interface Props {
   captureViewRef?: React.MutableRefObject<(() => { viewport2D?: { x: number; y: number; zoom: number }; camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } }) | null>;
   /** When set, apply this viewport to 2D canvas (from active scene state). */
   viewportToApply?: { x: number; y: number; zoom: number } | null;
+  /** Phase 1 greenfield: design DAG authoring (no materialize). */
+  designMode?: boolean;
+  /** Drop palette item onto canvas at flow coords. */
+  onDesignDrop?: (paletteId: string, flowPosition: { x: number; y: number }) => void;
+  /** Connect two design nodes via handles (optional relation from picker). */
+  onDesignConnect?: (fromId: string, toId: string, relation?: EdgeRelation) => void;
+  /** Select a design edge for inspect. */
+  onDesignEdgeSelect?: (edgeId: string | null) => void;
+  /** Delete selected design nodes. */
+  onDesignDeleteNodes?: (nodeIds: string[]) => void;
+  /** Delete selected design edges. */
+  onDesignDeleteEdges?: (edgeIds: string[]) => void;
+  /** Persist a dragged design node's canvas position (workstream E). */
+  onDesignNodeMove?: (nodeId: string, position: { x: number; y: number }) => void;
+  /** Override empty-canvas coaching copy. */
+  emptyStateHint?: string;
+  /** Open the left Build library (empty canvas Design CTA). */
+  onOpenBuild?: () => void;
+  /** Node ids with blocker/risk findings (design mode markers). */
+  designAlertNodeIds?: string[];
+  /** Edge ids with blocker/risk findings. */
+  designAlertEdgeIds?: string[];
+  /** Per-node finding counts for health badges (Phase 5). */
+  designFindingCounts?: Record<string, { count: number; severity: "blocker" | "risk" | "suggestion" }>;
+  /** Show health badges on nodes (default true when findings exist). */
+  showHealthBadges?: boolean;
+  /** Click a health badge — typically opens Insights filtered to that node. */
+  onHealthBadgeClick?: (nodeId: string) => void;
+  /** Briefly flash these node ids after Accept. */
+  flashNodeIds?: string[];
 }
 
 type LegendHighlight =
@@ -1412,6 +2291,9 @@ export function ArchCanvas({
   selectedNodeData,
   repoUrl,
   onNodeSelect,
+  selectedSubsystem = null,
+  onSubsystemSelect,
+  onNodeDoubleClick,
   edgeFilter = DEFAULT_EDGE_FILTER,
   nodeFilter,
   persona,
@@ -1445,18 +2327,55 @@ export function ArchCanvas({
   vulnerableNodeIds,
   captureViewRef,
   viewportToApply,
+  designMode = false,
+  onDesignDrop,
+  onDesignConnect,
+  onDesignEdgeSelect,
+  onDesignDeleteNodes,
+  onDesignDeleteEdges,
+  onDesignNodeMove,
+  emptyStateHint,
+  onOpenBuild,
+  designAlertNodeIds = [],
+  designAlertEdgeIds = [],
+  designFindingCounts = {},
+  showHealthBadges = true,
+  onHealthBadgeClick,
+  flashNodeIds = [],
 }: Props) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [building, setBuilding] = useState(true);
+  const [pendingRelation, setPendingRelation] = useState<{
+    fromId: string;
+    toId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!pendingRelation) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onDesignConnect?.(pendingRelation.fromId, pendingRelation.toId, DEFAULT_DESIGN_RELATION);
+        setPendingRelation(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pendingRelation, onDesignConnect]);
   const [legendHighlight, setLegendHighlight] = useState<LegendHighlight>(null);
   const [tracePathNodeIds, setTracePathNodeIds] = useState<string[] | null>(null);
   const [sceneNodeOverrides2D, setSceneNodeOverrides2D] = useState<Record<string, { x: number; y: number }>>({});
   const [undoStack, setUndoStack] = useState<Array<Record<string, { x: number; y: number }>>>([]);
   const [redoStack, setRedoStack] = useState<Array<Record<string, { x: number; y: number }>>>([]);
-  const reactFlowInstanceRef = useRef<
-    { fitView: (opts?: { padding?: number }) => void; getViewport?: () => { x: number; y: number; zoom: number }; setViewport?: (v: { x: number; y: number; zoom: number }) => void } | null
-  >(null);
+  const reactFlowInstanceRef = useRef<{
+    fitView: (opts?: { padding?: number }) => void;
+    getViewport?: () => { x: number; y: number; zoom: number };
+    setViewport?: (v: { x: number; y: number; zoom: number }) => void;
+    screenToFlowPosition?: (p: { x: number; y: number }) => { x: number; y: number };
+    project?: (p: { x: number; y: number }) => { x: number; y: number };
+  } | null>(null);
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const flowParentRef = useRef<HTMLDivElement | null>(null);
   // Start at 0: ReactFlow must not mount until ResizeObserver measures real size.
@@ -1708,6 +2627,9 @@ export function ArchCanvas({
     return activeSceneStateId ? s.find((x) => x.id === activeSceneStateId) ?? null : null;
   }, [scene, activeSceneStateId]);
 
+  const [showLayerBands, setShowLayerBands] = useState(false);
+  const [legendCollapsed, setLegendCollapsed] = useState(true);
+
   const rawBuild = useCallback(() => {
     const nodeIds = graph.nodes.map((n) => n.id).sort().join(",");
     const graphKey = `${graph.generatedAt ?? 0}-${nodeIds}`;
@@ -1746,7 +2668,28 @@ export function ArchCanvas({
     let nodePositions: Map<string, { x: number; y: number }>;
     let layerBands: Array<{ id: string; layer: string; x: number; y: number; width: number; height: number }>;
     let domainRegions: DomainRegion[] = [];
-    if (effectiveLayoutMode === "domain") {
+    let subsystemRegions: SubsystemRegion[] = [];
+
+    const graphForSubsystem = {
+      ...effectiveGraphForRender,
+      nodes: effectiveGraphForRender.nodes.map((n) => ({
+        ...n,
+        subsystem: n.subsystem ?? classifySubsystem(n).subsystem,
+      })),
+    };
+
+    const subsystemNodeSize = {
+      nodeW: theme === "light" ? NODE_W_LIGHT : NODE_W,
+      // Light cards can grow with badges; keep a taller budget so boxes enclose cards.
+      nodeH: theme === "light" ? 118 : 100,
+    };
+
+    if (effectiveLayoutMode === "subsystem") {
+      const r = computeSubsystemLayout(graphForSubsystem, subsystemNodeSize);
+      nodePositions = r.nodePositions;
+      layerBands = [];
+      subsystemRegions = r.subsystemRegions;
+    } else if (effectiveLayoutMode === "domain") {
       const r = computeDomainLayout(personaFiltered);
       nodePositions = r.nodePositions;
       layerBands = r.layerBands;
@@ -1754,17 +2697,48 @@ export function ArchCanvas({
     } else if (effectiveLayoutMode === "elk" && elkPositions && elkPositions.size > 0) {
       nodePositions = elkPositions;
       layerBands = [];
-    } else {
+    } else if (designMode) {
+      // AI design canvas: authored positions win; unpositioned get a simple grid (no swimlanes unless Layers ON).
+      const unpositioned = personaFiltered.nodes.filter((n) => !n.position);
+      nodePositions = new Map();
+      if (showLayerBands) {
+        const r = computeLayerLayout(unpositioned);
+        nodePositions = r.nodePositions;
+        layerBands = r.layerBands;
+      } else {
+        layerBands = [];
+        unpositioned.forEach((n, i) => {
+          nodePositions.set(n.id, {
+            x: (i % 4) * 200,
+            y: Math.floor(i / 4) * 140,
+          });
+        });
+      }
+      for (const n of personaFiltered.nodes) {
+        if (n.position) nodePositions.set(n.id, n.position);
+      }
+    } else if (showLayerBands) {
       const r = computeDepthLayout(personaFiltered);
       nodePositions = r.nodePositions;
       layerBands = r.layerBands;
+    } else {
+      const r = computeDepthLayout(personaFiltered);
+      nodePositions = r.nodePositions;
+      layerBands = [];
     }
 
     // Widen layout horizontally so layers use more of the canvas.
-    // The core layout functions tend to produce a tall, narrow bounding box;
-    // here we stretch X coordinates based on the current viewport aspect ratio
-    // so the graph visually occupies more horizontal space.
-    if (nodePositions.size > 0 && flowDimensions.width > 0 && flowDimensions.height > 0) {
+    // Skip for authored/n8n layouts — stretching would detach sticky groups from nodes.
+    // Skip for subsystem cockpit — widening nodes without regions pulls cards out of boxes
+    // (especially on wide desktop; mobile landscape had the same bug).
+    const hasAuthoredGroups = Array.isArray(graph.groups) && graph.groups.length > 0;
+    if (
+      effectiveLayoutMode !== "subsystem" &&
+      !hasAuthoredGroups &&
+      nodePositions.size > 0 &&
+      flowDimensions.width > 0 &&
+      flowDimensions.height > 0
+    ) {
       const entries = Array.from(nodePositions.entries());
       const xs = entries.map(([, p]) => p.x);
       const minX = Math.min(...xs);
@@ -1856,11 +2830,12 @@ export function ArchCanvas({
     const metricsEdges = (runtimeSnapshot?.edges ?? {}) as Record<string, { latencyMs?: number; errorRate?: number }>;
 
     // External dependencies lane: shift External Services band and nodes to the far right.
+    // Skip in subsystem cockpit — lane shift would pull cards out of their boxes.
     const externalLayer = "External Services";
     const externalIds = graph.nodes
       .filter((n) => (n.layer ?? "Uncategorized") === externalLayer)
       .map((n) => n.id);
-    if (externalIds.length > 0) {
+    if (effectiveLayoutMode !== "subsystem" && externalIds.length > 0) {
       let maxNonExternalX = -Infinity;
       let minExternalX = Infinity;
       nodePositions.forEach((pos, id) => {
@@ -1885,6 +2860,17 @@ export function ArchCanvas({
       }
     }
 
+    // Safety net: re-fit subsystem boxes to whatever positions we will render.
+    // Ignores stale scene overrides in cockpit mode (those belong to other layouts).
+    if (effectiveLayoutMode === "subsystem" && subsystemRegions.length > 0) {
+      subsystemRegions = fitSubsystemRegionsToNodes(
+        subsystemRegions,
+        graphForSubsystem.nodes,
+        nodePositions,
+        subsystemNodeSize
+      );
+    }
+
     const domainRegionNodes: Node[] = domainRegions.map((dr) => {
       const colors = domainRegionColors(dr.domain);
       return {
@@ -1903,6 +2889,44 @@ export function ArchCanvas({
         connectable: false,
       };
     });
+
+    const subsystemRegionNodes: Node[] = subsystemRegions.map((sr) => ({
+      id: sr.id,
+      type: "subsystemRegion",
+      position: { x: sr.x, y: sr.y },
+      data: {
+        subsystem: sr.subsystem,
+        label: sr.label,
+        readiness: sr.readiness,
+        nodeCount: sr.nodeCount,
+        highlighted: selectedSubsystem === sr.subsystem,
+      },
+      style: {
+        width: sr.width,
+        height: sr.height,
+        zIndex: -2,
+        pointerEvents: "all",
+      },
+      draggable: false,
+      selectable: true,
+      connectable: false,
+    }));
+
+    const n8nGroupNodes: Node[] = (graph.groups ?? []).map((g) => ({
+      id: g.id,
+      type: "n8nGroup",
+      position: { x: g.x, y: g.y },
+      data: { label: g.label, color: g.color, theme },
+      style: {
+        width: g.width,
+        height: g.height,
+        zIndex: -3,
+        pointerEvents: "none",
+      },
+      draggable: false,
+      selectable: false,
+      connectable: false,
+    }));
 
     const bandNodes: Node[] = !showLayerBands
       ? []
@@ -1986,8 +3010,12 @@ export function ArchCanvas({
     const runtimeViewMode = canvasViewMode === "runtime" && hasRuntimeData;
 
     const searchScoreById = new Map<string, number>(searchResults.map((r: { nodeId: string; score: number }) => [r.nodeId, r.score]));
+    // Client-only: agent.file → module node for layer-missing badges (does not mutate graph).
+    const layerSummaryByNodeId = buildAgentLayerSummaryByNodeId(graph);
     const rfNodes: Node[] = [
+      ...n8nGroupNodes,
       ...domainRegionNodes,
+      ...subsystemRegionNodes,
       ...bandNodes,
       ...effectiveGraphForRender.nodes.map((node) => {
         const matches = nodeMatches(node);
@@ -2000,22 +3028,44 @@ export function ArchCanvas({
         const miniRoles =
           (node.runtimeRoles?.length ? node.runtimeRoles : undefined) ?? deriveMiniRoles(node);
         let opacity = 1;
-        if (runtimeViewMode) opacity = metricsNodes[node.id] ? 1 : 0.25;
-        else if (hl) opacity = matches ? 1 : 0.2;
+        if ((node as { disabled?: boolean }).disabled) opacity = 0.45;
+        if (runtimeViewMode) opacity = metricsNodes[node.id] ? opacity : 0.25;
+        else if (hl) opacity = matches ? opacity : Math.min(opacity, 0.2);
+        const nodeSubsystem = node.subsystem ?? classifySubsystem(node).subsystem;
         const searchScore = searchScoreById.get(node.id);
         const isHighlighted = typeof searchScore === "number";
+        // Agent-layer badges stay in Agent Layers view — not on cockpit nodes.
+        const layerSummary =
+          effectiveLayoutMode === "subsystem" ? undefined : layerSummaryByNodeId.get(node.id);
+        const cockpitQuiet = effectiveLayoutMode === "subsystem" && (canvasZoom ?? 1) < 1.15;
+        const showStrategyMarker =
+          effectiveLayoutMode === "subsystem" &&
+          nodeSubsystem === "strategy" &&
+          /pead|fda|signal-engine|strategy\//i.test(
+            `${node.id} ${node.path ?? ""} ${(node.files ?? []).join(" ")}`
+          );
         return {
           id: node.id,
           type: "arch",
-          position: override ?? nodePositions.get(node.id) ?? { x: 0, y: 0 },
+          // Cockpit owns placement — do not apply depth/domain scene overrides or cards leave their boxes.
+          position:
+            effectiveLayoutMode === "subsystem"
+              ? (nodePositions.get(node.id) ?? { x: 0, y: 0 })
+              : (override ?? nodePositions.get(node.id) ?? { x: 0, y: 0 }),
           hidden: visible === false,
           data: {
             ...node,
+            subsystem: nodeSubsystem,
             domain,
             fanOut: fanOutByNode.get(node.id),
             miniRoles,
             isSelected: selectedNode === node.id,
             isHighlighted,
+            hasDesignAlert: designMode && designAlertNodeIds.includes(node.id),
+            findingMeta: designFindingCounts[node.id],
+            showHealthBadges,
+            onHealthBadgeClick,
+            isFlash: flashNodeIds.includes(node.id),
             searchScore,
             canvasZoom,
             density,
@@ -2028,12 +3078,16 @@ export function ArchCanvas({
               issuesByNodeId[node.path] ??
               issuesByNodeId[(node as { archNodeId?: string }).archNodeId ?? node.id] ??
               [],
+            layerSummary,
+            cockpitQuiet,
+            showStrategyMarker,
+            cockpitShowBindBuild: !cockpitQuiet || selectedNode === node.id,
           },
           style: {
             background: "transparent",
             border: "none",
             padding: 0,
-            width: NODE_W,
+            width: theme === "light" ? NODE_W_LIGHT : NODE_W,
             opacity,
             transition: "opacity 0.2s ease",
             pointerEvents: visible === false ? "none" : "auto",
@@ -2094,7 +3148,13 @@ export function ArchCanvas({
           runtimeLatencyMs: m?.latencyMs,
           runtimeErrorRate: m?.errorRate,
           runtimeLive: runtimeLive && typeof m?.latencyMs === "number",
+          relation: (edge as { relation?: EdgeRelation }).relation,
+          branchLabel: (edge as { label?: string }).label,
+          designMode,
+          theme,
+          hasDesignAlert: designMode && designAlertEdgeIds.includes(edge.id),
         },
+        selected: false,
         style: {
           opacity: edgeOpacity,
           strokeWidth: inTrace ? 3 : count > 3 ? 2.4 : count > 1 ? 1.8 : 1,
@@ -2120,6 +3180,7 @@ export function ArchCanvas({
   }, [
     graph,
     selectedNode,
+    selectedSubsystem,
     violationBeingFixedKey,
     edgeFilter,
     tracePathNodeIds,
@@ -2147,6 +3208,18 @@ export function ArchCanvas({
     scene,
     onOpenComments,
     setCanvasDebug,
+    designMode,
+    designAlertNodeIds,
+    designAlertEdgeIds,
+    designFindingCounts,
+    showHealthBadges,
+    onHealthBadgeClick,
+    flashNodeIds,
+    theme,
+    persona,
+    flowDimensions,
+    showLayerBands,
+    canvasZoom,
   ]);
 
   const build = useMemo(() => debounce(rawBuild, 50), [rawBuild]);
@@ -2245,9 +3318,6 @@ export function ArchCanvas({
     );
   }, [legendHighlight, graph, edgeFilter, setNodes, setEdges, focusMode, selectedNode]);
 
-  const [showLayerBands, setShowLayerBands] = useState(true);
-  const [legendCollapsed, setLegendCollapsed] = useState(false);
-
   const legendLayers = useMemo(() => {
     const seen = new Map<string, number>();
     for (const n of graph.nodes) {
@@ -2301,8 +3371,72 @@ export function ArchCanvas({
         background: canvasTheme[theme].canvasBg,
       }}
     >
+      {pendingRelation && (
+        <div
+          data-testid="design-relation-picker"
+          style={{
+            position: "fixed",
+            left: Math.max(12, pendingRelation.x - 90),
+            top: Math.max(12, pendingRelation.y - 40),
+            zIndex: 50,
+            background: theme === "light" ? CANVAS : "#161b22",
+            border: `1px solid ${theme === "light" ? LINE : "#30363d"}`,
+            borderRadius: 10,
+            padding: 8,
+            boxShadow:
+              theme === "light"
+                ? "0 12px 32px rgba(18,19,26,0.12)"
+                : "0 12px 32px rgba(0,0,0,0.45)",
+            minWidth: 180,
+            fontFamily: FONT_UI,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 10,
+              color: theme === "light" ? SLATE : "#8b949e",
+              marginBottom: 6,
+              fontFamily: FONT_MONO,
+            }}
+          >
+            Relation (Esc = calls)
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {EDGE_RELATIONS.map((rel) => (
+              <button
+                key={rel}
+                type="button"
+                data-testid={`design-relation-${rel}`}
+                onClick={() => {
+                  onDesignConnect?.(pendingRelation.fromId, pendingRelation.toId, rel);
+                  setPendingRelation(null);
+                }}
+                style={{
+                  textAlign: "left",
+                  padding: "6px 8px",
+                  fontSize: 12,
+                  fontFamily: FONT_UI,
+                  background:
+                    rel === DEFAULT_DESIGN_RELATION
+                      ? theme === "light"
+                        ? ACCENT_WASH
+                        : "rgba(88,166,255,0.12)"
+                      : "transparent",
+                  border: `1px solid ${theme === "light" ? LINE : "#30363d"}`,
+                  borderRadius: 6,
+                  color: theme === "light" ? INK : "#e6edf3",
+                  cursor: "pointer",
+                }}
+              >
+                {relationLabel(rel)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {isEmptyWorkspace && (
         <div
+          data-testid="design-empty-canvas"
           style={{
             position: "absolute",
             inset: 0,
@@ -2315,16 +3449,19 @@ export function ArchCanvas({
         >
           <div
             style={{
-              background: "linear-gradient(150deg, #0c1220, #070d1a)",
-              border: "1px solid #1d4ed866",
+              background: theme === "light" ? CANVAS : "linear-gradient(150deg, #0c1220, #070d1a)",
+              border: `1px solid ${theme === "light" ? LINE : "#ef32a666"}`,
               borderRadius: 12,
               padding: 0,
               maxWidth: 420,
-              boxShadow: [
-                "0 4px 0 #1d4ed833",
-                "0 8px 0 #1d4ed818",
-                "0 20px 40px rgba(0,0,0,0.5)",
-              ].join(", "),
+              boxShadow:
+                theme === "light"
+                  ? "0 12px 32px rgba(18,19,26,0.08)"
+                  : [
+                      "0 4px 0 #ef32a633",
+                      "0 8px 0 #ef32a618",
+                      "0 20px 40px rgba(0,0,0,0.5)",
+                    ].join(", "),
               textAlign: "center",
               overflow: "hidden",
             }}
@@ -2332,7 +3469,7 @@ export function ArchCanvas({
             <div
               style={{
                 height: 4,
-                background: "linear-gradient(90deg, #1d4ed888, #58a6ff, #1d4ed888)",
+                background: `linear-gradient(90deg, ${ACCENT}88, ${ACCENT}, ${ACCENT}88)`,
                 borderRadius: "12px 12px 0 0",
               }}
             />
@@ -2340,24 +3477,49 @@ export function ArchCanvas({
             <div
               style={{
                 marginBottom: 12,
-                color: "#58a6ff",
+                color: theme === "light" ? INK : ACCENT,
                 fontSize: 16,
                 fontWeight: 700,
-                fontFamily: "'JetBrains Mono','Fira Code',monospace",
+                fontFamily: theme === "light" ? FONT_UI : "'JetBrains Mono','Fira Code',monospace",
               }}
             >
-              Empty workspace
+              AI design canvas
             </div>
             <div
               style={{
-                color: "#8b949e",
+                color: theme === "light" ? SLATE : "#8b949e",
                 fontSize: 13,
                 lineHeight: 1.6,
-                fontFamily: "monospace",
+                fontFamily: theme === "light" ? FONT_UI : "monospace",
+                marginBottom: onOpenBuild ? 16 : 0,
               }}
             >
-              Paste a GitHub repo URL in the sidebar to scan it, or use chat to ask questions about your architecture.
+              {emptyStateHint ??
+                (designMode
+                  ? "Design your agent — drag a piece or ask blanko."
+                  : "Paste a GitHub repo URL in the sidebar to import an existing design, or start Design from scratch.")}
             </div>
+            {onOpenBuild && designMode && (
+              <button
+                type="button"
+                data-testid="design-empty-open-build"
+                onClick={onOpenBuild}
+                style={{
+                  pointerEvents: "auto",
+                  padding: "10px 16px",
+                  borderRadius: 10,
+                  border: "none",
+                  background: INK,
+                  color: CANVAS,
+                  fontFamily: FONT_UI,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Open Components
+              </button>
+            )}
             </div>
           </div>
         </div>
@@ -2387,7 +3549,7 @@ export function ArchCanvas({
               boxShadow: "0 10px 30px rgba(0,0,0,0.4)",
             }}
           >
-            <div style={{ fontWeight: 800, marginBottom: 6, color: "#58a6ff" }}>Canvas Debug</div>
+            <div style={{ fontWeight: 800, marginBottom: 6, color: "#ef32a6" }}>Canvas Debug</div>
             <div>
               flow: {Math.round(flowDimensions.width)}x{Math.round(flowDimensions.height)}
             </div>
@@ -2431,7 +3593,7 @@ export function ArchCanvas({
             markerHeight={7}
             orient="auto"
           >
-            <path d="M 0 1 L 9 5 L 0 9 Z" fill="#58a6ff" />
+            <path d="M 0 1 L 9 5 L 0 9 Z" fill="#ef32a6" />
           </marker>
           <marker
             id="arrowhead-violation"
@@ -2467,10 +3629,10 @@ export function ArchCanvas({
             transform: "translateX(-50%)",
             zIndex: 20,
             background: "linear-gradient(150deg, #0c1220, #070d1a)",
-            border: "1px solid #1d4ed866",
+            border: "1px solid #ef32a666",
             borderRadius: 10,
             padding: "8px 20px",
-            color: "#58a6ff",
+            color: "#ef32a6",
             fontSize: 11,
             fontFamily: "monospace",
             backdropFilter: "blur(12px)",
@@ -2555,18 +3717,105 @@ export function ArchCanvas({
         >
       {flowDimensions.width > 0 && flowDimensions.height > 0 && (
       <ReactFlow
+        className={
+          designMode || sceneEditMode ? "blanko-canvas-edit" : "blanko-canvas-view"
+        }
         nodes={nodes}
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        nodesDraggable={designMode || sceneEditMode}
+        nodesConnectable={designMode}
+        edgesUpdatable={designMode}
+        connectionMode={ConnectionMode.Loose}
+        elementsSelectable
+        panOnDrag
+        deleteKeyCode={designMode ? ["Backspace", "Delete"] : null}
+          onConnect={(connection) => {
+          if (!designMode || !onDesignConnect) return;
+          if (connection.source && connection.target) {
+            const rf = reactFlowInstanceRef.current;
+            const mid = {
+              x: ((connection as { sourceX?: number }).sourceX ?? 0) +
+                (((connection as { targetX?: number }).targetX ?? 0) -
+                  ((connection as { sourceX?: number }).sourceX ?? 0)) /
+                  2,
+              y: ((connection as { sourceY?: number }).sourceY ?? 0) +
+                (((connection as { targetY?: number }).targetY ?? 0) -
+                  ((connection as { sourceY?: number }).sourceY ?? 0)) /
+                  2,
+            };
+            // Prefer screen midpoint of viewport center for picker placement
+            const container = flowContainerRef.current?.getBoundingClientRect();
+            const screenX = container ? container.left + container.width / 2 : window.innerWidth / 2;
+            const screenY = container ? container.top + container.height / 2 : window.innerHeight / 2;
+            void rf;
+            void mid;
+            setPendingRelation({
+              fromId: connection.source,
+              toId: connection.target,
+              x: screenX,
+              y: screenY,
+            });
+          }
+        }}
+        onEdgeClick={(_, edge) => {
+          if (!designMode) return;
+          onDesignEdgeSelect?.(edge.id);
+        }}
+        onNodesDelete={(deleted) => {
+          if (!designMode || !onDesignDeleteNodes) return;
+          onDesignDeleteNodes(deleted.map((n) => n.id).filter((id) => !id.startsWith("band:")));
+        }}
+        onEdgesDelete={(deleted) => {
+          if (!designMode || !onDesignDeleteEdges) return;
+          onDesignDeleteEdges(deleted.map((e) => e.id));
+        }}
+        onDragOver={(e) => {
+          if (!designMode || !onDesignDrop) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(e) => {
+          if (!designMode || !onDesignDrop) return;
+          e.preventDefault();
+          const paletteId =
+            e.dataTransfer.getData(DESIGN_DND_MIME) || e.dataTransfer.getData("text/plain");
+          if (!paletteId) return;
+          const rf = reactFlowInstanceRef.current;
+          const position =
+            rf?.screenToFlowPosition?.({ x: e.clientX, y: e.clientY }) ??
+            rf?.project?.({ x: e.clientX, y: e.clientY }) ??
+            { x: e.clientX, y: e.clientY };
+          onDesignDrop(paletteId, position);
+        }}
         snapToGrid={sceneEditMode}
         snapGrid={[24, 24]}
         selectionOnDrag={sceneEditMode}
         onNodeClick={(_, n) => {
-          if (n.type === "band") return;
+          if (n.type === "band" || n.type === "n8nGroup" || n.type === "domainRegion") return;
+          if (n.type === "subsystemRegion") {
+            const sub = (n.data as { subsystem?: NodeSubsystem } | undefined)?.subsystem;
+            if (sub) {
+              onSubsystemSelect?.(sub);
+              onNodeSelect(null);
+            }
+            return;
+          }
+          onSubsystemSelect?.(null);
           onNodeSelect(n.id);
         }}
+        onNodeDoubleClick={(_, n) => {
+          if (n.type === "band" || n.type === "subsystemRegion" || n.type === "n8nGroup") return;
+          onSubsystemSelect?.(null);
+          onNodeDoubleClick?.(n.id);
+        }}
         onNodeDragStop={(_, n) => {
+          if (designMode && !sceneEditMode) {
+            if (n.type === "band" || n.type === "annotation" || n.type === "domainRegion" || n.type === "n8nGroup") return;
+            onDesignNodeMove?.(n.id, { x: n.position.x, y: n.position.y });
+            return;
+          }
           if (!sceneEditMode) return;
           if (n.type === "band" || n.type === "annotation") return;
           setRedoStack([]);
@@ -2593,6 +3842,8 @@ export function ArchCanvas({
         }}
         onNodeMouseEnter={(e, n) => {
           if (n.type === "band") return;
+          // Blanko light canvas: Insights is the inspect surface — no floating hover cards.
+          if (theme === "light") return;
           setHoveredNodeId(n.id);
           setHoverPos({ x: e.clientX, y: e.clientY });
         }}
@@ -2606,14 +3857,11 @@ export function ArchCanvas({
           }
         }}
         onEdgeMouseEnter={(e, edge) => {
+          if (theme === "light") return;
           setHoveredEdgeId(edge.id);
           setHoveredEdgePos({ x: e.clientX, y: e.clientY });
         }}
-        onEdgeMouseMove={(e, edge) => {
-          if (hoveredEdgeId === edge.id) {
-            setHoveredEdgePos({ x: e.clientX, y: e.clientY });
-          }
-        }}
+        // Same as nodes: do not track mouse move — setState-per-pixel caused flicker.
         onEdgeMouseLeave={(_, edge) => {
           if (edge.id === hoveredEdgeId) {
             setHoveredEdgeId(null);
@@ -2622,10 +3870,23 @@ export function ArchCanvas({
         }}
         onPaneClick={() => {
           onNodeSelect(null);
+          onSubsystemSelect?.(null);
           setShowFullNodePopup(false);
+          setHoveredNodeId(null);
+          setHoverPos(null);
+          setHoveredEdgeId(null);
+          setHoveredEdgePos(null);
+          if (designMode) onDesignEdgeSelect?.(null);
         }}
         onMove={(_, viewport) => {
           if (typeof viewport.zoom === "number") setCanvasZoom(viewport.zoom);
+          // Pan/zoom clears hover so a stale card does not stick mid-canvas.
+          if (hoveredNodeId || hoveredEdgeId) {
+            setHoveredNodeId(null);
+            setHoverPos(null);
+            setHoveredEdgeId(null);
+            setHoveredEdgePos(null);
+          }
         }}
         onInit={(instance) => { reactFlowInstanceRef.current = instance; }}
         nodeTypes={NODE_TYPES}
@@ -2639,9 +3900,9 @@ export function ArchCanvas({
       >
         <Background
           variant={BackgroundVariant.Dots}
-          color={theme === "dark" ? "#1e293b" : "#8b949e"}
-          gap={24}
-          size={1}
+          color={theme === "dark" ? "#1e293b" : "#C4C8D0"}
+          gap={theme === "dark" ? 22 : 28}
+          size={theme === "dark" ? 1 : 1.75}
         />
 
         <div
@@ -2655,10 +3916,11 @@ export function ArchCanvas({
             zIndex: 10,
           }}
         >
+          {!designMode && (
           <MiniMap
             style={{
-              background: "#070d1a",
-              border: "1px solid #1e2d45",
+              background: theme === "light" ? CANVAS : "#070d1a",
+              border: theme === "light" ? `1px solid ${LINE}` : "1px solid #1e2d45",
               borderRadius: 8,
               width: 140,
               height: 90,
@@ -2667,18 +3929,21 @@ export function ArchCanvas({
               const d = n.data as { layer?: string; isDrift?: boolean };
               if (d.isDrift) return "#f85149";
               return (
-                LAYER_COLORS[d.layer ?? "Uncategorized"]?.top ?? "#30363d"
+                LAYER_COLORS[d.layer ?? "Uncategorized"]?.top ?? (theme === "light" ? "#9CA3AF" : "#30363d")
               );
             }}
-            maskColor="rgba(6,12,26,0.75)"
+            maskColor={theme === "light" ? "rgba(255,255,255,0.7)" : "rgba(6,12,26,0.75)"}
           />
-          <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view, lock">
+          )}
+          <div title="Zoom: scroll wheel | Pan: drag background | Buttons: zoom in, zoom out, fit view">
             <Controls
               style={{
-                background: "#0a111f",
-                border: "1px solid #1e2d45",
+                background: theme === "light" ? CANVAS : "#0a111f",
+                border: theme === "light" ? `1px solid ${LINE}` : "1px solid #1e2d45",
                 borderRadius: 8,
+                boxShadow: theme === "light" ? "0 2px 8px rgba(18,19,26,0.06)" : undefined,
               }}
+              showInteractive={false}
             />
           </div>
         </div>
@@ -2720,7 +3985,7 @@ export function ArchCanvas({
       </ReactFlow>
       )}
         </div>
-        {selectedNodeData && !showFullNodePopup && (
+        {selectedNodeData && !showFullNodePopup && theme !== "light" && (
           <NodeIntelPanel
             node={selectedNodeData}
             graph={graph}
@@ -2734,7 +3999,8 @@ export function ArchCanvas({
       </div>
       )}
 
-      {viewMode === "2d" && hoveredNodeData && hoverPos && (
+      {/* Dark/legacy only: blanko light uses Insights for node/edge context (no flicker hover cards). */}
+      {theme !== "light" && viewMode === "2d" && hoveredNodeData && hoverPos && (
         <div
           style={{
             position: "fixed",
@@ -2742,20 +4008,24 @@ export function ArchCanvas({
             top: hoverPos.y + 12,
             zIndex: 30,
             maxWidth: 260,
-            background: "rgba(15,23,42,0.98)",
-            border: "1px solid #1e293b",
-            borderRadius: 8,
-            padding: "8px 10px",
-            boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+            background: theme === "light" ? CANVAS : "rgba(15,23,42,0.98)",
+            border: `1px solid ${theme === "light" ? LINE : "#1e293b"}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+            boxShadow:
+              theme === "light"
+                ? "0 8px 24px rgba(18,19,26,0.1)"
+                : "0 10px 30px rgba(0,0,0,0.6)",
             pointerEvents: "none",
+            fontFamily: FONT_UI,
           }}
         >
           <div
             style={{
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: 600,
-              color: "#e2e8f0",
-              fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              color: theme === "light" ? INK : "#e2e8f0",
+              fontFamily: FONT_UI,
               marginBottom: 2,
               whiteSpace: "nowrap",
               overflow: "hidden",
@@ -2766,10 +4036,10 @@ export function ArchCanvas({
           </div>
           <div
             style={{
-              fontSize: 9,
-              color: "#8b949e",
+              fontSize: 10,
+              color: theme === "light" ? SLATE : "#8b949e",
               marginBottom: 4,
-              fontFamily: "monospace",
+              fontFamily: FONT_MONO,
             }}
           >
             {(hoveredNodeData.layer ?? "Uncategorized") +
@@ -2779,10 +4049,10 @@ export function ArchCanvas({
           {hoveredNodeData.description && (
             <div
               style={{
-                fontSize: 9,
-                color: "#cbd5f5",
+                fontSize: 11,
+                color: theme === "light" ? SLATE : "#cbd5f5",
                 marginBottom: 4,
-                fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+                fontFamily: FONT_UI,
                 lineHeight: 1.4,
               }}
             >
@@ -2861,7 +4131,7 @@ export function ArchCanvas({
         </div>
       )}
 
-      {viewMode === "2d" && hoveredEdgeData && hoveredEdgePos && (
+      {theme !== "light" && viewMode === "2d" && hoveredEdgeData && hoveredEdgePos && (
         <div
           style={{
             position: "fixed",
@@ -2869,20 +4139,24 @@ export function ArchCanvas({
             top: hoveredEdgePos.y + 12,
             zIndex: 30,
             maxWidth: 280,
-            background: "rgba(15,23,42,0.98)",
-            border: "1px solid #1e293b",
-            borderRadius: 8,
-            padding: "8px 10px",
-            boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+            background: theme === "light" ? CANVAS : "rgba(15,23,42,0.98)",
+            border: `1px solid ${theme === "light" ? LINE : "#1e293b"}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+            boxShadow:
+              theme === "light"
+                ? "0 8px 24px rgba(18,19,26,0.1)"
+                : "0 10px 30px rgba(0,0,0,0.6)",
             pointerEvents: "none",
+            fontFamily: FONT_UI,
           }}
         >
           <div
             style={{
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: 600,
-              color: "#e2e8f0",
-              fontFamily: "'JetBrains Mono','Fira Code',monospace",
+              color: theme === "light" ? INK : "#e2e8f0",
+              fontFamily: FONT_UI,
               marginBottom: 2,
             }}
           >
@@ -2891,9 +4165,9 @@ export function ArchCanvas({
           {hoveredEdgeData.isDrift && (
             <div
               style={{
-                fontSize: 9,
-                color: "#f87171",
-                fontFamily: "monospace",
+                fontSize: 11,
+                color: theme === "light" ? "#DC2626" : "#f87171",
+                fontFamily: FONT_UI,
               }}
             >
               Drift: {hoveredEdgeData.driftReason ?? "architecture drift"}
@@ -2902,9 +4176,9 @@ export function ArchCanvas({
           {hoveredEdgeData.isLayerViolation && !hoveredEdgeData.isDrift && (
             <div
               style={{
-                fontSize: 9,
-                color: "#d29922",
-                fontFamily: "monospace",
+                fontSize: 11,
+                color: theme === "light" ? "#D97706" : "#d29922",
+                fontFamily: FONT_UI,
               }}
             >
               Layer violation
@@ -2957,7 +4231,7 @@ export function ArchCanvas({
                 borderRadius: 4,
                 border: "1px solid #1f6feb",
                 fontFamily: "monospace",
-                color: "#58a6ff",
+                color: "#ef32a6",
                 textDecoration: "none",
               }}
             >
@@ -2969,7 +4243,8 @@ export function ArchCanvas({
 
       {/* Mode controls moved to App top bar */}
 
-      {!presentationMode && (
+      {/* Light / blanko: hide legend chrome — docks + scene carry the map. */}
+      {!presentationMode && theme !== "light" && (
       <div
         style={{
           position: "absolute",
@@ -3049,7 +4324,7 @@ export function ArchCanvas({
                 fontFamily: "monospace",
               }}
             >
-              Layers
+              Architecture Layers
             </div>
             <button
               type="button"
@@ -3064,9 +4339,9 @@ export function ArchCanvas({
                 cursor: "pointer",
                 fontFamily: "monospace",
               }}
-              title={showLayerBands ? "Hide layer grouping bands" : "Show layer grouping bands"}
+              title={showLayerBands ? "Hide architecture layers" : "Show architecture layers (optional lens)"}
             >
-              Layers {showLayerBands ? "ON" : "OFF"}
+              Architecture {showLayerBands ? "ON" : "OFF"}
             </button>
           </div>
           {legendLayers.length === 0 && (
@@ -3077,7 +4352,7 @@ export function ArchCanvas({
                 fontFamily: "'JetBrains Mono','Fira Code',monospace",
               }}
             >
-              No layers present in this graph.
+              No architecture layers present in this graph.
             </div>
           )}
           {legendLayers.map(([name, count]) => {
@@ -3246,6 +4521,18 @@ export function ArchCanvas({
             <span style={{ color: canvasTheme[theme].badgeTrace }} title="Traces">TR</span>
             <span style={{ color: canvasTheme[theme].badgeDrift }} title="Drift">D</span>
             <span title="Depth from entry">d</span>
+          </div>
+          <div
+            data-testid="blanko-import-edge-caveat"
+            style={{
+              marginTop: 8,
+              fontSize: 9,
+              lineHeight: 1.4,
+              color: canvasTheme[theme].subtleText,
+              fontFamily: FONT_UI,
+            }}
+          >
+            Edges = static imports only — dynamic wiring may not be visible. Missing edge ≠ not built.
           </div>
         </div>
 

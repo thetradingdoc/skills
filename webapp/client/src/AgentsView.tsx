@@ -5,6 +5,18 @@
  */
 import { useMemo, useState, type ReactNode } from "react";
 import type { AgentInventoryResult, AgentSurface } from "./types";
+import { ProviderIcon } from "./ProviderIcon";
+import { getProvider } from "./providerCatalog";
+import {
+  INK,
+  SLATE,
+  LINE,
+  CANVAS,
+  PAPER,
+  ACCENT,
+  FONT_MONO,
+  FONT_UI,
+} from "./theme/tokens";
 
 type Props = {
   agents: AgentInventoryResult | undefined;
@@ -38,34 +50,37 @@ function AgentCard({
         textAlign: "left",
         padding: "12px 14px",
         borderRadius: 10,
-        border: selected ? "1px solid #58a6ff" : "1px solid #30363d",
-        background: selected ? "rgba(29,78,216,0.18)" : "rgba(6,12,26,0.85)",
-        color: "#e6edf3",
+        border: selected ? `1px solid ${ACCENT}` : `1px solid ${LINE}`,
+        background: selected ? "rgba(239, 50, 166, 0.08)" : CANVAS,
+        color: INK,
         cursor: "pointer",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        fontFamily: FONT_UI,
       }}
     >
-      <div style={{ fontSize: 13, fontWeight: 600, color: "#f3f4f6" }}>
+      <div style={{ fontSize: 13, fontWeight: 600, color: INK }}>
         {fileName(surface.file)}
       </div>
       <div
         style={{
           marginTop: 6,
           fontSize: 11,
-          color: "#8b949e",
+          color: SLATE,
           display: "flex",
           flexWrap: "wrap",
           gap: "6px 12px",
         }}
       >
-        <span>{surface.provider}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          {getProvider(surface.provider) && <ProviderIcon providerId={surface.provider} size={12} />}
+          {surface.provider}
+        </span>
         <span>{surface.model ?? "model unknown"}</span>
         <span>{surface.loopKind ?? "—"}</span>
         <span>
           {toolCount} tool{toolCount === 1 ? "" : "s"}
         </span>
       </div>
-      <div style={{ marginTop: 4, fontSize: 10, color: "#7d8590" }}>{surface.file}</div>
+      <div style={{ marginTop: 4, fontSize: 10, color: SLATE }}>{surface.file}</div>
     </button>
   );
 }
@@ -93,14 +108,14 @@ function ToolCard({
       style={{
         padding: "10px 12px",
         borderRadius: 8,
-        border: "1px solid #30363d",
-        background: "rgba(17,24,39,0.9)",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        border: `1px solid ${LINE}`,
+        background: CANVAS,
+        fontFamily: FONT_MONO,
         minWidth: 180,
         maxWidth: 280,
       }}
     >
-      <div style={{ fontSize: 12, color: "#58a6ff", fontWeight: 600 }}>{name}</div>
+      <div style={{ fontSize: 12, color: ACCENT, fontWeight: 600 }}>{name}</div>
       {handler && (
         <button
           type="button"
@@ -110,7 +125,7 @@ function ToolCard({
           style={{
             marginTop: 4,
             fontSize: 10,
-            color: onOpenFile ? "#58a6ff" : "#8b949e",
+            color: onOpenFile ? ACCENT : SLATE,
             wordBreak: "break-all",
             background: "none",
             border: 0,
@@ -124,10 +139,10 @@ function ToolCard({
         </button>
       )}
       {!handler && note && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#7d8590" }}>{note}</div>
+        <div style={{ marginTop: 4, fontSize: 10, color: SLATE }}>{note}</div>
       )}
       {!handler && !note && (
-        <div style={{ marginTop: 4, fontSize: 10, color: "#4b5563" }}>handler unresolved</div>
+        <div style={{ marginTop: 4, fontSize: 10, color: SLATE }}>handler unresolved</div>
       )}
     </div>
   );
@@ -151,8 +166,8 @@ function CollapsibleGroup({
         style={{
           background: "transparent",
           border: "none",
-          color: "#e6edf3",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+          color: INK,
+          fontFamily: FONT_MONO,
           fontSize: 12,
           cursor: "pointer",
           padding: "4px 0",
@@ -161,7 +176,7 @@ function CollapsibleGroup({
           gap: 8,
         }}
       >
-        <span style={{ color: "#7d8590" }}>{open ? "▼" : "▶"}</span>
+        <span style={{ color: SLATE }}>{open ? "▼" : "▶"}</span>
         {title}
       </button>
       {open && <div style={{ marginTop: 10 }}>{children}</div>}
@@ -205,23 +220,23 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           minHeight: 0,
           padding: 32,
           overflow: "auto",
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-          color: "#e6edf3",
-          background: "rgba(6,12,26,0.4)",
+          fontFamily: FONT_MONO,
+          color: INK,
+          background: PAPER,
         }}
       >
-        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: "#f3f4f6", fontWeight: 600 }}>
+        <h2 style={{ margin: "0 0 12px", fontSize: 18, color: INK, fontWeight: 600 }}>
           No agents found
         </h2>
-        <p style={{ margin: "0 0 16px", fontSize: 13, color: "#8b949e", maxWidth: 520, lineHeight: 1.5 }}>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: SLATE, maxWidth: 520, lineHeight: 1.5 }}>
           This scan did not find any model-client surfaces. The inventory looks for declared
           package.json SDKs intersecting a known list, plus HTTP calls to openai / anthropic /
           groq / retell.
         </p>
         {searched.length > 0 && (
           <>
-            <div style={{ fontSize: 11, color: "#7d8590", marginBottom: 8 }}>Searched for:</div>
-            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#8b949e", lineHeight: 1.7 }}>
+            <div style={{ fontSize: 11, color: SLATE, marginBottom: 8 }}>Searched for:</div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: SLATE, lineHeight: 1.7 }}>
               {searched.map((s) => (
                 <li key={s}>{s}</li>
               ))}
@@ -229,7 +244,7 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           </>
         )}
         {searched.length === 0 && (
-          <p style={{ fontSize: 12, color: "#7d8590" }}>
+          <p style={{ fontSize: 12, color: SLATE }}>
             No inventory payload on this graph — re-scan the repo to populate agents.
           </p>
         )}
@@ -244,7 +259,7 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
         minHeight: 0,
         display: "flex",
         overflow: "hidden",
-        background: "rgba(6,12,26,0.35)",
+        background: PAPER,
       }}
     >
       <div
@@ -253,10 +268,10 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           flexShrink: 0,
           overflow: "auto",
           padding: "20px 16px 40px",
-          borderRight: "1px solid #30363d",
+          borderRight: `1px solid ${LINE}`,
         }}
       >
-        <div style={{ fontSize: 11, color: "#7d8590", marginBottom: 12, letterSpacing: 0.04 }}>
+        <div style={{ fontSize: 11, color: SLATE, marginBottom: 12, letterSpacing: 0.04 }}>
           AGENTS — {agentSurfaces.length}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -270,7 +285,7 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           ))}
         </div>
         {agentSurfaces.length === 0 && (
-          <p style={{ fontSize: 12, color: "#8b949e", lineHeight: 1.5 }}>
+          <p style={{ fontSize: 12, color: SLATE, lineHeight: 1.5 }}>
             No kind=agent surfaces. Helpers and unknowns are listed below.
           </p>
         )}
@@ -286,23 +301,23 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
                 style={{
                   padding: "8px 10px",
                   borderRadius: 8,
-                  border: "1px solid #21262d",
-                  background: "rgba(6,12,26,0.5)",
+                  border: `1px solid ${LINE}`,
+                  background: CANVAS,
                   fontSize: 11,
-                  color: "#8b949e",
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  color: SLATE,
+                  fontFamily: FONT_MONO,
                 }}
               >
-                <div style={{ color: "#e6edf3" }}>{fileName(h.file)}</div>
-                <div style={{ marginTop: 2, color: "#7d8590" }}>
+                <div style={{ color: INK }}>{fileName(h.file)}</div>
+                <div style={{ marginTop: 2, color: SLATE }}>
                   {h.provider}
                   {h.model ? ` · ${h.model}` : ""}
                 </div>
-                <div style={{ marginTop: 2, color: "#4b5563", fontSize: 10 }}>{h.kindSignal}</div>
+                <div style={{ marginTop: 2, color: SLATE, fontSize: 10 }}>{h.kindSignal}</div>
               </div>
             ))}
             {helpers.length === 0 && (
-              <div style={{ fontSize: 11, color: "#4b5563" }}>None</div>
+              <div style={{ fontSize: 11, color: SLATE }}>None</div>
             )}
           </div>
         </CollapsibleGroup>
@@ -311,8 +326,8 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           <div style={{ marginTop: 20 }}>
             <div
               style={{
-                color: "#e6edf3",
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                color: INK,
+                fontFamily: FONT_MONO,
                 fontSize: 12,
                 padding: "4px 0",
               }}
@@ -326,15 +341,15 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
                   style={{
                     padding: "8px 10px",
                     borderRadius: 8,
-                    border: "1px solid #1f3a4d",
-                    background: "rgba(10,30,45,0.35)",
+                    border: `1px solid ${LINE}`,
+                    background: PAPER,
                     fontSize: 11,
-                    color: "#e6edf3",
-                    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                    color: INK,
+                    fontFamily: FONT_MONO,
                   }}
                 >
                   <div style={{ fontWeight: 600 }}>{fileName(i.file)}</div>
-                  <div style={{ marginTop: 4, color: "#8b949e", fontSize: 10, lineHeight: 1.4 }}>
+                  <div style={{ marginTop: 4, color: SLATE, fontSize: 10, lineHeight: 1.4 }}>
                     {i.kindSignal}
                   </div>
                 </div>
@@ -347,8 +362,8 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
         <div style={{ marginTop: 20 }}>
           <div
             style={{
-              color: "#e6edf3",
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              color: INK,
+              fontFamily: FONT_MONO,
               fontSize: 12,
               padding: "4px 0",
             }}
@@ -362,11 +377,11 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
                 style={{
                   padding: "8px 10px",
                   borderRadius: 8,
-                  border: "1px solid #3f3f1a",
-                  background: "rgba(40,40,10,0.35)",
+                  border: `1px solid ${LINE}`,
+                  background: PAPER,
                   fontSize: 11,
-                  color: "#e6edf3",
-                  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                  color: INK,
+                  fontFamily: FONT_MONO,
                 }}
               >
                 <div style={{ fontWeight: 600 }}>{fileName(u.file)}</div>
@@ -384,9 +399,9 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
         {!selected && (
           <div
             style={{
-              fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontFamily: FONT_MONO,
               fontSize: 13,
-              color: "#7d8590",
+              color: SLATE,
               marginTop: 8,
             }}
           >
@@ -397,14 +412,14 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
           <>
             <div
               style={{
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+                fontFamily: FONT_MONO,
                 marginBottom: 16,
               }}
             >
-              <div style={{ fontSize: 16, color: "#f3f4f6", fontWeight: 600 }}>
+              <div style={{ fontSize: 16, color: INK, fontWeight: 600 }}>
                 {fileName(selected.file)}
               </div>
-              <div style={{ marginTop: 6, fontSize: 11, color: "#8b949e" }}>
+              <div style={{ marginTop: 6, fontSize: 11, color: SLATE }}>
                 {selected.kindSignal}
               </div>
             </div>
@@ -426,7 +441,7 @@ export default function AgentsView({ agents, onOpenFile }: Props) {
                 />
               ))}
               {(selected.tools?.length ?? 0) === 0 && (
-                <div style={{ fontSize: 12, color: "#7d8590" }}>No tools extracted.</div>
+                <div style={{ fontSize: 12, color: SLATE }}>No tools extracted.</div>
               )}
             </div>
           </>

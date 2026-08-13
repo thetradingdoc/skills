@@ -1,20 +1,9 @@
 /**
- * What changed since the last scan.
- *
- * A single scan is a photograph. Two scans are the thing a reviewer actually
- * needs — direction. This view answers "did it get better or worse, and what
- * specifically moved" rather than restating the current state.
- *
- * Where a change might be the tracer catching up rather than the code moving,
- * the view says so. A finding that appears because coverage improved is not
- * the same as a finding that appears because someone shipped something, and
- * conflating them would make every improvement in the scanner look like a
- * regression in the system.
+ * What changed since the last scan (scan vs previous scan — not the tool write ledger).
  */
 import { useCallback, useEffect, useState } from "react";
 import { diffScans, type ScanDiff, type Change } from "./scanDiff";
-
-const MONO = "JetBrains Mono, ui-monospace, monospace";
+import { ACCENT, BAD, CANVAS, FONT_MONO, GOOD, INK, LINE, PAPER, SLATE, WARN } from "./theme/tokens";
 
 type Props = {
   graph: any;
@@ -23,29 +12,28 @@ type Props = {
   workspaceId: string | null;
 };
 
-/** Colour by what the change means, not by which kind it is. */
 function changeColor(c: Change): string {
   switch (c.kind) {
     case "auth-lost":
     case "reach-gained":
     case "layer-emptied":
-      return "#f85149";
+      return BAD;
     case "tool-added":
-      return c.weight >= 90 ? "#f85149" : "#d29922";
+      return c.weight >= 90 ? BAD : WARN;
     case "agent-added":
-      return c.weight >= 90 ? "#f85149" : "#58a6ff";
+      return c.weight >= 90 ? BAD : ACCENT;
     case "auth-gained":
     case "layer-filled":
-      return "#3fb950";
+      return GOOD;
     case "reach-lost":
     case "tool-removed":
     case "agent-removed":
-      return "#8b949e";
+      return SLATE;
     case "agent-renamed":
     case "coverage-changed":
-      return "#a371f7";
+      return WARN;
     default:
-      return "#8b949e";
+      return SLATE;
   }
 }
 
@@ -62,14 +50,10 @@ function Delta({
 }) {
   const moved = after - before;
   const colour =
-    moved === 0
-      ? "#6e7681"
-      : (moved > 0) === worseWhenUp
-        ? "#f85149"
-        : "#3fb950";
+    moved === 0 ? SLATE : (moved > 0) === worseWhenUp ? BAD : GOOD;
   return (
     <div style={{ minWidth: 108 }}>
-      <div style={{ fontFamily: MONO, fontSize: 17, color: "#e6edf3" }}>
+      <div style={{ fontFamily: FONT_MONO, fontSize: 17, color: INK }}>
         {after}
         {moved !== 0 && (
           <span style={{ fontSize: 11.5, color: colour, marginLeft: 6 }}>
@@ -78,19 +62,12 @@ function Delta({
           </span>
         )}
       </div>
-      <div style={{ fontSize: 10.5, color: "#6e7681", marginTop: 2 }}>
-        {label}
-      </div>
+      <div style={{ fontSize: 10.5, color: SLATE, marginTop: 2 }}>{label}</div>
     </div>
   );
 }
 
-export function ChangesView({
-  graph,
-  apiBase,
-  accessToken,
-  workspaceId,
-}: Props) {
+export function ChangesView({ graph, apiBase, accessToken, workspaceId }: Props) {
   const [diff, setDiff] = useState<ScanDiff | null>(null);
   const [reason, setReason] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -107,37 +84,38 @@ export function ChangesView({
       const d = await r.json();
       if (!r.ok) {
         setReason(d.error ?? "Could not load the previous scan.");
+        setDiff(null);
         return;
       }
       if (!d.previous) {
         setReason(d.reason ?? "No earlier scan to compare against.");
+        setDiff(null);
         return;
       }
-      setDiff(
-        diffScans(d.previous, graph, d.previousDate, d.currentDate)
-      );
+      setDiff(diffScans(d.previous, graph, d.previousDate, d.currentDate));
     } catch (e) {
       setReason(e instanceof Error ? e.message : "Request failed.");
+      setDiff(null);
     } finally {
       setLoading(false);
     }
   }, [apiBase, accessToken, workspaceId, graph]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   if (!accessToken || !workspaceId) {
     return (
-      <div style={{ padding: 24, fontSize: 13, color: "#8b949e" }}>
+      <div style={{ padding: 24, fontSize: 13, color: SLATE, background: CANVAS }}>
         Sign in and save a workspace to track changes between scans.
       </div>
     );
   }
 
-  if (loading) {
+  if (loading && !diff) {
     return (
-      <div style={{ padding: 24, fontSize: 13, color: "#8b949e" }}>
+      <div style={{ padding: 24, fontSize: 13, color: SLATE, background: CANVAS }}>
         Comparing scans…
       </div>
     );
@@ -145,15 +123,32 @@ export function ChangesView({
 
   if (reason || !diff) {
     return (
-      <div style={{ padding: "24px 26px", maxWidth: 620 }}>
-        <div style={{ fontSize: 13.5, color: "#e6edf3", marginBottom: 8 }}>
-          Nothing to compare yet
+      <div style={{ padding: "24px 26px", maxWidth: 620, background: CANVAS }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ fontSize: 13.5, color: INK, marginBottom: 8, fontWeight: 600 }}>
+            Scan vs previous scan
+          </div>
+          <button
+            type="button"
+            data-testid="changes-refresh"
+            onClick={() => void load()}
+            style={{
+              fontSize: 11,
+              padding: "4px 10px",
+              borderRadius: 8,
+              border: `1px solid ${LINE}`,
+              background: PAPER,
+              color: INK,
+              cursor: "pointer",
+            }}
+          >
+            Refresh
+          </button>
         </div>
-        <div style={{ fontSize: 12.5, color: "#8b949e", lineHeight: 1.65 }}>
-          {reason ?? "No earlier scan is stored for this workspace."} Scan again
-          after the code changes and this view will show what moved — agents and
-          tools added or removed, reach gained or lost, and whether any agent
-          started or stopped authenticating.
+        <div style={{ fontSize: 12.5, color: SLATE, lineHeight: 1.65 }}>
+          {reason ?? "No earlier scan is stored for this workspace."} Scan again after the code
+          changes and this view will show what moved. This is not the tool write ledger under
+          .agent/changes.json.
         </div>
       </div>
     );
@@ -162,16 +157,42 @@ export function ChangesView({
   const t = diff.totals;
 
   return (
-    <div style={{ height: "100%", overflowY: "auto", padding: "18px 26px 60px" }}>
+    <div
+      style={{ height: "100%", overflowY: "auto", padding: "18px 26px 60px", background: CANVAS }}
+      data-testid="changes-view"
+    >
       <div
         style={{
-          fontFamily: MONO,
-          fontSize: 11,
-          color: "#6e7681",
-          marginBottom: 14,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          marginBottom: 10,
         }}
       >
-        {diff.fromDate?.slice(0, 10)} → {diff.toDate?.slice(0, 10)}
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>Scan vs previous scan</div>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: SLATE, marginTop: 4 }}>
+            {diff.fromDate?.slice(0, 10)} → {diff.toDate?.slice(0, 10)}
+          </div>
+        </div>
+        <button
+          type="button"
+          data-testid="changes-refresh"
+          onClick={() => void load()}
+          disabled={loading}
+          style={{
+            fontSize: 11,
+            padding: "4px 10px",
+            borderRadius: 8,
+            border: `1px solid ${LINE}`,
+            background: PAPER,
+            color: INK,
+            cursor: loading ? "wait" : "pointer",
+          }}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
 
       <div
@@ -180,39 +201,30 @@ export function ChangesView({
           gap: 26,
           flexWrap: "wrap",
           paddingBottom: 18,
-          borderBottom: "1px solid #21262d",
+          borderBottom: `1px solid ${LINE}`,
           marginBottom: 18,
         }}
       >
         <Delta label="agents" before={t.agentsBefore} after={t.agentsAfter} />
         <Delta label="tools" before={t.toolsBefore} after={t.toolsAfter} />
-        <Delta
-          label="reach patient data"
-          before={t.patientBefore}
-          after={t.patientAfter}
-        />
+        <Delta label="reach patient data" before={t.patientBefore} after={t.patientAfter} />
         <Delta label="reach money" before={t.moneyBefore} after={t.moneyAfter} />
-        <Delta
-          label="% untraced"
-          before={t.untracedPctBefore}
-          after={t.untracedPctAfter}
-        />
+        <Delta label="% untraced" before={t.untracedPctBefore} after={t.untracedPctAfter} />
       </div>
 
       {diff.changes.length === 0 ? (
-        <div style={{ fontSize: 13, color: "#8b949e", lineHeight: 1.65, maxWidth: "70ch" }}>
-          Nothing moved between these two scans. No agents or tools were added
-          or removed, no reach changed, and no agent started or stopped
-          authenticating.
+        <div style={{ fontSize: 13, color: SLATE, lineHeight: 1.65, maxWidth: "70ch" }}>
+          Nothing moved between these two scans. No agents or tools were added or removed, no reach
+          changed, and no agent started or stopped authenticating.
         </div>
       ) : (
         <>
           <div
             style={{
-              fontFamily: MONO,
+              fontFamily: FONT_MONO,
               fontSize: 10,
               letterSpacing: "0.09em",
-              color: "#6e7681",
+              color: SLATE,
               marginBottom: 12,
             }}
           >
@@ -227,7 +239,7 @@ export function ChangesView({
                 gridTemplateColumns: "3px 1fr",
                 gap: 12,
                 padding: "10px 0",
-                borderBottom: "1px solid #21262d",
+                borderBottom: `1px solid ${LINE}`,
               }}
             >
               <span
@@ -238,16 +250,12 @@ export function ChangesView({
                 }}
               />
               <span>
-                <span
-                  style={{ fontSize: 13, color: "#e6edf3", display: "block" }}
-                >
-                  {c.summary}
-                </span>
+                <span style={{ fontSize: 13, color: INK, display: "block" }}>{c.summary}</span>
                 {c.detail && (
                   <span
                     style={{
                       fontSize: 12,
-                      color: "#8b949e",
+                      color: SLATE,
                       display: "block",
                       marginTop: 3,
                       lineHeight: 1.55,
@@ -258,9 +266,9 @@ export function ChangesView({
                 )}
                 <span
                   style={{
-                    fontFamily: MONO,
+                    fontFamily: FONT_MONO,
                     fontSize: 10,
-                    color: "#484f58",
+                    color: SLATE,
                     display: "block",
                     marginTop: 5,
                   }}
@@ -274,18 +282,10 @@ export function ChangesView({
         </>
       )}
 
-      <p
-        style={{
-          marginTop: 26,
-          fontSize: 11.5,
-          color: "#484f58",
-          maxWidth: "74ch",
-          lineHeight: 1.6,
-        }}
-      >
-        Agents are matched between scans on file path. A move is detected by
-        comparing tool catalogs, but a file that is renamed and edited in the
-        same change may still read as one agent removed and another added.
+      <p style={{ marginTop: 26, fontSize: 11.5, color: SLATE, maxWidth: "74ch", lineHeight: 1.6 }}>
+        Agents are matched between scans on file path. This view is scan↔scan only — not the tool
+        write ledger. A rename+edit in one change may still read as one agent removed and another
+        added.
       </p>
     </div>
   );

@@ -111,7 +111,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
           <span style={{ fontSize: 11, color: "#e2e8f0" }}>{domain}</span>
         </SECTION>
 
-        <SECTION title="Layer">
+        <SECTION title="Architecture Layer">
           <span style={{ fontSize: 11, color: "#e2e8f0" }}>{layer}</span>
         </SECTION>
 
@@ -131,7 +131,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
                   padding: "2px 6px",
                   borderRadius: 4,
                   background: "rgba(96,165,250,0.2)",
-                  color: "#58a6ff",
+                  color: "#ef32a6",
                 }}
               >
                 {r}
@@ -144,7 +144,7 @@ export function NodeIntelPanel({ node, graph, onClose, onOpenFull }: NodeIntelPa
                   padding: "2px 6px",
                   borderRadius: 4,
                   background: "rgba(96,165,250,0.2)",
-                  color: "#58a6ff",
+                  color: "#ef32a6",
                 }}
               >
                 {node.role}

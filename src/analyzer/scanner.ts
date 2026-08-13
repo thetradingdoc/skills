@@ -41,13 +41,88 @@ function isExcluded(moduleId: string): boolean {
   return segments.some((s) => EXCLUDED_BASENAMES.has(s));
 }
 
+/**
+ * Trading: under middleware-platform/services, every first-level folder becomes
+ * its own node (strategy/policy/risk/… plus compliance/provenance/…). Flat
+ * *.js files in services/ map to spine-aligned aliases — never a bare
+ * middleware-platform/services mega-node.
+ */
+/** Flat service files → spine-aligned buckets (no disk moves). */
+const RESIDUAL_SERVICE_FILE_ALIAS: Record<string, string> = {
+  "llm-router.js": "agent-runtime",
+  "trading-tool-executor.js": "agent-runtime",
+  "trading-turn-resolver.js": "agent-runtime",
+  "trading-chat-service.js": "agent-runtime",
+  "telegram-bot.js": "ingress",
+  "telegram-auth.js": "ingress",
+  "telegram-paper-commands.js": "ingress",
+  "caller.js": "ingress",
+  "identity-service.js": "ingress",
+  "email-sender.js": "ingress",
+  "paper-wallet-writer.js": "payment",
+  "wallet-service.js": "payment",
+  "trade-service.js": "payment",
+  "trade-confirm.js": "payment",
+  "trade-reporting.js": "payment",
+  "positions.js": "payment",
+  "signal-engine.js": "strategy",
+  "pead.js": "strategy",
+  "pead-cycle-adapter.js": "strategy",
+  "fda-client.js": "strategy",
+  "dividend-service.js": "strategy",
+  "earnings-ingest.js": "strategy",
+  "regime-service.js": "strategy",
+  "sub-sectors.js": "strategy",
+  "policy.js": "policy",
+  "broker-snapshot.js": "broker",
+  "market-data-client.js": "market-data",
+  "market-calendar-nyse.js": "market-data",
+  "health-service.js": "data_obs",
+  "observability-service.js": "data_obs",
+  "scheduler.js": "data_obs",
+  "metrics.js": "data_obs",
+  "metrics-service.js": "data_obs",
+  "eod-report.js": "data_obs",
+  "langsmith-trace-service.js": "data_obs",
+  "knowledge-ingest.js": "data_obs",
+  "entity-resolver.js": "data_obs",
+  "pinecone-rest.js": "data_obs",
+  "vector-index-ops.js": "data_obs",
+  "vector-retriever.js": "data_obs",
+  "vector-retriever-stub.js": "data_obs",
+  "logger.js": "data_obs",
+  "secure-logger.js": "data_obs",
+  "embedding-provider.js": "agent-runtime",
+  "embedding-stub.js": "agent-runtime",
+  "text-chunking.js": "agent-runtime",
+};
+
 // ── Module boundary: max N path segments from root (drilldown configurable) ──
 // e.g. depth=2: src/payment/handlers/refund.ts → "src/payment", lib/http.ts → "lib"
-function getModuleId(rootPath: string, filePath: string): string {
+export function getModuleId(rootPath: string, filePath: string): string {
   const rel = path.relative(rootPath, filePath);
   const parts = rel.split(path.sep).filter(Boolean);
   if (parts.length <= 1) return ".";
   const dirParts = parts.slice(0, -1);
+  const fileName = parts[parts.length - 1] ?? "";
+  // Trading-agent: every services/<subdir> is its own node (not a mega services bag).
+  // Known money-path names stay first-class; other folders (compliance, provenance, …) also split.
+  if (
+    dirParts.length >= 3 &&
+    dirParts[0] === "middleware-platform" &&
+    dirParts[1] === "services"
+  ) {
+    return dirParts.slice(0, 3).join("/");
+  }
+  // Residual flat files under middleware-platform/services/*.js → spine-aligned buckets
+  if (
+    dirParts.length === 2 &&
+    dirParts[0] === "middleware-platform" &&
+    dirParts[1] === "services"
+  ) {
+    const alias = RESIDUAL_SERVICE_FILE_ALIAS[fileName] ?? "platform-utils";
+    return `middleware-platform/services/${alias}`;
+  }
   const depthEnv = process.env.ARCH_MODULE_DEPTH;
   const depth =
     typeof depthEnv === "string"
@@ -378,6 +453,7 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
   type AccNode = ArchNode & {
     _exports: Set<string>;
     _externals: Set<string>;
+    _unresolvedDynamic?: boolean;
   };
 
   const moduleMap = new Map<string, AccNode>();
@@ -445,7 +521,7 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
       addEdgeForSpecifier(imp.getModuleSpecifierValue());
     }
 
-    // require() calls — CommonJS
+    // require() calls — CommonJS (literal only for resolvable edges)
     try {
       sourceFile.forEachDescendant((node) => {
         if (node.getKind() !== SyntaxKind.CallExpression) return;
@@ -457,11 +533,66 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
         const args = call.getArguments();
         const arg = args[0];
         if (!arg) return;
-        const specifier = arg.getText().replace(/['"]/g, "");
+        const kind = arg.getKind();
+        if (kind !== SyntaxKind.StringLiteral && kind !== SyntaxKind.NoSubstitutionTemplateLiteral) {
+          // Computed require — flag source module; cannot resolve target.
+          const entryDyn = moduleMap.get(moduleId);
+          if (entryDyn) {
+            (entryDyn as { _unresolvedDynamic?: boolean })._unresolvedDynamic = true;
+          }
+          return;
+        }
+        const specifier = arg.getText().replace(/['"`]/g, "");
         addEdgeForSpecifier(specifier);
       });
     } catch {
       /* ignore parse errors */
+    }
+
+    // dynamic import() — emit type:"dynamic" when specifier is a string literal
+    try {
+      sourceFile.forEachDescendant((node) => {
+        if (node.getKind() !== SyntaxKind.CallExpression) return;
+        const call = node.asKind(SyntaxKind.CallExpression);
+        if (!call) return;
+        const expr = call.getExpression();
+        if (expr.getKind() !== SyntaxKind.ImportKeyword && expr.getText() !== "import") return;
+        const args = call.getArguments();
+        const arg = args[0];
+        if (!arg) return;
+        const kind = arg.getKind();
+        if (kind !== SyntaxKind.StringLiteral && kind !== SyntaxKind.NoSubstitutionTemplateLiteral) {
+          const entryDyn = moduleMap.get(moduleId);
+          if (entryDyn) {
+            (entryDyn as { _unresolvedDynamic?: boolean })._unresolvedDynamic = true;
+          }
+          return;
+        }
+        const specifier = arg.getText().replace(/['"`]/g, "");
+        const resolved = resolveImportPath(specifier, filePath, rootPath);
+        if (!resolved) {
+          const entryDyn = moduleMap.get(moduleId);
+          if (entryDyn) {
+            (entryDyn as { _unresolvedDynamic?: boolean })._unresolvedDynamic = true;
+          }
+          return;
+        }
+        const targetId = getModuleId(rootPath, resolved);
+        if (isExcluded(targetId) || targetId === moduleId) return;
+        const edgeId = `${moduleId}-dyn->${targetId}`;
+        if (!edgeSet.has(edgeId)) {
+          edgeSet.add(edgeId);
+          edges.push({
+            id: edgeId,
+            source: moduleId,
+            target: targetId,
+            type: "dynamic",
+            isDrift: false,
+          });
+        }
+      });
+    } catch {
+      /* ignore */
     }
   }
 
@@ -608,9 +739,12 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
 
   const nodes: ArchNode[] = [];
   for (const [, entry] of moduleMap) {
-    const { _exports, _externals, ...rest } = entry;
+    const { _exports, _externals, _unresolvedDynamic, ...rest } = entry;
+    const tags = new Set<string>(rest.tags ?? []);
+    if (_unresolvedDynamic) tags.add("dynamic-imports");
     nodes.push({
       ...rest,
+      tags: Array.from(tags),
       semanticSignals: {
         exports: Array.from(_exports).slice(0, 15),
         externalImports: Array.from(_externals).slice(0, 10),

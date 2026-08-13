@@ -297,6 +297,6 @@ export function severityColor(s: Severity): string {
     : s === "high"
       ? "#d29922"
       : s === "medium"
-        ? "#58a6ff"
+        ? "#ef32a6"
         : "#6e7681";
 }

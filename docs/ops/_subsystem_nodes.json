@@ -1,0 +1,193 @@
+[
+  {
+    "id": "middleware-platform",
+    "label": "Middleware Platform",
+    "layer": "Business Logic",
+    "kind": "module",
+    "techKind": "database",
+    "tags": [
+      "db"
+    ],
+    "domain": "users",
+    "tier": "supporting",
+    "subsystem": "ingress",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/database.js",
+      "middleware-platform/jest.config.js",
+      "middleware-platform/server.js"
+    ]
+  },
+  {
+    "id": "unified-dashboard/trading",
+    "label": "Trading",
+    "layer": "Presentation",
+    "kind": "module",
+    "techKind": "unknown",
+    "tags": [],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "ingress",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "unified-dashboard/trading/trading-chat.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/investment-agent",
+    "label": "Investment Agent",
+    "layer": "Reasoning",
+    "kind": "module",
+    "techKind": "unknown",
+    "tags": [],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "strategy",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/investment-agent/mcp-tools.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/middleware",
+    "label": "Middleware",
+    "layer": "Business Logic",
+    "kind": "guardrail",
+    "techKind": "generic-service",
+    "tags": [
+      "service"
+    ],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "ingress",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/middleware/error-handler.js",
+      "middleware-platform/middleware/health-check.js",
+      "middleware-platform/middleware/rate-limiter.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/migrations",
+    "label": "Migrations",
+    "layer": "Business Logic",
+    "kind": "module",
+    "techKind": "unknown",
+    "tags": [],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "unclassified",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/migrations/001_trading_platform_init.js",
+      "middleware-platform/migrations/002_investment_agent_init.js",
+      "middleware-platform/migrations/003_knowledge_graph.js",
+      "middleware-platform/migrations/004_kg_event.js",
+      "middleware-platform/migrations/005_identity.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/routes",
+    "label": "Routes",
+    "layer": "Memory",
+    "kind": "module",
+    "techKind": "http-api",
+    "tags": [
+      "api"
+    ],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "ingress",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/routes/internal-service-ops.js",
+      "middleware-platform/routes/trading-chat.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/scripts",
+    "label": "Scripts",
+    "layer": "Business Logic",
+    "kind": "module",
+    "techKind": "database",
+    "tags": [
+      "db"
+    ],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "unclassified",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/scripts/agent-tests.js",
+      "middleware-platform/scripts/backfill-benchmark.js",
+      "middleware-platform/scripts/backtest.js",
+      "middleware-platform/scripts/backup-database.js",
+      "middleware-platform/scripts/integration-tests.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/services",
+    "label": "Services",
+    "layer": "Reasoning",
+    "kind": "agent",
+    "techKind": "http-api",
+    "tags": [
+      "api"
+    ],
+    "domain": "users",
+    "tier": "supporting",
+    "subsystem": "unclassified",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/services/caller.js",
+      "middleware-platform/services/dividend-service.js",
+      "middleware-platform/services/email-sender.js",
+      "middleware-platform/services/embedding-provider.js",
+      "middleware-platform/services/embedding-stub.js"
+    ]
+  },
+  {
+    "id": "middleware-platform/utils",
+    "label": "Utils",
+    "layer": "Business Logic",
+    "kind": "module",
+    "techKind": "generic-service",
+    "tags": [
+      "service"
+    ],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "data_obs",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      "middleware-platform/utils/greet.js",
+      "middleware-platform/utils/langsmith-config.js"
+    ]
+  },
+  {
+    "id": ".github/workflows",
+    "label": "Workflows",
+    "layer": "Orchestration",
+    "kind": "infra",
+    "techKind": "unknown",
+    "tags": [],
+    "domain": "users",
+    "tier": "peripheral",
+    "subsystem": "unclassified",
+    "confidence": "high",
+    "reason": "existing node.subsystem",
+    "files": [
+      ".github/workflows/ci.yml",
+      ".github/workflows/deploy-staging.yml"
+    ]
+  }
+]

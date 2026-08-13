@@ -26,6 +26,8 @@ export type LayerId =
 
 export type LayerFill = "filled" | "thin" | "empty" | "unsearched";
 
+export type LayerScope = "agent" | "system";
+
 export type LayerComponent = {
   id: string;
   label: string;
@@ -41,6 +43,11 @@ export type AgentLayerResult = {
   whyItMatters: string;
   whatFillsIt?: string;
   status: LayerFill;
+  /**
+   * agent = evidence is only from this agent's turn path.
+   * system = evidence may include repo-wide signals (eval harnesses, deploy configs).
+   */
+  scope: LayerScope;
   /** empty = searched and found nothing; unsearched = could not search */
   emptyReason?: string;
   components: LayerComponent[];
@@ -164,7 +171,7 @@ function extractLocalRequires(text: string): string[] {
   return out;
 }
 
-type RepoGraph = {
+export type RepoGraph = {
   files: string[];
   /** rel → abs */
   byRel: Map<string, string>;
@@ -175,7 +182,7 @@ type RepoGraph = {
 
 let cachedGraph: { root: string; graph: RepoGraph } | null = null;
 
-function buildRepoGraph(repoRoot: string): RepoGraph {
+export function buildRepoGraph(repoRoot: string): RepoGraph {
   if (cachedGraph?.root === repoRoot) return cachedGraph.graph;
   const files = walkFiles(repoRoot);
   const byRel = new Map<string, string>();
@@ -319,14 +326,14 @@ const KNOWLEDGE_TEXT_RE =
 const SAFETY_FILE_RE =
   /(pii-redactor|redaction-service|safety-prescreen|guardrail|moderation)/i;
 const SAFETY_TEXT_RE =
-  /\b(pii-?redactor|redactPii|redactPHI|openai\.moderations|content.?filter|SafetyPreScreen|redactObject)\b/i;
+  /\b(pii-?redactor|redactPii|redactPHI|openai\.moderations|content.?filter|SafetyPreScreen|redactObject|assertCaller)\b/i;
 
-const OBS_FILE_RE = /(opentelemetry|langfuse|helicone|braintrust|otel)/i;
+const OBS_FILE_RE = /(opentelemetry|langfuse|helicone|braintrust|otel|langsmith)/i;
 const OBS_TEXT_RE =
-  /\b(@opentelemetry|opentelemetry|langfuse|helicone|braintrust|logToolCall|logModelCall)\b/i;
+  /\b(@opentelemetry|opentelemetry|langfuse|helicone|braintrust|logToolCall|logModelCall|langsmith|LANGCHAIN_TRACING|LANGSMITH_)\b/i;
 
 const EVAL_FILE_RE =
-  /(evaluate-accuracy|eval-engine|coding-eval-nightly|pipeline-eval|eval:coding)/i;
+  /(evaluate-accuracy|eval-engine|coding-eval-nightly|pipeline-eval|eval:coding|agent-tests\.js|__tests__\/|\.test\.(js|ts|mjs|cjs)|\.spec\.(js|ts|mjs|cjs))/i;
 
 /**
  * Does this harness actually invoke `agent` (or a module unique to it)?
@@ -393,16 +400,27 @@ function evalExercisesAgent(
     return { yes: false, evidence: "" };
   }
 
-  // Direct require of this agent module
-  if (
-    new RegExp(
-      `require\\(['"\`][^'"\`]*${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}['"\`]\\)`
-    ).test(text) ||
-    new RegExp(`from ['"][^'"]*${base}`).test(text)
-  ) {
+  // Direct require/import of this agent module (with or without extension)
+  const escapedBase = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const agentImportRe = new RegExp(
+    `(?:require\\s*\\(\\s*['"\`][^'"\`]*${escapedBase}(?:\\.[cm]?[jt]sx?)?['"\`]\\s*\\)|from\\s+['"][^'"]*${escapedBase}(?:\\.[cm]?[jt]sx?)?['"])`
+  );
+  if (agentImportRe.test(text)) {
     return {
       yes: true,
       evidence: `${evalRel}: requires ${base}`,
+    };
+  }
+
+  // Soft: harness body mentions the agent basename AND asserts/expects something
+  // (covers scripts that load via a helper but still exercise this agent).
+  if (
+    new RegExp(`\\b${escapedBase}\\b`).test(text) &&
+    /\b(assert|expect|describe|it\s*\(|test\s*\()/i.test(text)
+  ) {
+    return {
+      yes: true,
+      evidence: `${evalRel}: test harness names ${base}`,
     };
   }
 
@@ -454,16 +472,11 @@ function dbMethodTables(repoRoot: string, agentAbs: string, method: string): str
     path.join(repoRoot, "database.js"),
   ];
 
-  }
 
   for (const abs of candidates) {
     if (!fs.existsSync(abs)) continue;
     try {
       const mod = extractDatabaseModule(abs, repoRoot);
-          " methods=" + Object.keys((mod as any).methodTables || {}).length +
-          " want=" + method +
-          " got=" + JSON.stringify((mod as any).methodTables?.[method] ?? null));
-      }
       const tables = mod.methodTables?.[method];
       if (tables && tables.length) return tables;
     } catch (e) {
@@ -680,10 +693,6 @@ export function detectAgentLayers(
       // before any tool runs, so tool reach cannot contain it, and the file is
       // not named session-store — the two checks above are structurally unable
       // to see it. The agent's source is already loaded; consult it.
-        const hits = agentText ? [...agentText.matchAll(/\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)].map((x) => x[1]) : [];
-        for (const h of hits) {
-        }
-      }
       if (agentText) {
         for (const m of agentText.matchAll(/\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)) {
           const method = m[1];
@@ -700,6 +709,20 @@ export function detectAgentLayers(
               evidence: base + ": db." + method + "() in turn assembly, before tool dispatch",
             });
           }
+        }
+        // Fallback when resources.classify.json has not labeled tables: any
+        // db.method whose name itself signals conversation history still counts.
+        for (const m of agentText.matchAll(/\bdb\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g)) {
+          const method = m[1] ?? "";
+          if (!/history|session|prior|conversation|memory|messages/i.test(method)) continue;
+          const key = "method:" + method;
+          if (memKeys.has(key)) continue;
+          memKeys.add(key);
+          components.push({
+            id: "memory:" + key,
+            label: "db." + method,
+            evidence: base + ": db." + method + "() in turn assembly (history/session-shaped)",
+          });
         }
       }
 
@@ -803,8 +826,21 @@ export function detectAgentLayers(
         emptyReason =
           "Could not establish a forward path from this agent — safety unsearched.";
       } else {
+        // Controls living in the agent file itself (e.g. assertCaller before tools)
+        if (agentText && SAFETY_TEXT_RE.test(agentText)) {
+          const m = agentText.match(
+            /\b(assertCaller|redactPii|redactPHI|SafetyPreScreen|openai\.moderations|content.?filter)\b/i
+          );
+          if (m) {
+            components.push({
+              id: "safety:in-agent",
+              label: m[1] ?? "in-agent guard",
+              evidence: `${agent.file}: ${m[1]} on agent turn assembly`,
+            });
+          }
+        }
         for (const rel of pathInfo.agentForward) {
-          // Agent source file is NOT a safety control
+          // Agent source already handled above
           if (rel === agent.file) continue;
           if (/guardrail-no-azure|deploy\.cjs|secure-logger/i.test(rel)) continue;
           const abs = graph.byRel.get(rel);
@@ -815,7 +851,7 @@ export function detectAgentLayers(
           // Filename-only weak hits need an actual control symbol in-file
           if (
             !fileHit &&
-            !/(redact|moderat|guardrail|SafetyPreScreen|pii)/i.test(text.slice(0, 60_000))
+            !/(redact|moderat|guardrail|SafetyPreScreen|pii|assertCaller)/i.test(text.slice(0, 60_000))
           ) {
             continue;
           }
@@ -843,16 +879,22 @@ export function detectAgentLayers(
         status = statusFromCount(components.length);
         if (status === "empty") {
           emptyReason =
-            "Searched this agent's path for moderation, guardrails, and PII/PHI redaction — none found.";
+            "Searched this agent's turn path (not the whole system) for moderation, guardrails, and PII/PHI redaction — none found on this path.";
         }
       }
     } else if (id === "observability") {
-      if (!pathInfo.agentForwardOk) {
+      if (!pathInfo.agentForwardOk && pathInfo.callers.length === 0) {
         status = "unsearched";
         emptyReason =
           "Could not establish a forward path from this agent — observability unsearched.";
       } else {
-        for (const rel of pathInfo.agentForward) {
+        // Turn-path modules plus direct callers (e.g. main-graph wraps executeTurn
+        // with langsmith-config). Callers are the ingress of tracing for this surface.
+        const obsRels = new Set<string>([
+          ...pathInfo.agentForward,
+          ...pathInfo.callers,
+        ]);
+        for (const rel of obsRels) {
           if (rel === agent.file) {
             if (agentText && OBS_TEXT_RE.test(agentText)) {
               components.push({
@@ -870,13 +912,35 @@ export function detectAgentLayers(
           components.push({
             id: `obs:${rel}`,
             label: path.basename(rel),
-            evidence: `${rel}: agent-path tracing/logging (not HTTP access logs)`,
+            evidence: pathInfo.callers.includes(rel)
+              ? `${rel}: caller of ${base} wires tracing/logging`
+              : `${rel}: agent-path tracing/logging (not HTTP access logs)`,
           });
+        }
+        // One hop: caller requires langsmith-config / otel without inlining the SDK name.
+        for (const caller of pathInfo.callers) {
+          const callerAbs = graph.byRel.get(caller) ?? path.join(repoRoot, caller);
+          const callerText = readSafe(callerAbs);
+          if (!callerText) continue;
+          const reqRe = /require\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+          let rm: RegExpExecArray | null;
+          while ((rm = reqRe.exec(callerText)) !== null) {
+            const resolved = resolveLocalRequire(callerAbs, rm[1]!, repoRoot);
+            if (!resolved) continue;
+            const hopRel = path.relative(repoRoot, resolved).split(path.sep).join("/");
+            if (!OBS_FILE_RE.test(hopRel)) continue;
+            if (components.some((c) => c.id === `obs:${hopRel}`)) continue;
+            components.push({
+              id: `obs:${hopRel}`,
+              label: path.basename(hopRel),
+              evidence: `${caller} → ${hopRel}: tracing config on turn caller`,
+            });
+          }
         }
         status = statusFromCount(components.length);
         if (status === "empty") {
           emptyReason =
-            "Searched this agent's path for tracing SDKs and model/tool-call logging — none.";
+            "Searched this agent's turn path and direct callers for tracing SDKs and model/tool-call logging — none found.";
         }
       }
     } else if (id === "evaluation") {
@@ -967,6 +1031,9 @@ export function detectAgentLayers(
       whyItMatters: spec.whyItMatters,
       whatFillsIt: spec.whatFillsIt,
       status,
+      // Safety and Observability only walk this agent's forward path — label
+      // them as agent-scoped so the Layers UI does not read as "the system".
+      scope: id === "safety" || id === "observability" ? "agent" : "system",
       emptyReason:
         status === "empty" || status === "unsearched" ? emptyReason : undefined,
       components,

@@ -21,14 +21,14 @@ const MONO = "JetBrains Mono, ui-monospace, monospace";
 const THEME = {
   background: "#0d1117",
   foreground: "#e6edf3",
-  cursor: "#58a6ff",
+  cursor: "#ef32a6",
   cursorAccent: "#0d1117",
   selectionBackground: "rgba(88,166,255,0.25)",
   black: "#484f58",
   red: "#f85149",
   green: "#3fb950",
   yellow: "#d29922",
-  blue: "#58a6ff",
+  blue: "#ef32a6",
   magenta: "#a371f7",
   cyan: "#39c5cf",
   white: "#b1bac4",
@@ -308,7 +308,7 @@ export function TerminalPanel({ cwd, accessToken, apiBase }: Props) {
                 gap: 5,
                 padding: "2px 4px 2px 8px",
                 borderRadius: 6,
-                border: isActive ? "1px solid #58a6ff" : "1px solid #30363d",
+                border: isActive ? "1px solid #ef32a6" : "1px solid #30363d",
                 background: isActive ? "rgba(88,166,255,0.10)" : "transparent",
               }}
             >
@@ -325,7 +325,7 @@ export function TerminalPanel({ cwd, accessToken, apiBase }: Props) {
                   padding: 0,
                   fontFamily: MONO,
                   fontSize: 10.5,
-                  color: isActive ? "#58a6ff" : "#8b949e",
+                  color: isActive ? "#ef32a6" : "#8b949e",
                   cursor: "pointer",
                 }}
               >

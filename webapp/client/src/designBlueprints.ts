@@ -59,7 +59,7 @@ const tradingAgent: DesignBlueprint = {
     "Healthcare paper trading spine: Telegram → Identity (authorizes) → Agent → Strategy → Policy → Risk → Execution → Alpaca. Ingress also invokes Agent. LLM never submits orders.",
   notes: [
     "Hard rule: Agent outputs PROPOSED_ACTION only — Policy + Risk + Execution own money.",
-    "Payment is paper wallet via Telegram (/fund → /confirm_fund). Track progress in Flow → Tasks.",
+    "Payment is paper wallet via Telegram (/fund → /confirm_fund). Track progress in Tasks.",
     "Mobile app / dashboard can sit on the Presentation layer; MetaMask stays human-signed crypto treasury.",
   ],
   graph: graphOf(

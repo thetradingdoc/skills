@@ -142,7 +142,7 @@ export function FileIssues({ graph, filePath, onOpenFull }: Props) {
             borderRadius: 5,
             border: "1px solid #30363d",
             background: "transparent",
-            color: "#58a6ff",
+            color: "#ef32a6",
             cursor: "pointer",
             whiteSpace: "nowrap",
           }}

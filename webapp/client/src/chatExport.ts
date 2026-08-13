@@ -45,7 +45,7 @@ export function chatToMarkdown(
   L.push("# " + (opts.title ?? "Conversation"));
   L.push("");
   if (opts.repo) L.push("Repository: `" + opts.repo + "`  ");
-  L.push("Exported " + stamp(now) + " from LittleLabs");
+  L.push("Exported " + stamp(now) + " from blanko");
   L.push("");
   L.push("---");
   L.push("");
