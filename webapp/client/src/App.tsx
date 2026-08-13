@@ -35,6 +35,7 @@ import type {
   WorkspaceRuntimeSnapshot,
   ArchitectureChatMessage,
   Persona,
+  NodeSubsystem,
 } from "./types";
 import type { CanvasDensity } from "./theme";
 import {
@@ -103,16 +104,33 @@ import {
   DockFrame,
   BuildPanel,
   InsightsPanel,
-  EvidencePanel,
+  AgentsDock,
+  WorkspaceDock,
+  TasksDock,
+  ViewDock,
   ChatBar,
   ChromeBar,
   EdgeTeachStrip,
   ViewShell,
   getBuildItem,
+  normalizeDockMode,
+  defaultDockWidthForMode,
+  clampDockWidth,
+  canMaximizeDockMode,
+  nextDockEscAction,
   type DockMode,
-  type OverflowView,
+  type AgentsDockTab,
+  type WorkspaceDockTab,
+  type CanvasInteractionMode,
 } from "./blanko";
 import { buildPlatformInventory, collectDetectedProvidersFromAgents } from "./platformInventory";
+import { nodeActionBadgeMeta, type NodeNextAction } from "./insightsBriefing";
+import { buildInsightsTodoPayload } from "./insightsTodo";
+import {
+  canAutoEnqueueForGraph,
+  collectAutoEnqueueCandidates,
+  newAutoEnqueueCandidates,
+} from "./autoEnqueueFindings";
 import { getDesignKnowledge } from "./designKnowledge";
 import { planFromGraph, nextStep } from "./buildPlan";
 import { DESIGN_BLUEPRINTS, forkBlueprint } from "./designBlueprints";
@@ -654,7 +672,7 @@ const SCAN_ONLY_VIEW_LABEL: Record<string, string> = {
   reach: "Reach",
   resources: "Resources",
   flow: "Flow",
-  layers: "Layers",
+  layers: "Agent Layers",
   standard: "Standard",
   guard: "Guard",
   changes: "Changes",
@@ -864,6 +882,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState("");
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [selectedSubsystem, setSelectedSubsystem] = useState<NodeSubsystem | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [activeFilters, setActiveFilters] = useState<Set<EdgeFilter>>(new Set(["all"]));
   const [activeNodeFilters, setActiveNodeFilters] = useState<Set<NodeFilter>>(new Set(["all"]));
@@ -987,14 +1006,23 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<"dashboard" | "chat" | "code">("dashboard");
   /** Right control panel closed by default — canvas full-bleed until wall click. */
   const [dockMode, setDockMode] = useState<DockMode | null>(null);
+  const [agentsDockTab, setAgentsDockTab] = useState<AgentsDockTab>("inventory");
+  const [workspaceDockTab, setWorkspaceDockTab] = useState<WorkspaceDockTab>("platforms");
+  const [rollupRefreshKey, setRollupRefreshKey] = useState(0);
   const [dockOpen, setDockOpen] = useState(false);
   /** Insights Edit details expanded (double-click / place). */
   const [insightsEditOpen, setInsightsEditOpen] = useState(false);
+  const [flowInitialPane, setFlowInitialPane] = useState<"path" | "tasks">("path");
+  const [tasksRefreshKey, setTasksRefreshKey] = useState(0);
+  const [flowTasksNotice, setFlowTasksNotice] = useState<string | null>(null);
+  const [focusTodoId, setFocusTodoId] = useState<string | null>(null);
+  const [canUseAiAgent, setCanUseAiAgent] = useState<boolean | null>(null);
+  const [todoStatusBySourcePath, setTodoStatusBySourcePath] = useState<Record<string, string>>({});
   const [dockWidth, setDockWidth] = useState(360);
+  const [dockMaximized, setDockMaximized] = useState(false);
   const [sceneCollapsed, setSceneCollapsed] = useState(true);
   /** Collapsed by default (composer pill only). Expand for history / seeds; proposals peek without expand. */
   const [chatExpanded, setChatExpanded] = useState(false);
-  const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const [pendingProposal, setPendingProposal] = useState<GraphCommand[] | null>(null);
   const [chatOnlyNotice, setChatOnlyNotice] = useState(false);
   const [importFindings, setImportFindings] = useState<DesignFinding[]>([]);
@@ -1002,6 +1030,8 @@ export default function App() {
   const [flashNodeIds, setFlashNodeIds] = useState<string[]>([]);
   const [lastAcceptWhy, setLastAcceptWhy] = useState<string | null>(null);
   const [showHealthBadges, setShowHealthBadges] = useState(true);
+  /** View = inspect scan; Edit = canvas design affordances (independent of Apply spine). */
+  const [canvasInteraction, setCanvasInteraction] = useState<CanvasInteractionMode>("view");
   const blankoShell = true;
   const [greenfieldSessionId, setGreenfieldSessionId] = useState<string | null>(() => {
     try {
@@ -1140,7 +1170,6 @@ export default function App() {
   const isCanvasView = graphViewMode === "2d";
   const backToCanvas = useCallback(() => {
     setGraphViewMode("2d");
-    setConfigMenuOpen(false);
     setDockOpen(false);
   }, []);
   // Canvas controls sit behind a toggle rather than in the bar. They belong to
@@ -1168,9 +1197,21 @@ export default function App() {
   const [showConnectGitHubPanel, setShowConnectGitHubPanel] = useState(() => {
     try {
       const p = new URLSearchParams(window.location.search);
-      return p.get("github-connect") === "1" && !!p.get("workspaceId");
+      return (
+        (p.get("github-connect") === "1" && !!p.get("workspaceId")) ||
+        (!!p.get("installation_id") && (!!p.get("state") || !!p.get("workspaceId"))) ||
+        p.get("github-app-install") === "1"
+      );
     } catch {
       return false;
+    }
+  });
+  const [githubAppInstallationId, setGithubAppInstallationId] = useState<number | null>(() => {
+    try {
+      const id = Number(new URLSearchParams(window.location.search).get("installation_id"));
+      return Number.isFinite(id) && id > 0 ? id : null;
+    } catch {
+      return null;
     }
   });
   const [selectedAnnotationForComments, setSelectedAnnotationForComments] = useState<string | null>(null);
@@ -1250,6 +1291,8 @@ export default function App() {
   const leftPanelUserToggledRef = useRef(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
   const graphRef = useRef<typeof graph>(graph);
+  /** Last module-scan graph before Apply spine — chrome ← Code map restores this first. */
+  const preSpineGraphRef = useRef<ArchGraph | null>(null);
   const fixPromptRef = useRef<string | null>(null);
   const workspaceDropUpRef = useRef<HTMLDivElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1271,6 +1314,55 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(url);
   }, []);
+
+  // Bind Blanko-Lab App install callback (?installation_id&state=workspaceId).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const installationId = Number(params.get("installation_id"));
+    const workspaceFromState = (params.get("state") || params.get("workspaceId") || "").trim();
+    if (!Number.isFinite(installationId) || installationId <= 0 || !workspaceFromState || !accessToken) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/github/app/installations/bind`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            workspaceId: workspaceFromState,
+            installation_id: installationId,
+          }),
+        });
+        if (!cancelled && res.ok) {
+          setGithubAppInstallationId(installationId);
+          setShowConnectGitHubPanel(true);
+          setRollupRefreshKey((k) => k + 1);
+        }
+      } catch {
+        /* bind is best-effort; user can retry Install */
+      } finally {
+        if (!cancelled) {
+          try {
+            const u = new URL(window.location.href);
+            u.searchParams.delete("installation_id");
+            u.searchParams.delete("setup_action");
+            u.searchParams.delete("state");
+            u.searchParams.delete("github-app-install");
+            window.history.replaceState({}, "", u.pathname + u.search + u.hash);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
 
   // Poll latest runtime snapshot in live mode.
   useEffect(() => {
@@ -1448,6 +1540,20 @@ export default function App() {
   }, []);
 
   const isDesignMode = isDesignGraph(graph);
+  /** Canvas edit affordances — header View/Edit; does not flip architectureBoard. */
+  const canvasDesignMode = canvasInteraction === "edit";
+  const canvasBoardKey = !graph
+    ? "none"
+    : `${graph.projectRoot ?? ""}::${graph.architectureBoard ? "arch" : "scan"}::${isDesignMode ? "design" : "analysis"}`;
+
+  // Default interaction when the board identity changes: design boards → Edit, scans → View.
+  useEffect(() => {
+    if (canvasBoardKey === "none") {
+      setCanvasInteraction("view");
+      return;
+    }
+    setCanvasInteraction(canvasBoardKey.endsWith("::design") ? "edit" : "view");
+  }, [canvasBoardKey]);
 
   // Post-V1 multiplayer: broadcast/receive node patches over a realtime
   // channel scoped to this workspace's design graph. Merge is pure (see
@@ -1616,22 +1722,275 @@ export default function App() {
     [designFindings, importFindings]
   );
 
-  const designFindingCounts = useMemo(() => {
-    const map: Record<string, { count: number; severity: "blocker" | "risk" | "suggestion" }> = {};
-    const rank = { blocker: 3, risk: 2, suggestion: 1 } as const;
-    for (const f of allInsightsFindings) {
-      for (const id of f.nodeIds) {
-        const cur = map[id];
-        if (!cur) {
-          map[id] = { count: 1, severity: f.severity };
-        } else {
-          cur.count += 1;
-          if (rank[f.severity] > rank[cur.severity]) cur.severity = f.severity;
-        }
-      }
+  const designFindingCounts = useMemo(
+    () => nodeActionBadgeMeta(graph, allInsightsFindings, { todoStatusBySourcePath }),
+    [graph, allInsightsFindings, todoStatusBySourcePath]
+  );
+
+  useEffect(() => {
+    if (!accessToken || !activeWorkspaceId) {
+      setTodoStatusBySourcePath({});
+      return;
     }
-    return map;
-  }, [allInsightsFindings]);
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch(
+          `${API_BASE}/todos?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!r.ok || cancelled) return;
+        const d = (await r.json()) as {
+          todos?: Array<{ source_path?: string | null; status?: string; archived_at?: string | null }>;
+        };
+        const map: Record<string, string> = {};
+        for (const t of d.todos ?? []) {
+          if (!t.source_path || t.archived_at) continue;
+          map[t.source_path] = t.status ?? "todo";
+        }
+        if (!cancelled) setTodoStatusBySourcePath(map);
+      } catch {
+        /* best-effort */
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, activeWorkspaceId, tasksRefreshKey]);
+
+  useEffect(() => {
+    if (!accessToken) {
+      setCanUseAiAgent(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${API_BASE}/billing/me`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!r.ok || cancelled) return;
+        const d = (await r.json()) as { canUseAiAgent?: boolean };
+        if (!cancelled) setCanUseAiAgent(!!d.canUseAiAgent);
+      } catch {
+        if (!cancelled) setCanUseAiAgent(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken]);
+
+  const fixAgentDisabledReason = useMemo(() => {
+    if (!accessToken || !activeWorkspaceId) return "Sign in and open a workspace to run the agent.";
+    if (!(graph?.projectRoot && graph.projectRoot.trim())) {
+      return "Scan a repo first — the agent needs project files on disk.";
+    }
+    if (canUseAiAgent === false) {
+      return "Fix requires Pro or Team.";
+    }
+    return null;
+  }, [accessToken, activeWorkspaceId, graph?.projectRoot, canUseAiAgent]);
+
+  const postInsightsTodo = useCallback(
+    async (node: ArchNode, action: NodeNextAction) => {
+      if (!activeWorkspaceId || !accessToken) {
+        throw new Error("Sign in and open a workspace to add tasks.");
+      }
+      const payload = buildInsightsTodoPayload(node, action);
+      const listRes = await fetch(
+        `${API_BASE}/todos?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } }
+      );
+      if (listRes.ok) {
+        const listData = (await listRes.json()) as {
+          todos?: Array<{ id: string; source_path?: string | null; status?: string; archived_at?: string | null }>;
+        };
+        const existing = (listData.todos ?? []).find(
+          (t) =>
+            t.source_path === payload.sourcePath &&
+            !t.archived_at &&
+            t.status !== "done" &&
+            t.status !== "completed"
+        );
+        if (existing) return existing;
+      }
+      const res = await fetch(`${API_BASE}/todos`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          workspaceId: activeWorkspaceId,
+          title: payload.title,
+          description: payload.description,
+          context: payload.context,
+          fileScope: payload.fileScope,
+          agentFile: payload.agentFile,
+          layerId: payload.layerId,
+          source: payload.source,
+          sourcePath: payload.sourcePath,
+          sourceNodeId: payload.sourceNodeId,
+          assigneeLabel: payload.assigneeLabel,
+          kind: payload.kind,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        todo?: { id: string; status?: string; title?: string };
+      };
+      if (!res.ok || !data.todo) {
+        throw new Error(data.error ?? `Could not create task (${res.status})`);
+      }
+      return data.todo;
+    },
+    [activeWorkspaceId, accessToken]
+  );
+
+  /** Epic 2 — client-side auto-enqueue after graph load (D1/D4/D6). */
+  useEffect(() => {
+    if (!graph || !activeWorkspaceId || !accessToken) return;
+    if (!canAutoEnqueueForGraph(graph)) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const candidates = collectAutoEnqueueCandidates(graph);
+        if (candidates.length === 0) return;
+        const listRes = await fetch(
+          `${API_BASE}/todos?workspaceId=${encodeURIComponent(activeWorkspaceId)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (!listRes.ok || cancelled) return;
+        const listData = (await listRes.json()) as {
+          todos?: Array<{ source_path?: string | null; status?: string; archived_at?: string | null }>;
+        };
+        const open = new Set(
+          (listData.todos ?? [])
+            .filter(
+              (t) =>
+                t.source_path &&
+                !t.archived_at &&
+                t.status !== "done" &&
+                t.status !== "completed"
+            )
+            .map((t) => t.source_path as string)
+        );
+        const toCreate = newAutoEnqueueCandidates(candidates, open);
+        if (toCreate.length === 0) return;
+        let created = 0;
+        for (const c of toCreate) {
+          if (cancelled) break;
+          const res = await fetch(`${API_BASE}/todos`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              workspaceId: activeWorkspaceId,
+              title: c.title,
+              description: c.description,
+              context: c.context,
+              fileScope: c.fileScope,
+              agentFile: c.agentFile,
+              layerId: c.layerId,
+              source: c.source,
+              sourcePath: c.sourcePath,
+              sourceNodeId: c.nodeId,
+              assigneeLabel: c.assigneeLabel,
+              kind: c.kind,
+            }),
+          });
+          if (res.ok) created += 1;
+        }
+        if (created > 0 && !cancelled) {
+          console.info(`[blanko] auto-enqueue created ${created} todo(s) after scan`);
+          setTasksRefreshKey((k) => k + 1);
+          setTodoStatusBySourcePath((prev) => {
+            const next = { ...prev };
+            for (const c of toCreate) next[c.sourcePath] = "todo";
+            return next;
+          });
+        }
+      } catch (e) {
+        console.warn("[blanko] auto-enqueue failed", e);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    graph?.projectRoot,
+    graph?.architectureBoard,
+    graph?.nodes?.length,
+    graph?.edges?.length,
+    activeWorkspaceId,
+    accessToken,
+  ]);
+
+  const openFlowTasks = useCallback((notice?: string, todoId?: string) => {
+    if (notice) setFlowTasksNotice(notice);
+    setFocusTodoId(todoId ?? null);
+    setFlowInitialPane("tasks");
+    setTasksRefreshKey((k) => k + 1);
+    setDockMode("work");
+    setDockWidth(defaultDockWidthForMode("work"));
+    setDockOpen(true);
+    setInsightsEditOpen(false);
+    setGraphViewMode("2d");
+  }, []);
+
+  useEffect(() => {
+    if (dockMode !== "work" && dockMode !== "tasks") {
+      setFocusTodoId(null);
+    }
+  }, [dockMode]);
+
+  const openCodeDock = useCallback((path?: string, line?: number) => {
+    if (path) setOpenFile({ path, line });
+    setAgentsDockTab("files");
+    setDockMode("agents");
+    setDockWidth(defaultDockWidthForMode("agents"));
+    setDockOpen(true);
+    setInsightsEditOpen(false);
+    setGraphViewMode("2d");
+  }, []);
+
+  const openAgentsDock = useCallback((tab: AgentsDockTab = "inventory") => {
+    setAgentsDockTab(tab);
+    setDockMode("agents");
+    setDockWidth(defaultDockWidthForMode("agents"));
+    setDockOpen(true);
+    setInsightsEditOpen(false);
+    setGraphViewMode("2d");
+  }, []);
+
+  const openWorkspaceDock = useCallback((tab: WorkspaceDockTab = "platforms") => {
+    // Legacy: work → Tasks; flow → Path; ops → Rollup.
+    if (tab === "work") {
+      setDockMode("work");
+      setFlowInitialPane("tasks");
+      setDockWidth(defaultDockWidthForMode("work"));
+    } else if (tab === "flow") {
+      setWorkspaceDockTab("path");
+      setDockMode("workspace");
+      setDockWidth(defaultDockWidthForMode("workspace"));
+    } else if (tab === "rollup" || tab === "changes" || tab === "ops") {
+      setWorkspaceDockTab(tab === "changes" ? "changes" : "rollup");
+      setDockMode("workspace");
+      setDockWidth(defaultDockWidthForMode("workspace"));
+    } else {
+      setWorkspaceDockTab(tab === "path" ? "path" : "platforms");
+      setDockMode("workspace");
+      setDockWidth(defaultDockWidthForMode("workspace"));
+    }
+    setDockOpen(true);
+    setInsightsEditOpen(false);
+    setGraphViewMode("2d");
+  }, []);
 
   useEffect(() => {
     if (importFindings.length > 0 || designFindings.some((f) => f.severity !== "suggestion")) {
@@ -1642,11 +2001,20 @@ export default function App() {
   useEffect(() => {
     if (!blankoShell) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDockOpen(false);
+      if (e.key !== "Escape") return;
+      if (!dockOpen) return;
+      const action = nextDockEscAction(dockMaximized);
+      if (action === "restore") {
+        setDockMaximized(false);
+        return;
+      }
+      setDockOpen(false);
+      setDockMaximized(false);
+      setInsightsEditOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [blankoShell]);
+  }, [blankoShell, dockOpen, dockMaximized]);
 
   // Playwright Phase 4 gate: inject proposals without burning AI credits.
   useEffect(() => {
@@ -1677,6 +2045,7 @@ export default function App() {
 
   const openComponents = useCallback(() => {
     setDockMode("build");
+    setDockWidth(defaultDockWidthForMode("build"));
     setDockOpen(true);
   }, []);
 
@@ -1780,7 +2149,17 @@ export default function App() {
     }
   }, []);
 
-  const handleForkBlueprint = useCallback((blueprintId: string) => {
+  const handleForkBlueprint = useCallback(async (blueprintId: string) => {
+    // D2: apply spine immediately (E2E + UX), then background-scan .blanko-target to fill Agents.
+    const current = graphRef.current;
+    if (blueprintId === "trading-agent" && current && !current.architectureBoard) {
+      preSpineGraphRef.current = {
+        ...current,
+        nodes: [...(current.nodes ?? [])],
+        edges: [...(current.edges ?? [])],
+        architectureBoard: false,
+      };
+    }
     const forked =
       blueprintId === "trading-agent"
         ? applyTradingSpine({ inferBuilt: true })
@@ -1795,7 +2174,7 @@ export default function App() {
     setSidebarTab("dashboard");
     setDesignDashboardTab("review");
     setSceneCollapsed(true);
-    setDockMode("insights");
+    setDockMode(blueprintId === "trading-agent" ? "agents" : "insights");
     setDockOpen(true);
     setInsightsEditOpen(false);
     setChatExpanded(false);
@@ -1806,11 +2185,45 @@ export default function App() {
       // ignore
     }
     setGreenfieldSessionId(null);
-  }, []);
+
+    if (blueprintId !== "trading-agent") return;
+    void (async () => {
+      try {
+        const tRes = await fetch(`${API_BASE}/blanko-target`);
+        const t = (await tRes.json().catch(() => ({}))) as { local?: string | null };
+        if (!t.local) return;
+        const scanRes = await fetch(`${API_BASE}/scan`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({ repoUrl: t.local }),
+        });
+        const scanned = (await scanRes.json().catch(() => ({}))) as ArchGraph & { error?: string };
+        if (!scanRes.ok || !Array.isArray(scanned.nodes)) return;
+        const enriched = applyTradingSpine({ from: scanned, inferBuilt: true });
+        if (!enriched) return;
+        setGraph(enriched);
+        setRepoUrl(t.local);
+      } catch {
+        /* keep empty spine */
+      }
+    })();
+  }, [accessToken]);
 
   /** Replace scan/module canvas with locked trading spine (keeps projectRoot for Rescan). */
-  const handleApplyTradingSpine = useCallback(() => {
-    const next = applyTradingSpine({ from: graphRef.current ?? graph, inferBuilt: true });
+  const handleApplyTradingSpine = useCallback(async () => {
+    const current = graphRef.current ?? graph;
+    if (current && !current.architectureBoard) {
+      preSpineGraphRef.current = {
+        ...current,
+        nodes: [...(current.nodes ?? [])],
+        edges: [...(current.edges ?? [])],
+        architectureBoard: false,
+      };
+    }
+    const next = applyTradingSpine({ from: current ?? undefined, inferBuilt: true });
     if (!next) {
       setError("Could not apply trading spine — blueprint missing.");
       return;
@@ -1820,12 +2233,38 @@ export default function App() {
     setSelectedEdgeId(null);
     setAgentGraphCommand(null);
     setGraphViewMode("2d");
-    setDockMode("insights");
+    setDockMode("agents");
     setDockOpen(true);
     setInsightsEditOpen(false);
     setSceneCollapsed(true);
     setError(null);
-  }, [graph]);
+
+    // D2: if Agents empty, background-scan .blanko-target and re-apply spine with inventory.
+    if ((next.agents?.agents?.length ?? 0) > 0) return;
+    void (async () => {
+      try {
+        const tRes = await fetch(`${API_BASE}/blanko-target`);
+        const t = (await tRes.json().catch(() => ({}))) as { local?: string | null };
+        if (!t.local) return;
+        const scanRes = await fetch(`${API_BASE}/scan`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({ repoUrl: t.local }),
+        });
+        const scanned = (await scanRes.json().catch(() => ({}))) as ArchGraph & { error?: string };
+        if (!scanRes.ok || !Array.isArray(scanned.nodes)) return;
+        const enriched = applyTradingSpine({ from: scanned, inferBuilt: true });
+        if (!enriched) return;
+        setGraph(enriched);
+        setRepoUrl(t.local);
+      } catch {
+        /* keep spine without agents */
+      }
+    })();
+  }, [graph, accessToken]);
 
   // Restore the draft once on load if there's no workspace graph to prefer.
   // This must run (and be declared) before the persist effect below: both
@@ -2292,7 +2731,15 @@ export default function App() {
             Authorization: `Bearer ${accessToken}`,
           },
           body: JSON.stringify({
-            graph: { ...merged, lastSavedAt: now },
+            // Preserve agents/providers/projectRoot — mergeGraphs returns topology only.
+            graph: {
+              ...graphToSave,
+              ...merged,
+              nodes: merged.nodes,
+              edges: merged.edges,
+              revision: merged.revision,
+              lastSavedAt: now,
+            },
             repoUrl,
             baseRevision: data.currentRevision ?? 0,
           }),
@@ -2304,7 +2751,14 @@ export default function App() {
         if (!retry.ok) throw new Error(retryData.error || retry.statusText);
         setGraph((prev) =>
           prev
-            ? ({ ...prev, ...merged, revision: retryData.revision ?? merged.revision } as ArchGraph)
+            ? ({
+                ...prev,
+                ...graphToSave,
+                ...merged,
+                nodes: merged.nodes,
+                edges: merged.edges,
+                revision: retryData.revision ?? merged.revision,
+              } as ArchGraph)
             : prev
         );
         return;
@@ -2347,11 +2801,15 @@ export default function App() {
 
   const graphLayoutMode = useMemo(() => {
     const lm = (workspaceScene?.settings as any)?.layoutMode;
-    return (lm === "domain" || lm === "elk" || lm === "depth") ? lm : "depth";
-  }, [workspaceScene?.settings]);
+    if (lm === "domain" || lm === "elk" || lm === "depth" || lm === "subsystem") return lm;
+    if (looksLikeTradingScan(graph) && !(graph as { architectureBoard?: boolean } | null)?.architectureBoard) {
+      return "subsystem";
+    }
+    return "depth";
+  }, [workspaceScene?.settings, graph]);
 
   const setGraphLayoutMode = useCallback(
-    (mode: "depth" | "domain" | "elk") => {
+    (mode: "depth" | "domain" | "elk" | "subsystem") => {
       const base = ensureSceneBase();
       setWorkspaceScene({ ...base, settings: { ...(base.settings as any), layoutMode: mode } as any });
     },
@@ -3095,11 +3553,22 @@ export default function App() {
   const supabaseConfigError = getSupabaseConfigError();
 
   const scanRepo = useCallback(
-    async (rawUrl: string) => {
+    async (
+      rawUrl: string,
+      opts?: {
+        /**
+         * preserve (default): Rescan keeps architecture board if already on spine.
+         * scan: force code-module layout (exit spine).
+         * spine: force apply trading spine after scan.
+         */
+        layout?: "preserve" | "scan" | "spine";
+      }
+    ) => {
       const url = rawUrl.trim();
       if (!url) return;
+      const layout = opts?.layout ?? "preserve";
 
-      setLoading("Cloning repository...");
+      setLoading(layout === "scan" ? "Loading code scan…" : "Cloning repository...");
       setError(null);
 
       try {
@@ -3168,23 +3637,38 @@ export default function App() {
         // Successful scan: canvas is the picture; control panel stays closed.
         setSelectedAgentFile(null);
         const scanned = analyseGraph(data) as ArchGraph;
-        // Preserve architecture board across Rescan (re-bind files from fresh clone).
         const prev = graphRef.current;
-        const nextGraph =
-          prev?.architectureBoard
-            ? applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ?? scanned
-            : scanned;
+        let nextGraph: ArchGraph = scanned;
+        if (layout === "spine") {
+          nextGraph =
+            applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
+            scanned;
+        } else if (layout === "preserve" && prev?.architectureBoard) {
+          // Rescan while on spine: re-bind files onto architecture board.
+          nextGraph =
+            applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
+            scanned;
+        } else {
+          // layout === "scan" or no architecture board — module canvas.
+          nextGraph = { ...scanned, architectureBoard: false };
+        }
         setGraph(nextGraph);
         setGraphViewMode("2d");
+        setSelectedNode(null);
+        setSelectedEdgeId(null);
         // Trading scan without spine: open Insights so Apply CTA is obvious.
+        // After leaving spine, keep Insights open so Show code scan / Apply are clear.
         if (
           !nextGraph.architectureBoard &&
           looksLikeTradingScan(nextGraph) &&
-          spineMissing(nextGraph)
+          (spineMissing(nextGraph) || layout === "scan")
         ) {
           setDockMode("insights");
           setDockOpen(true);
           setInsightsEditOpen(false);
+        } else if (layout === "scan") {
+          setDockMode("insights");
+          setDockOpen(true);
         } else {
           setDockMode(null);
           setDockOpen(false);
@@ -3244,6 +3728,55 @@ export default function App() {
     [accessToken, activeWorkspaceId, supabase, autosaveEnabled]
   );
 
+  /** Leave architecture spine and restore code-module scan (Rescan alone keeps the spine). */
+  const handleShowCodeScan = useCallback(() => {
+    const scanUrl = repoUrl.trim();
+    if (scanUrl) {
+      void scanRepo(scanUrl, { layout: "scan" });
+      return;
+    }
+    // BK-LEAVE-001: never dead-end — try .blanko-target local, else return to Import landing.
+    void (async () => {
+      try {
+        const tRes = await fetch(`${API_BASE}/blanko-target`);
+        const t = (await tRes.json().catch(() => ({}))) as { local?: string | null };
+        if (t.local) {
+          setRepoUrl(t.local);
+          void scanRepo(t.local, { layout: "scan" });
+          return;
+        }
+      } catch {
+        /* fall through */
+      }
+      setError(null);
+      setGraph(null);
+      setSelectedNode(null);
+      setDockMode(null);
+      setDockOpen(false);
+      setRepoUrl("");
+    })();
+  }, [repoUrl, scanRepo]);
+
+  /** Chrome ← Code map: restore stashed module graph, else rescan / Import. */
+  const handleBackToCodeMap = useCallback(() => {
+    const stash = preSpineGraphRef.current;
+    if (stash) {
+      preSpineGraphRef.current = null;
+      setGraph({ ...stash, architectureBoard: false });
+      setSelectedNode(null);
+      setSelectedEdgeId(null);
+      setAgentGraphCommand(null);
+      setGraphViewMode("2d");
+      setDockMode("insights");
+      setDockOpen(true);
+      setInsightsEditOpen(false);
+      setSceneCollapsed(true);
+      setError(null);
+      return;
+    }
+    handleShowCodeScan();
+  }, [handleShowCodeScan]);
+
   const handleScan = useCallback(() => {
     if (!repoUrl.trim()) return;
     // Avoid starting a scan while auth state is still being resolved.
@@ -3277,7 +3810,13 @@ export default function App() {
       // Token guardrail: viewing an imported or shared canvas is free, AI chat
       // burns credits and needs an account. Route into the signup chat instead
       // of failing deep in the request path with a dead error string.
-      if (!accessToken) {
+      // BK-CHAT-006: honor Vite/dev bypass so local audits match server CHAT_DEV_BYPASS.
+      const chatDevBypass =
+        import.meta.env.VITE_CHAT_DEV_BYPASS === "1" ||
+        (typeof window !== "undefined" &&
+          (window as unknown as { __BLANKO_CHAT_DEV_BYPASS__?: boolean }).__BLANKO_CHAT_DEV_BYPASS__ ===
+            true);
+      if (!accessToken && !chatDevBypass) {
         const cidAnon = activeChatIdRef.current;
         setChatSessions((s) => ({
           ...s,
@@ -3436,7 +3975,7 @@ export default function App() {
           : [];
         if (graphCommands.length > 0) {
         setAgentGraphCommand(graphCommands[0]);
-        if (isDesignMode) {
+        if (canvasDesignMode) {
           // Phase 4: propose — never silent-apply. User Accepts/Rejects in ChatBar.
           const mutators = graphCommands.filter(
             (c) => c.action === "create_node" || c.action === "connect" || c.action === "update_node"
@@ -3459,11 +3998,11 @@ export default function App() {
         }
       } else if (relevantNodeIds.length > 0) {
         setAgentGraphCommand({ action: "highlight_nodes", nodeIds: relevantNodeIds });
-        if (isDesignMode) {
+        if (canvasDesignMode) {
           setPendingProposal(null);
           setChatOnlyNotice(true);
         }
-      } else if (isDesignMode) {
+      } else if (canvasDesignMode) {
         setPendingProposal(null);
         setChatOnlyNotice(true);
       }
@@ -3739,6 +4278,7 @@ export default function App() {
       pdfAttachment,
       docAttachment,
       isDesignMode,
+      canvasDesignMode,
       greenfieldSessionId,
       promptSignup,
     ]
@@ -4007,8 +4547,18 @@ export default function App() {
             workspaceId={
               (() => {
                 try {
-                  const ws = new URLSearchParams(window.location.search).get("workspaceId");
-                  if (ws && new URLSearchParams(window.location.search).get("github-connect") === "1") return ws;
+                  const params = new URLSearchParams(window.location.search);
+                  const ws =
+                    params.get("state") ||
+                    params.get("workspaceId");
+                  if (
+                    ws &&
+                    (params.get("github-connect") === "1" ||
+                      params.get("installation_id") ||
+                      params.get("github-app-install") === "1")
+                  ) {
+                    return ws;
+                  }
                 } catch {
                   /* ignore */
                 }
@@ -4016,11 +4566,17 @@ export default function App() {
               })()
             }
             accessToken={accessToken}
+            installationId={githubAppInstallationId}
             onClose={() => {
               setShowConnectGitHubPanel(false);
+              setGithubAppInstallationId(null);
               try {
                 const u = new URL(window.location.href);
                 u.searchParams.delete("github-connect");
+                u.searchParams.delete("github-app-install");
+                u.searchParams.delete("installation_id");
+                u.searchParams.delete("setup_action");
+                u.searchParams.delete("state");
                 u.searchParams.delete("workspaceId");
                 window.history.replaceState({}, "", u.pathname + u.search + u.hash);
               } catch {
@@ -4029,6 +4585,7 @@ export default function App() {
             }}
             onConnected={(fullName) => {
               setRepoUrl(`https://github.com/${fullName}`);
+              setRollupRefreshKey((k) => k + 1);
             }}
             oauthState={(() => {
               const params = new URLSearchParams(window.location.search);
@@ -8140,7 +8697,7 @@ export default function App() {
                       cursor: "pointer",
                     }}
                   >
-                    Layers
+                    Agent Layers
                   </button>
                   <button
                     key="platforms"
@@ -8383,11 +8940,19 @@ export default function App() {
                       </button>
                     ))}
                     <span style={{ width: 1, background: "#30363d", margin: "0 4px", alignSelf: "stretch" }} />
-                    {(["depth", "domain", "elk"] as const).map((mode) => (
+                    {(["depth", "domain", "subsystem", "elk"] as const).map((mode) => (
                       <button
                         key={mode}
                         type="button"
-                        title={mode === "depth" ? "By layer (depth)" : mode === "domain" ? "By domain" : "ELK auto-layout"}
+                        title={
+                          mode === "depth"
+                            ? "By layer (depth)"
+                            : mode === "domain"
+                              ? "By domain"
+                              : mode === "subsystem"
+                                ? "Quant cockpit subsystems"
+                                : "ELK auto-layout"
+                        }
                         onClick={() => setGraphLayoutMode(mode)}
                         style={{
                           padding: "4px 8px",
@@ -8707,8 +9272,6 @@ export default function App() {
           >
             {blankoShell && (graphViewMode === "2d" || graphViewMode === "3d") && (
               <ChromeBar
-                search={graphSearch}
-                onSearchChange={setGraphSearch}
                 saveDisabled={saveLoading || graph.nodes.length === 0}
                 saveLabel={saveLoading ? "…" : saveStatus === "saved" ? "Saved" : accessToken ? "Save" : "Save"}
                 onSave={async () => {
@@ -8761,6 +9324,18 @@ export default function App() {
                 scanning={!!loading}
                 onRescan={() => scanRepo(repoUrl)}
                 hideStaleness={isDesignMode && !(graph?.projectRoot && graph.projectRoot.trim())}
+                interactionMode={canvasInteraction}
+                onInteractionModeChange={setCanvasInteraction}
+                editingScanHint={canvasDesignMode && !isDesignMode}
+                architectureBoardHint={!!graph?.architectureBoard}
+                onBackToCodeMap={
+                  graph?.architectureBoard ? () => handleBackToCodeMap() : undefined
+                }
+                showCodeMapHint={!graph?.architectureBoard && !!(graph?.projectRoot && graph.projectRoot.trim())}
+                onOpenModuleMapHint={() => {
+                  setDockMode("insights");
+                  setDockOpen(true);
+                }}
                 exportOptions={[
                   {
                     id: "assessment",
@@ -8858,6 +9433,15 @@ export default function App() {
                     label: "Apply trading agent spine",
                     onClick: () => handleApplyTradingSpine(),
                   },
+                  ...(graph?.architectureBoard
+                    ? [
+                        {
+                          id: "show-code-scan",
+                          label: "← Code map",
+                          onClick: () => handleBackToCodeMap(),
+                        },
+                      ]
+                    : []),
                   {
                     id: "health",
                     label: showHealthBadges ? "Health badges: on" : "Health badges: off",
@@ -8901,7 +9485,7 @@ export default function App() {
                 <ScanOnlyPlaceholder view={graphViewMode} />
               </ViewShell>
             ) : graphViewMode === "layers" ? (
-              <ViewShell title="Layers" onBackToCanvas={backToCanvas}>
+              <ViewShell title="Agent Layers" onBackToCanvas={backToCanvas}>
                 <LayersView
                   onOpenFile={(path, line) => {
                     setOpenFile({ path, line });
@@ -8913,7 +9497,7 @@ export default function App() {
                 />
               </ViewShell>
             ) : graphViewMode === "standard" ? (
-              <ViewShell title="Layers" onBackToCanvas={backToCanvas}>
+              <ViewShell title="Agent Layers" onBackToCanvas={backToCanvas}>
                 <StandardView
                   agents={graph?.agents}
                   selectedAgentFile={layersAgentFile}
@@ -8962,9 +9546,16 @@ export default function App() {
                   workspaceId={activeWorkspaceId}
                   accessToken={accessToken}
                   apiBase={API_BASE}
+                  initialPane="path"
+                  fixAgentDisabledReason={fixAgentDisabledReason}
+                  hasProjectRoot={!!(graph?.projectRoot && graph.projectRoot.trim())}
                   onOpenFile={(path, line) => {
-                    setOpenFile({ path, line });
-                    setGraphViewMode("files");
+                    if (blankoShell) {
+                      openCodeDock(path, line);
+                    } else {
+                      setOpenFile({ path, line });
+                      setGraphViewMode("files");
+                    }
                   }}
                 />
               </ViewShell>
@@ -9024,6 +9615,8 @@ export default function App() {
                     setSelectedNode(id);
                     setGraphViewMode("2d");
                   }}
+                  onConnectGitHub={() => setShowConnectGitHubPanel(true)}
+                  refreshKey={rollupRefreshKey}
                 />
               </ViewShell>
             ) : graphViewMode === "devops" ? (
@@ -9064,7 +9657,7 @@ export default function App() {
               selectedNode={selectedNode}
               selectedNodeData={selectedNodeData}
               repoUrl={repoUrl}
-              designMode={isDesignMode}
+              designMode={canvasDesignMode}
               designAlertNodeIds={designAlertNodeIds}
               designAlertEdgeIds={designAlertEdgeIds}
               designFindingCounts={designFindingCounts}
@@ -9077,7 +9670,7 @@ export default function App() {
                 setAgentGraphCommand({ action: "highlight_nodes", nodeIds: [nodeId] });
               }}
               emptyStateHint={
-                isDesignMode
+                canvasDesignMode
                   ? "Design your agent — drag a piece or ask blanko."
                   : undefined
               }
@@ -9144,6 +9737,7 @@ export default function App() {
               }}
               onNodeSelect={(id) => {
                 setSelectedNode(id);
+                setSelectedSubsystem(null);
                 setSelectedEdgeId(null);
                 if (blankoShell) {
                   // Always Insights on select (design + scan) — never jump to Files.
@@ -9161,8 +9755,21 @@ export default function App() {
                   setGraphViewMode("files");
                 }
               }}
+              selectedSubsystem={selectedSubsystem}
+              onSubsystemSelect={(sub) => {
+                setSelectedSubsystem(sub);
+                if (sub) setSelectedNode(null);
+                setSelectedEdgeId(null);
+                if (blankoShell && sub) {
+                  setGraphViewMode("2d");
+                  setDockMode("insights");
+                  setDockOpen(true);
+                  setInsightsEditOpen(false);
+                }
+              }}
               onNodeDoubleClick={(id) => {
                 setSelectedNode(id);
+                setSelectedSubsystem(null);
                 setSelectedEdgeId(null);
                 if (blankoShell) {
                   setGraphViewMode("2d");
@@ -9214,7 +9821,7 @@ export default function App() {
               runtimeLive={runtimeLive}
               vulnerableNodeIds={showSupplyChainRisk ? vulnerableNodeIds : undefined}
             />
-            {blankoShell && isDesignMode && selectedEdgeId && graph && (() => {
+            {blankoShell && canvasDesignMode && selectedEdgeId && graph && (() => {
               const edge = graph.edges.find((e) => e.id === selectedEdgeId);
               if (!edge) return null;
               const src = graph.nodes.find((n) => n.id === edge.source);
@@ -9228,7 +9835,7 @@ export default function App() {
                 />
               );
             })()}
-            {isDesignMode && selectedEdgeId && graph && !blankoShell && (() => {
+            {canvasDesignMode && selectedEdgeId && graph && !blankoShell && (() => {
               const edge = graph.edges.find((e) => e.id === selectedEdgeId);
               if (!edge) return null;
               const src = graph.nodes.find((n) => n.id === edge.source);
@@ -9383,20 +9990,24 @@ export default function App() {
 
       {blankoShell && graph && dockOpen && dockMode && (
         <DockFrame
-          mode={dockMode === "inspect" ? "insights" : dockMode}
-          width={dockWidth}
+          mode={normalizeDockMode(dockMode) ?? dockMode}
+          width={clampDockWidth(dockWidth, normalizeDockMode(dockMode) ?? dockMode)}
+          maximized={dockMaximized && canMaximizeDockMode(normalizeDockMode(dockMode) ?? dockMode)}
+          onToggleMaximize={() => setDockMaximized((v) => !v)}
           variant="overlay"
           onClose={() => {
             setDockOpen(false);
+            setDockMaximized(false);
             setInsightsEditOpen(false);
           }}
           onResizeStart={(e) => {
             e.preventDefault();
+            if (dockMaximized) return;
             const startX = e.clientX;
             const startW = dockWidth;
+            const mode = normalizeDockMode(dockMode) ?? dockMode;
             const onMove = (ev: MouseEvent) => {
-              const next = Math.min(560, Math.max(280, startW + (startX - ev.clientX)));
-              setDockWidth(next);
+              setDockWidth(clampDockWidth(startW + (startX - ev.clientX), mode));
             };
             const onUp = () => {
               window.removeEventListener("mousemove", onMove);
@@ -9429,12 +10040,25 @@ export default function App() {
               inventory={platformInventory}
               graph={graph}
               selectedNode={selectedNodeData ?? null}
+              selectedSubsystem={selectedSubsystem}
+              onSelectNode={(id) => {
+                setSelectedNode(id);
+                setSelectedSubsystem(null);
+                setDockMode("insights");
+                setDockOpen(true);
+                setInsightsEditOpen(false);
+              }}
               editDetailsOpen={insightsEditOpen}
               onEditDetailsOpenChange={setInsightsEditOpen}
               onOpenConfig={(view) => {
-                setConfigMenuOpen(false);
-                setGraphViewMode(view);
-                setDockOpen(false);
+                if (view === "flow" || view === "platforms") {
+                  if (view === "flow") setFlowInitialPane("path");
+                  openWorkspaceDock(view === "flow" ? "flow" : "platforms");
+                } else if (view === "agents") {
+                  openAgentsDock("inventory");
+                } else if (view === "usage") {
+                  openAgentsDock("usage");
+                }
               }}
               onHighlight={(f) => {
                 if (f.nodeIds[0]) {
@@ -9463,16 +10087,66 @@ export default function App() {
                 (looksLikeTradingScan(graph) || !!graph.projectRoot?.trim())
               }
               onApplyTradingSpine={handleApplyTradingSpine}
+              showCodeScan={!!graph?.architectureBoard}
+              onShowCodeScan={handleBackToCodeMap}
               onContinueInChat={(node) => {
                 setAiQuestion(`Looking at “${node.label}” (${node.layer ?? "piece"}): `);
                 setChatExpanded(true);
                 chatInputRef.current?.focus();
               }}
-              onOpenFile={(path) => {
-                setOpenFile({ path });
-                setGraphViewMode("files");
-                setDockOpen(false);
+              onAskChatPrompt={(prompt) => {
+                setAiQuestion(prompt);
+                setChatExpanded(true);
+                chatInputRef.current?.focus();
               }}
+              onOpenTasks={() => openFlowTasks()}
+              fixAgentDisabledReason={fixAgentDisabledReason}
+              onAddTask={async (action, node) => {
+                const todo = await postInsightsTodo(node, action);
+                openFlowTasks(`Added to Tasks — Open`, todo.id);
+              }}
+              onFixWithAgent={async (action, node) => {
+                if (action.kind !== "code") {
+                  throw new Error("Fix is only for code checks — use Apply spine or Flow.");
+                }
+                if (fixAgentDisabledReason) throw new Error(fixAgentDisabledReason);
+                const todo = await postInsightsTodo(node, action);
+                const status = String(todo.status ?? "todo");
+                if (status === "in_progress" || status === "needs_review") {
+                  openFlowTasks(
+                    status === "needs_review"
+                      ? "Already waiting for review — open Tasks."
+                      : "Agent already running — open Tasks.",
+                    todo.id
+                  );
+                  return;
+                }
+                if (status !== "todo" && status !== "pending") {
+                  openFlowTasks(`Task status is ${status}`, todo.id);
+                  return;
+                }
+                const runRes = await fetch(`${API_BASE}/todos/${encodeURIComponent(todo.id)}/run`, {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${accessToken!}`,
+                    "Content-Type": "application/json",
+                  },
+                });
+                const runData = (await runRes.json().catch(() => ({}))) as {
+                  error?: string;
+                  railId?: string;
+                  taskId?: string;
+                  todo?: { id?: string; title?: string };
+                };
+                if (!runRes.ok) {
+                  throw new Error(runData.error ?? `Could not start agent (${runRes.status})`);
+                }
+                openFlowTasks(
+                  `Agent started${runData.railId ? ` · rail ${runData.railId.slice(0, 8)}…` : ""} — open Tasks`,
+                  todo.id
+                );
+              }}
+              onOpenFile={(path) => openCodeDock(path)}
               onNodeChange={(patch) => {
                 if (!selectedNodeData) return;
                 setGraph((prev) =>
@@ -9493,83 +10167,170 @@ export default function App() {
               workspaceId={activeWorkspaceId}
               accessToken={accessToken}
               apiBase={API_BASE}
+              todoStatusBySourcePath={todoStatusBySourcePath}
             />
           )}
-          {(dockMode === "terminal" || dockMode === "evidence") && (
-            <div data-testid="blanko-terminal-dock" style={{ height: "100%", minHeight: 280, display: "flex", flexDirection: "column" }}>
-              {dockMode === "evidence" && (
-                <EvidencePanel
-                  hasRepoFiles={!!(graph.projectRoot && graph.projectRoot.trim())}
-                  files={
-                    <div style={{ padding: 8 }}>
-                      <FileBrowser
-                        graph={graph}
-                        openPath={openFile?.path}
-                        onOpen={(path, line) => {
-                          setOpenFile({ path, line });
-                          setGraphViewMode("files");
-                        }}
-                      />
-                    </div>
-                  }
-                />
-              )}
-              {dockMode === "terminal" && (
-                <div style={{ flex: 1, minHeight: 0, height: "100%" }}>
-                  <TerminalPanel
-                    cwd={graph.projectRoot}
-                    accessToken={accessToken}
-                    apiBase={API_BASE}
-                  />
-                </div>
-              )}
-            </div>
+          {(dockMode === "agents" ||
+            dockMode === "code" ||
+            dockMode === "terminal" ||
+            dockMode === "evidence") && (
+            <AgentsDock
+              graph={graph}
+              agents={graph.agents}
+              initialTab={
+                dockMode === "terminal"
+                  ? "terminal"
+                  : dockMode === "code" || dockMode === "evidence"
+                    ? "files"
+                    : agentsDockTab
+              }
+              workspaceId={activeWorkspaceId}
+              accessToken={accessToken}
+              apiBase={API_BASE}
+              openPath={openFile?.path}
+              onOpenFile={(path, line) => {
+                setOpenFile({ path, line });
+                setAgentsDockTab("files");
+              }}
+              onSelectNode={(id) => {
+                setSelectedNode(id);
+                setDockMode("insights");
+                setDockOpen(true);
+              }}
+            />
+          )}
+          {(dockMode === "workspace" || dockMode === "ops") && (
+            <WorkspaceDock
+              graph={graph}
+              initialTab={
+                dockMode === "ops"
+                  ? "rollup"
+                  : workspaceDockTab === "path" ||
+                      workspaceDockTab === "platforms" ||
+                      workspaceDockTab === "rollup" ||
+                      workspaceDockTab === "changes"
+                    ? workspaceDockTab
+                    : "platforms"
+              }
+              workspaceId={activeWorkspaceId}
+              accessToken={accessToken}
+              apiBase={API_BASE}
+              agents={graph.agents}
+              onOpenFile={(path, line) => openCodeDock(path, line)}
+              onSelectNode={(id) => {
+                setSelectedNode(id);
+                setDockMode("insights");
+                setDockOpen(true);
+              }}
+              selectedAgentFile={selectedAgentFile}
+              onSelectAgent={setSelectedAgentFile}
+              hasProjectRoot={!!(graph?.projectRoot && graph.projectRoot.trim())}
+              onConnectGitHub={() => setShowConnectGitHubPanel(true)}
+              rollupRefreshKey={rollupRefreshKey}
+            />
+          )}
+          {(dockMode === "work" || dockMode === "tasks") && (
+            <TasksDock
+              workspaceId={activeWorkspaceId}
+              accessToken={accessToken}
+              apiBase={API_BASE}
+              agents={graph.agents}
+              selectedAgentFile={selectedAgentFile}
+              onSelectAgent={setSelectedAgentFile}
+              focusTodoId={focusTodoId}
+              notice={flowTasksNotice}
+              refreshKey={tasksRefreshKey}
+              fixAgentDisabledReason={fixAgentDisabledReason}
+              onOpenFile={(path, line) => openCodeDock(path, line)}
+              dockMaximized={dockMaximized}
+              hasProjectRoot={!!(graph?.projectRoot && graph.projectRoot.trim())}
+              onApplyTradingSpine={handleApplyTradingSpine}
+              onOpenInsights={() => {
+                setDockMode("insights");
+                setDockOpen(true);
+              }}
+              onTodoApproved={(todoId) => {
+                setTasksRefreshKey((k) => k + 1);
+                setRollupRefreshKey((k) => k + 1);
+                setTodoStatusBySourcePath((prev) => ({ ...prev }));
+                if (activeWorkspaceId && accessToken) {
+                  const findingId = `todo:${todoId}`;
+                  void fetch(
+                    `${API_BASE}/findings/${encodeURIComponent(findingId)}/cleared`,
+                    {
+                      method: "POST",
+                      headers: {
+                        Authorization: `Bearer ${accessToken}`,
+                        "Content-Type": "application/json",
+                      },
+                      body: JSON.stringify({ workspaceId: activeWorkspaceId }),
+                    }
+                  ).catch(() => undefined);
+                }
+              }}
+            />
+          )}
+          {dockMode === "view" && (
+            <ViewDock
+              is3d={graphViewMode === "3d"}
+              onCanvas={() => {
+                setGraphViewMode("2d");
+                setDockOpen(false);
+              }}
+              on3d={() => {
+                setGraphViewMode("3d");
+                setDockOpen(false);
+              }}
+            />
           )}
         </DockFrame>
       )}
 
       {blankoShell && (
         <DockRail
-          active={dockOpen ? (dockMode === "inspect" ? "insights" : dockMode) : null}
+          active={
+            dockOpen
+              ? normalizeDockMode(dockMode === "inspect" ? "insights" : dockMode)
+              : null
+          }
           dockOpen={dockOpen}
           awayFromCanvas={!isCanvasView}
-          configOpen={configMenuOpen}
-          onConfigOpenChange={setConfigMenuOpen}
-          onConfig={() => {
-            if (!isCanvasView) {
-              backToCanvas();
-              return;
-            }
-            setConfigMenuOpen((v) => !v);
-          }}
+          onBackToCanvas={backToCanvas}
           onSelect={(m) => {
-            if (dockOpen && (dockMode === m || (m === "insights" && dockMode === "inspect"))) {
+            const mode = normalizeDockMode(m) ?? m;
+            if (
+              dockOpen &&
+              (normalizeDockMode(dockMode) === mode ||
+                (mode === "insights" && (dockMode === "inspect" || dockMode === "insights")))
+            ) {
               setDockOpen(false);
+              setDockMaximized(false);
               setInsightsEditOpen(false);
             } else {
-              setDockMode(m);
+              if (mode === "workspace") {
+                setWorkspaceDockTab(
+                  workspaceDockTab === "path" ||
+                    workspaceDockTab === "platforms" ||
+                    workspaceDockTab === "rollup" ||
+                    workspaceDockTab === "changes"
+                    ? workspaceDockTab
+                    : "platforms"
+                );
+              }
+              if (mode === "work") {
+                setFlowInitialPane("tasks");
+              }
+              const prev = normalizeDockMode(dockMode);
+              const keepMax =
+                dockMaximized &&
+                canMaximizeDockMode(prev) &&
+                canMaximizeDockMode(mode);
+              setDockMode(mode);
+              setDockWidth(defaultDockWidthForMode(mode));
+              setDockMaximized(keepMax);
               setDockOpen(true);
-              if (m !== "insights") setInsightsEditOpen(false);
+              if (mode !== "insights") setInsightsEditOpen(false);
             }
-          }}
-          onOverflow={(v: OverflowView) => {
-            if (v === "canvas") {
-              backToCanvas();
-              return;
-            }
-            if (v === "files") {
-              setDockMode("evidence");
-              setDockOpen(true);
-              setGraphViewMode("2d");
-              return;
-            }
-            if (v === "changes") {
-              setGraphViewMode("changes");
-              setDockOpen(false);
-              return;
-            }
-            setGraphViewMode(v === "3d" ? "3d" : v);
-            setDockOpen(false);
           }}
         />
       )}

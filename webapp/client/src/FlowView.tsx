@@ -1,9 +1,9 @@
 /**
  * Flow view — Path (request forensics) | Tasks (Kanban).
- * blanko paper/ink/pink; bright status accents — no grey Kanban chrome.
+ * Same page Config → Flow used to open; lives under Workspace → Flow.
  */
-import { useMemo, useState } from "react";
-import type { AgentInventoryResult, AgentSurface, AgentTool } from "./types";
+import { useEffect, useMemo, useState } from "react";
+import type { AgentInventoryResult, AgentSurface, AgentTool, ArchGraph } from "./types";
 import {
   ACCENT,
   ACCENT_WASH,
@@ -16,6 +16,7 @@ import {
   LINE,
   PAPER,
   WARN,
+  SLATE,
 } from "./theme/tokens";
 import { FlowTasksBoard } from "./FlowTasksBoard";
 
@@ -25,12 +26,24 @@ const DECIDING = "#7C3AED";
 
 type Props = {
   agents: AgentInventoryResult | undefined;
+  /** Optional — unused for path; kept for call-site compatibility. */
+  graph?: ArchGraph;
   selectedAgentFile?: string | null;
   onSelectAgent?: (file: string) => void;
   onOpenFile?: (path: string, line?: number) => void;
   workspaceId?: string | null;
   accessToken?: string | null;
   apiBase?: string;
+  /** Open on Path or Tasks (Insights Add/Fix deep-link). */
+  initialPane?: "path" | "tasks";
+  /** Bump to force Tasks board reload after Add task. */
+  tasksRefreshKey?: number;
+  focusTodoId?: string | null;
+  tasksNotice?: string | null;
+  fixAgentDisabledReason?: string | null;
+  dockMaximized?: boolean;
+  hasProjectRoot?: boolean;
+  onTodoApproved?: (todoId: string) => void;
 };
 
 const CLASS_COLOR: Record<string, string> = {
@@ -58,7 +71,7 @@ function Column({
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ minWidth: 0 }} data-testid={`flow-path-col-${step}`}>
+    <div style={{ flex: "0 0 200px", minWidth: 200 }} data-testid={`flow-path-col-${step}`}>
       <div
         style={{
           borderBottom: `3px solid ${tipColor}`,
@@ -312,10 +325,14 @@ function PathPane({
       ) : null}
 
       <div
+        data-testid="flow-path-columns"
         style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+          display: "flex",
+          flexDirection: "row",
           gap: 20,
+          overflowX: "auto",
+          paddingBottom: 8,
+          alignItems: "flex-start",
         }}
       >
         <Column step={1} title="A request arrives" question="Who can start one?" tipColor={INFO}>
@@ -446,9 +463,15 @@ function TabBtn({
 }
 
 export function FlowView(props: Props) {
-  const [pane, setPane] = useState<"path" | "tasks">("path");
+  const [pane, setPane] = useState<"path" | "tasks">(props.initialPane ?? "path");
+  /** When parent opens Path alone (System dock), hide the legacy dual Path|Tasks tab chrome. */
+  const dedicated = props.initialPane === "path" || props.initialPane === "tasks";
 
-  const tabs = (
+  useEffect(() => {
+    if (props.initialPane) setPane(props.initialPane);
+  }, [props.initialPane, props.tasksRefreshKey]);
+
+  const tabs = dedicated ? null : (
     <div style={{ display: "flex", gap: 8, alignItems: "center" }} data-testid="flow-tabs">
       <TabBtn active={pane === "path"} testId="flow-tab-path" label="Path" onClick={() => setPane("path")} />
       <TabBtn
@@ -463,20 +486,22 @@ export function FlowView(props: Props) {
   if (pane === "tasks") {
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: PAPER }}>
-        <div
-          style={{
-            padding: "12px 18px",
-            borderBottom: `1px solid ${LINE}`,
-            background: CANVAS,
-            display: "flex",
-            gap: 12,
-            flexWrap: "wrap",
-            alignItems: "center",
-          }}
-        >
-          {tabs}
-        </div>
-        <div style={{ flex: 1, minHeight: 0 }}>
+        {tabs ? (
+          <div
+            style={{
+              padding: "12px 18px",
+              borderBottom: `1px solid ${LINE}`,
+              background: CANVAS,
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
+            {tabs}
+          </div>
+        ) : null}
+        <div style={{ flex: 1, minHeight: 0 }} key={props.tasksRefreshKey ?? 0}>
           <FlowTasksBoard
             workspaceId={props.workspaceId}
             accessToken={props.accessToken}
@@ -484,7 +509,36 @@ export function FlowView(props: Props) {
             agentFile={props.selectedAgentFile}
             agents={props.agents}
             onSelectAgent={props.onSelectAgent}
+            focusTodoId={props.focusTodoId}
+            notice={props.tasksNotice}
+            refreshKey={props.tasksRefreshKey}
+            onOpenFile={props.onOpenFile ? (path) => props.onOpenFile?.(path) : undefined}
+            fixAgentDisabledReason={props.fixAgentDisabledReason}
+            dockMaximized={props.dockMaximized}
+            hasProjectRoot={props.hasProjectRoot}
+            onApproved={props.onTodoApproved}
           />
+        </div>
+      </div>
+    );
+  }
+
+  const agentCount = props.agents?.agents?.filter((a) => a.kind === "agent").length ?? 0;
+  if (agentCount === 0 && dedicated) {
+    return (
+      <div
+        data-testid="blanko-path-empty"
+        style={{
+          height: "100%",
+          padding: 24,
+          fontFamily: FONT_UI,
+          color: INK,
+          background: PAPER,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>No agent surfaces found</div>
+        <div style={{ fontSize: 13, color: SLATE, lineHeight: 1.5, maxWidth: "42ch" }}>
+          This view needs a scanned code agent. Use Tasks to track build tasks instead.
         </div>
       </div>
     );

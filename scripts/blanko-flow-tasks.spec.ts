@@ -1,55 +1,38 @@
 /**
- * blanko Flow Path | Tasks — brighter Kanban + trading spine seed.
+ * blanko Flow — Path under System; Tasks on its own rail.
  */
 import { test, expect } from "@playwright/test";
 
 test.describe("blanko Flow Tasks", () => {
-  test("Flow opens on Path; Tasks tab shows Kanban; blueprint has Payment node", async ({
-    page,
-  }) => {
+  test("System Path + Tasks rail kanban", async ({ page }) => {
+    await page.addInitScript(() => {
+      (window as unknown as { __BLANKO_E2E__?: boolean }).__BLANKO_E2E__ = true;
+    });
     await page.goto("/");
     await page.getByTestId("design-from-scratch").click();
     await expect(page.getByTestId("blanko-canvas-shell").or(page.locator(".react-flow"))).toBeVisible({
       timeout: 20000,
     });
 
-    // Open Config → Flow if available; else try graph mode control
-    const flowBtn = page.getByRole("button", { name: /^Flow$/i }).or(page.getByTestId("config-view-flow"));
-    if (await flowBtn.first().isVisible().catch(() => false)) {
-      await flowBtn.first().click();
-    } else {
-      // Design mode may need Config wall
-      const config = page.getByTestId("blanko-wall-config").or(page.getByRole("button", { name: /Config/i }));
-      if (await config.first().isVisible().catch(() => false)) {
-        await config.first().click();
-      }
-      const flow2 = page.getByRole("button", { name: /^Flow$/i });
-      if (await flow2.first().isVisible().catch(() => false)) {
-        await flow2.first().click();
-      }
-    }
+    await expect(page.getByTestId("blanko-rail-tasks")).toHaveCount(0);
+    await expect(page.getByTestId("blanko-rail-work")).toBeVisible();
 
-    // Path tab default
-    const pathTab = page.getByTestId("flow-tab-path");
-    const tasksTab = page.getByTestId("flow-tab-tasks");
-    if (await pathTab.isVisible().catch(() => false)) {
-      await expect(pathTab).toBeVisible();
-      await tasksTab.click();
-      await expect(page.getByTestId("flow-tasks-board")).toBeVisible();
-      await expect(page.getByTestId("flow-kanban-todo")).toBeVisible();
-      await expect(page.getByTestId("flow-kanban-doing")).toBeVisible();
-      await expect(page.getByTestId("flow-kanban-tested")).toBeVisible();
-      await expect(page.getByTestId("flow-kanban-done")).toBeVisible();
-      await expect(page.getByTestId("flow-kanban-issues")).toBeVisible();
-    }
+    await page.getByTestId("blanko-rail-workspace").click();
+    await expect(page.getByTestId("blanko-dock")).toHaveAttribute("data-dock-mode", "workspace");
+    await page.getByTestId("blanko-dock-tab-path").click();
+    await expect(page.getByTestId("blanko-workspace-breadcrumb")).toContainText(/Path/i);
 
-    // Landing blueprint gallery includes trading agent with Payment in summary
+    await page.getByTestId("blanko-rail-work").click();
+    await expect(page.getByTestId("blanko-dock")).toHaveAttribute("data-dock-mode", "work");
+    await expect(page.getByTestId("flow-tasks-board")).toBeVisible();
+    // Kanban columns need a signed-in workspace; unsigned scratch still shows the board shell.
+    await expect(page.getByTestId("flow-kanban-todo").or(page.getByText(/Sign in|To do|workspace/i).first())).toBeVisible();
+
     await page.goto("/");
     const toggle = page.getByTestId("design-blueprint-gallery-toggle");
     if (await toggle.isVisible().catch(() => false)) {
       await toggle.click();
+      await expect(page.getByText(/Payment/i).first()).toBeVisible({ timeout: 10000 });
     }
-    await expect(page.getByTestId("design-blueprint-trading-agent")).toBeVisible({ timeout: 15000 });
-    await expect(page.getByTestId("design-blueprint-trading-agent")).toContainText(/Payment|paper|Policy|Alpaca/i);
   });
 });

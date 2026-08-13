@@ -1,13 +1,59 @@
 /**
- * blanko control panel — canvas-first overlays.
- * Wall: Components · Insights · Terminal (+ Config).
- * Node context lives inside Insights (not a separate Inspect wall tab).
- * `inspect` kept for legacy callers — mapped to insights in App.
+ * Blanko dock types — canvas-first right wall.
+ * Shell IA: Agents (inventory + Files/Terminal) | System (Platforms + Path + Rollup + Changes).
  */
-export type DockMode = "inspect" | "insights" | "build" | "terminal" | "evidence";
+export type DockMode =
+  | "inspect"
+  | "insights"
+  /** @deprecated mapped to work */
+  | "tasks"
+  | "build"
+  | "agents"
+  /** System — Platforms + Path + Rollup + Changes */
+  | "workspace"
+  /** Tasks board (display label "Tasks"; id stays "work") */
+  | "work"
+  /** @deprecated mapped to workspace (System · Rollup) */
+  | "ops"
+  /** @deprecated mapped to agents (Agents · Files) */
+  | "code"
+  /** Display label "Canvas" (2D/3D); id stays "view" */
+  | "view"
+  /** @deprecated mapped to agents · terminal */
+  | "terminal"
+  /** @deprecated mapped to agents · files */
+  | "evidence";
 
 export type EvidenceTab = "files" | "terminal";
 
+export type AgentsDockTab =
+  | "inventory"
+  | "layers"
+  | "reach"
+  | "assessment"
+  | "usage"
+  | "guard"
+  | "files"
+  | "terminal";
+
+/** System dock tabs — Platforms, Path, Rollup, Changes. */
+export type WorkspaceDockTab =
+  | "platforms"
+  | "path"
+  | "rollup"
+  | "changes"
+  /** @deprecated Tasks is DockMode "work" */
+  | "work"
+  /** @deprecated use path */
+  | "flow"
+  /** @deprecated use rollup */
+  | "ops";
+
+export type CodeDockTab = "files" | "terminal";
+
+export type ViewDockTab = "canvas" | "3d";
+
+/** @deprecated OverflowView kept for legacy App full-page routes / tests. */
 export type OverflowView =
   | "assessment"
   | "agents"
@@ -22,53 +68,71 @@ export type OverflowView =
   | "3d"
   | "files"
   | "canvas"
-  /** @deprecated kept for callers; not shown in Config. */
   | "standard"
   | "devops";
 
-/** Primary right-wall modes (control panel). */
+/**
+ * Primary right-wall modes (Ops/Code folded into System/Agents).
+ */
 export const DOCK_MODES: { id: DockMode; label: string; title: string }[] = [
-  { id: "build", label: "Components", title: "Place agent pieces on the canvas" },
   { id: "insights", label: "Insights", title: "Where the agent system is broken" },
-  { id: "terminal", label: "Terminal", title: "Shell for this workspace" },
+  { id: "build", label: "Components", title: "Place agent pieces on the canvas" },
+  {
+    id: "agents",
+    label: "Agents",
+    title: "Inventory, layers, reach, usage, files, terminal",
+  },
+  {
+    id: "workspace",
+    label: "System",
+    title: "Platforms, Path, Rollup, and Changes",
+  },
+  { id: "work", label: "Tasks", title: "Tasks board — Up next · In progress · Review" },
+  { id: "view", label: "Canvas", title: "2D or 3D canvas (chrome View/Edit is pan vs edit)" },
 ];
 
+/** @deprecated Config sections removed from rail; kept empty for import safety. */
 export type ConfigSection = {
   title: string;
   items: { id: OverflowView; label: string }[];
 };
 
-/** Config menu — Review detail pages, Workspace sheets, View. */
-export const CONFIG_SECTIONS: ConfigSection[] = [
-  {
-    title: "Review",
-    items: [
-      { id: "assessment", label: "Review" },
-      { id: "agents", label: "Agents" },
-      { id: "layers", label: "Layers" },
-      { id: "reach", label: "Reach" },
-      { id: "flow", label: "Flow" },
-      { id: "usage", label: "Usage" },
-      { id: "guard", label: "Guard" },
-    ],
-  },
-  {
-    title: "Workspace",
-    items: [
-      { id: "files", label: "Files" },
-      { id: "platforms", label: "Platforms" },
-      { id: "rollup", label: "Rollup" },
-      { id: "changes", label: "Changes" },
-    ],
-  },
-  {
-    title: "View",
-    items: [
-      { id: "3d", label: "3D" },
-      { id: "canvas", label: "Canvas" },
-    ],
-  },
+export const CONFIG_SECTIONS: ConfigSection[] = [];
+
+export const OVERFLOW_VIEWS: { id: OverflowView; label: string }[] = [
+  { id: "assessment", label: "Review" },
+  { id: "agents", label: "Agents" },
+  { id: "layers", label: "Agent Layers" },
+  { id: "reach", label: "Reach" },
+  { id: "flow", label: "Path" },
+  { id: "usage", label: "Usage" },
+  { id: "guard", label: "Guard" },
+  { id: "files", label: "Files" },
+  { id: "platforms", label: "Platforms" },
+  { id: "rollup", label: "Rollup" },
+  { id: "changes", label: "Changes" },
+  { id: "3d", label: "3D" },
+  { id: "canvas", label: "Canvas" },
 ];
 
-/** Flat list for tests / legacy imports. */
-export const OVERFLOW_VIEWS: { id: OverflowView; label: string }[] = CONFIG_SECTIONS.flatMap((s) => s.items);
+export function normalizeDockMode(mode: DockMode | null): DockMode | null {
+  if (mode === "inspect") return "insights";
+  if (mode === "tasks") return "work";
+  if (mode === "terminal" || mode === "evidence" || mode === "code") return "agents";
+  if (mode === "ops") return "workspace";
+  return mode;
+}
+
+/** System dock — coerce deprecated aliases; keep rollup/changes. */
+export function normalizeWorkspaceDockTab(tab: WorkspaceDockTab | undefined): WorkspaceDockTab {
+  if (!tab || tab === "flow" || tab === "work") return "path";
+  if (tab === "ops") return "rollup";
+  if (tab === "platforms" || tab === "path" || tab === "rollup" || tab === "changes") return tab;
+  return "platforms";
+}
+
+/** Agents dock — map legacy code dock tabs. */
+export function normalizeAgentsDockTab(tab: AgentsDockTab | undefined): AgentsDockTab {
+  if (!tab) return "inventory";
+  return tab;
+}

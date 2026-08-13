@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { DockMode } from "./types";
 import { DOCK_MODES } from "./types";
+import { canMaximizeDockMode } from "./dockLayout";
 import { CANVAS, FONT_UI, INK, LINE, SLATE } from "../theme/tokens";
 
 type Props = {
@@ -11,6 +12,8 @@ type Props = {
   children: ReactNode;
   /** Overlay floats over the canvas (default). Embedded used only in legacy layouts. */
   variant?: "overlay" | "embedded";
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
 };
 
 export function DockFrame({
@@ -20,33 +23,53 @@ export function DockFrame({
   onResizeStart,
   children,
   variant = "overlay",
+  maximized = false,
+  onToggleMaximize,
 }: Props) {
   const label =
     DOCK_MODES.find((m) => m.id === mode)?.label ??
     (mode === "inspect" ? "Inspect" : mode === "evidence" ? "Evidence" : mode);
 
   const overlay = variant === "overlay";
+  const showMaximize = canMaximizeDockMode(mode) && !!onToggleMaximize;
 
   return (
     <aside
       data-testid="blanko-dock"
       data-dock-mode={mode}
+      data-dock-width={width}
+      data-dock-maximized={maximized ? "true" : "false"}
       style={{
-        width,
-        flexShrink: 0,
-        ...(overlay
+        ...(maximized && overlay
           ? {
               position: "absolute",
+              left: 12,
               right: 84,
               top: 56,
               bottom: 88,
+              width: "auto",
               zIndex: 26,
               borderRadius: 16,
               border: `1px solid ${LINE}`,
               boxShadow: "0 16px 48px rgba(18,19,26,0.12), 0 2px 8px rgba(18,19,26,0.04)",
             }
           : {
-              borderLeft: `1px solid ${LINE}`,
+              width,
+              flexShrink: 0,
+              position: overlay ? "absolute" : "relative",
+              ...(overlay
+                ? {
+                    right: 84,
+                    top: 56,
+                    bottom: 88,
+                    zIndex: 26,
+                    borderRadius: 16,
+                    border: `1px solid ${LINE}`,
+                    boxShadow: "0 16px 48px rgba(18,19,26,0.12), 0 2px 8px rgba(18,19,26,0.04)",
+                  }
+                : {
+                    borderLeft: `1px solid ${LINE}`,
+                  }),
             }),
         background: CANVAS,
         display: "flex",
@@ -56,16 +79,17 @@ export function DockFrame({
         overflow: "hidden",
       }}
     >
-      {!overlay && (
+      {!maximized && (
         <div
           data-testid="blanko-dock-resize"
           onMouseDown={onResizeStart}
+          title="Drag to resize"
           style={{
             position: "absolute",
             left: 0,
             top: 0,
             bottom: 0,
-            width: 4,
+            width: 6,
             cursor: "col-resize",
             zIndex: 2,
           }}
@@ -79,27 +103,51 @@ export function DockFrame({
           padding: "12px 14px",
           borderBottom: `1px solid ${LINE}`,
           flexShrink: 0,
+          gap: 8,
         }}
       >
         <div style={{ fontSize: 15, fontWeight: 700, color: INK, letterSpacing: "-0.02em" }}>{label}</div>
-        <button
-          type="button"
-          data-testid="blanko-dock-close"
-          onClick={onClose}
-          title="Close panel"
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 8,
-            border: `1px solid ${LINE}`,
-            background: CANVAS,
-            color: SLATE,
-            cursor: "pointer",
-            fontSize: 14,
-          }}
-        >
-          ×
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {showMaximize ? (
+            <button
+              type="button"
+              data-testid="blanko-dock-maximize"
+              onClick={onToggleMaximize}
+              title={maximized ? "Restore panel size" : "Expand panel"}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                border: `1px solid ${LINE}`,
+                background: CANVAS,
+                color: SLATE,
+                cursor: "pointer",
+                fontSize: 12,
+                lineHeight: 1,
+              }}
+            >
+              {maximized ? "⧉" : "▢"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-testid="blanko-dock-close"
+            onClick={onClose}
+            title="Close panel"
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 8,
+              border: `1px solid ${LINE}`,
+              background: CANVAS,
+              color: SLATE,
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            ×
+          </button>
+        </div>
       </header>
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>{children}</div>
       <div
@@ -111,7 +159,7 @@ export function DockFrame({
           flexShrink: 0,
         }}
       >
-        Canvas stays full — Esc closes
+        {maximized ? "Expanded — Esc restores, Esc again closes" : "Canvas stays full — Esc closes"}
       </div>
     </aside>
   );
