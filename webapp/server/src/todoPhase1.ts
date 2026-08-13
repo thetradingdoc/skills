@@ -23,6 +23,25 @@ export function canTransitionTodo(from: string, to: string): boolean {
   return TRANSITIONS[f].includes(t);
 }
 
+/**
+ * Block illegal PATCH shortcuts while a sandbox rail is linked.
+ * Approve/reject routes update status separately and must not use this gate for done.
+ */
+export function manualStatusPatchBlocked(
+  to: string,
+  railId: string | null | undefined
+): string | null {
+  if (!railId || !String(railId).trim()) return null;
+  const next = normalizeTodoStatus(to);
+  if (next === "done") {
+    return "Use Approve to apply sandbox changes (cannot mark Completed while a rail is linked).";
+  }
+  if (next === "needs_review") {
+    return "Wait for the agent — or Reject if reviewing (cannot fake Needs review while a rail is linked).";
+  }
+  return null;
+}
+
 export function isDependencyDone(status: string | null | undefined): boolean {
   const s = normalizeTodoStatus(status);
   return s === "done";

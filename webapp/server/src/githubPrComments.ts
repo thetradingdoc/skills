@@ -103,19 +103,16 @@ router.post(
       return;
     }
 
-    const { data: ws } = await supabaseAdmin
-      .from("workspaces")
-      .select("id, repo_url, github_full_name")
-      .eq("id", workspaceId)
-      .single();
+    const { loadWorkspaceRepoFields } = await import("./workspaceRepoMeta.js");
+    const ws = await loadWorkspaceRepoFields(supabaseAdmin, workspaceId);
 
     if (!ws) {
       res.status(404).json({ error: "Workspace not found." });
       return;
     }
 
-    const fullName = (ws as { github_full_name?: string }).github_full_name;
-    const repoUrl = (ws as { repo_url?: string }).repo_url;
+    const fullName = ws.github_full_name;
+    const repoUrl = ws.repo_url;
     const parts = fullName
       ? fullName.split("/")
       : typeof repoUrl === "string"

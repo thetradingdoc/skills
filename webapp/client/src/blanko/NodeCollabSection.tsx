@@ -21,14 +21,23 @@ type Props = {
   nodeLabel?: string;
   apiBase: string;
   accessToken: string | null;
+  /** When true, skip outer toggle (parent already collapsed). */
+  embedded?: boolean;
 };
 
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
-export function NodeCollabSection({ workspaceId, nodeId, nodeLabel, apiBase, accessToken }: Props) {
-  const [open, setOpen] = useState(false);
+export function NodeCollabSection({
+  workspaceId,
+  nodeId,
+  nodeLabel,
+  apiBase,
+  accessToken,
+  embedded = false,
+}: Props) {
+  const [open, setOpen] = useState(embedded);
   const [claims, setClaims] = useState<SectionClaim[]>([]);
   const [claimBusy, setClaimBusy] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -134,41 +143,47 @@ export function NodeCollabSection({ workspaceId, nodeId, nodeLabel, apiBase, acc
   };
 
   return (
-    <div data-testid="blanko-insights-collab" style={{ marginTop: 18 }}>
-      <button
-        type="button"
-        data-testid="blanko-insights-collab-toggle"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          display: "flex",
-          width: "100%",
-          alignItems: "center",
-          justifyContent: "space-between",
-          background: "none",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-          fontFamily: FONT_MONO,
-          fontSize: 10,
-          fontWeight: 600,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: SLATE,
-        }}
-      >
-        <span>Collab · claim</span>
-        <span>{open ? "▾" : "▸"}</span>
-      </button>
-      {open && (
+    <div data-testid="blanko-insights-collab" style={{ marginTop: embedded ? 0 : 18 }}>
+      {!embedded && (
+        <button
+          type="button"
+          data-testid="blanko-insights-collab-toggle"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            display: "flex",
+            width: "100%",
+            alignItems: "center",
+            justifyContent: "space-between",
+            background: "none",
+            border: "none",
+            padding: 0,
+            cursor: "pointer",
+            fontFamily: FONT_MONO,
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: SLATE,
+          }}
+        >
+          <span>Team · who’s on this</span>
+          <span>{open ? "▾" : "▸"}</span>
+        </button>
+      )}
+      {(embedded || open) && (
         <div
           style={{
-            marginTop: 10,
+            marginTop: embedded ? 0 : 10,
             padding: 12,
             borderRadius: 10,
             border: `1px solid ${LINE}`,
             background: PAPER,
           }}
         >
+          <div style={{ fontSize: 12, color: SLATE, marginBottom: 8, lineHeight: 1.4 }}>
+            Claim means “I’m working on this piece” for teammates — not a code todo and not something
+            the agent runs.
+          </div>
           <SectionRosterBadges
             claims={claims}
             presenceUsers={presenceUsers}

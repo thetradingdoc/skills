@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireUser } from "./middleware/requireUser.js";
 import { requireWorkspaceAccess } from "./middleware/requireWorkspaceAccess.js";
+import { requireCanEdit } from "./middleware/requireCanEdit.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
 import { assertWorkspaceAccess } from "./workspaceAccess.js";
 import { maybePruneWorkspaceMemories } from "./memoryHygiene.js";
@@ -9,6 +10,7 @@ import { isValidProjectKey } from "./utils/deriveProjectKey.js";
 import { deleteWorkspaceClone } from "./cloneRepo.js";
 import { buildNodeFileMappingArray } from "./nodeFileMapping.js";
 import type { ArchGraph } from "../../../src/types.js";
+import { checkSaveRevision, nextGraphRevision, storedRevisionFromGraph } from "./graphSaveRevision.js";
 
 const router = Router();
 
@@ -198,7 +200,7 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
 
   const { data: ws } = await supabaseAdmin
     .from("workspaces")
-    .select("id, owner_id, jira_project_key, auto_execute_enabled, archived_at")
+    .select("id, owner_id, jira_project_key, auto_execute_enabled, archived_at, project_root, repo_url")
     .eq("id", workspaceId)
     .single();
 
@@ -227,7 +229,7 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     return;
   }
 
-  const graph = graphRow.graph_json as { nodes?: Array<{ id?: string }>; edges?: unknown[] };
+  const graph = graphRow.graph_json as { nodes?: Array<{ id?: string }>; edges?: unknown[]; projectRoot?: string };
   const nodeIdsWithTraces = new Set<string>();
 
   const { data: traceRows } = await supabaseAdmin
@@ -252,7 +254,7 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     .select("system_model_json")
     .eq("workspace_id", workspaceId)
     .maybeSingle();
-  const sysModelNodes = (sysModel?.system_model_json as { nodes?: Array<{ id: string; domain?: string; runtimeRoles?: string[]; tier?: string }> })?.nodes;
+  const sysModelNodes = (sysModel?.system_model_json as { nodes?: Array<{ id: string; domain?: string; runtimeRoles?: string[]; tier?: string; subsystem?: string }> })?.nodes;
   if (sysModelNodes && graph?.nodes && Array.isArray(graph.nodes)) {
     const byId = new Map(sysModelNodes.map((m) => [m.id, m]));
     for (const n of graph.nodes) {
@@ -261,6 +263,7 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
         (n as Record<string, unknown>).domain = sm.domain;
         (n as Record<string, unknown>).runtimeRoles = sm.runtimeRoles;
         (n as Record<string, unknown>).tier = sm.tier;
+        if (sm.subsystem) (n as Record<string, unknown>).subsystem = sm.subsystem;
       }
     }
   }
@@ -278,15 +281,89 @@ router.get("/workspaces/:workspaceId/load", requireUser, async (req, res) => {
     .order("created_at", { ascending: true });
 
   const workspaceOwnerId = (ws as { owner_id?: string }).owner_id ?? null;
+  const wsProjectRoot =
+    typeof (ws as { project_root?: string | null }).project_root === "string"
+      ? String((ws as { project_root?: string | null }).project_root).trim()
+      : "";
+  const graphProjectRoot =
+    typeof graph?.projectRoot === "string" ? graph.projectRoot.trim() : "";
   res.json({
     graph: graph as Record<string, unknown>,
-    repoUrl: graphRow.repo_url ?? "",
+    repoUrl: graphRow.repo_url ?? (ws as { repo_url?: string }).repo_url ?? "",
+    // Fix G: expose project_root so Flow/dogfood can target local trading path.
+    projectRoot: wsProjectRoot || graphProjectRoot || "",
+    no_project_root: !(wsProjectRoot || graphProjectRoot),
     jiraProjectKey: (ws as { jira_project_key?: string | null }).jira_project_key ?? null,
     autoExecuteEnabled: (ws as { auto_execute_enabled?: boolean | null }).auto_execute_enabled ?? false,
     views: viewsData ?? [],
     annotations: annotationsData ?? [],
     ownerId: workspaceOwnerId,
     isOwner: workspaceOwnerId === userId,
+  });
+});
+
+/**
+ * Epic 5 — where Approve / Fix will write.
+ * Never implies live .blanko-target sync; Approve uses scan-clone only (D5).
+ */
+router.get("/workspaces/:workspaceId/target", requireUser, async (req, res) => {
+  if (!supabaseAdmin) {
+    res.status(503).json({ error: "Auth service not configured." });
+    return;
+  }
+  const userId = req.user!.id;
+  const workspaceId = req.params.workspaceId;
+  if (!workspaceId) {
+    res.status(400).json({ error: "workspaceId is required" });
+    return;
+  }
+  try {
+    await assertWorkspaceAccess(supabaseAdmin, workspaceId, userId);
+  } catch {
+    res.status(404).json({ error: "Workspace not found or access denied." });
+    return;
+  }
+
+  const { data: ws } = await supabaseAdmin
+    .from("workspaces")
+    .select("project_root, repo_url")
+    .eq("id", workspaceId)
+    .maybeSingle();
+  const { data: graphRow } = await supabaseAdmin
+    .from("graphs")
+    .select("graph_json, repo_url")
+    .eq("workspace_id", workspaceId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const graphRoot =
+    typeof (graphRow?.graph_json as { projectRoot?: string } | null)?.projectRoot === "string"
+      ? String((graphRow!.graph_json as { projectRoot: string }).projectRoot).trim()
+      : "";
+  const wsRoot =
+    typeof (ws as { project_root?: string | null } | null)?.project_root === "string"
+      ? String((ws as { project_root: string }).project_root).trim()
+      : "";
+  const target_path = wsRoot || graphRoot || null;
+
+  let source: "blanko-target" | "scan-clone" | "unset" = "unset";
+  if (target_path) {
+    const { getClonesDir } = await import("./cloneRepo.js");
+    const pathMod = await import("node:path");
+    const clonesBase = pathMod.resolve(getClonesDir());
+    const resolved = pathMod.resolve(target_path);
+    const rel = pathMod.relative(clonesBase, resolved);
+    const underClones = rel !== "" && !rel.startsWith("..") && !pathMod.isAbsolute(rel);
+    source = underClones ? "scan-clone" : "blanko-target";
+  }
+
+  res.json({
+    target_path,
+    source,
+    no_project_root: !target_path,
+    // Stub only — live sync is out of scope (D5 / explicit out of scope).
+    sync_to_live_available: false,
   });
 });
 
@@ -1069,6 +1146,20 @@ router.patch("/workspaces/:workspaceId/connect-repo", requireUser, async (req, r
   const userId = req.user!.id;
   const workspaceId = req.params.workspaceId;
   const fullName = typeof req.body?.github_full_name === "string" ? req.body.github_full_name.trim() : null;
+  const repoIdRaw = req.body?.github_repo_id ?? req.body?.githubRepoId;
+  const installationRaw = req.body?.github_installation_id ?? req.body?.installation_id;
+  const githubRepoId =
+    typeof repoIdRaw === "number"
+      ? repoIdRaw
+      : typeof repoIdRaw === "string" && /^\d+$/.test(repoIdRaw)
+        ? Number(repoIdRaw)
+        : null;
+  const githubInstallationId =
+    typeof installationRaw === "number"
+      ? installationRaw
+      : typeof installationRaw === "string" && /^\d+$/.test(installationRaw)
+        ? Number(installationRaw)
+        : null;
   if (!workspaceId || !fullName) {
     res.status(400).json({ error: "workspaceId and github_full_name required." });
     return;
@@ -1084,15 +1175,25 @@ router.patch("/workspaces/:workspaceId/connect-repo", requireUser, async (req, r
     return;
   }
   const repoUrl = `https://github.com/${fullName}`;
-  const { error } = await supabaseAdmin
-    .from("workspaces")
-    .update({ repo_url: repoUrl, github_full_name: fullName })
-    .eq("id", workspaceId);
-  if (error) {
-    res.status(500).json({ error: error.message });
+  const { updateWorkspaceRepoMeta } = await import("./workspaceRepoMeta.js");
+  const meta = await updateWorkspaceRepoMeta(supabaseAdmin, workspaceId, {
+    repo_url: repoUrl,
+    github_full_name: fullName,
+    github_repo_id: githubRepoId,
+    github_installation_id: githubInstallationId,
+  });
+  if (!meta.ok) {
+    res.status(500).json({ error: meta.error });
     return;
   }
-  res.json({ success: true, repoUrl, github_full_name: fullName });
+  res.json({
+    success: true,
+    repoUrl,
+    github_full_name: meta.wroteGithubFullName ? fullName : null,
+    wroteGithubFullName: meta.wroteGithubFullName,
+    github_repo_id: githubRepoId,
+    github_installation_id: githubInstallationId,
+  });
 });
 
 /** Update workspace metadata (e.g. name). */
@@ -1143,30 +1244,42 @@ router.patch("/workspaces/:workspaceId", requireUser, async (req, res) => {
   res.json({ success: true });
 });
 
-/** Manually save the latest graph for a workspace (user must own it). */
-router.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
+/**
+ * Manually save the latest graph for a workspace (user must own it).
+ *
+ * `graph` is stored verbatim as JSON in `graphs.graph_json` — there is no
+ * column whitelist, so P1 assisted-design-loop fields on `ArchNode`/`ArchEdge`
+ * (`buildStatus`, `position`, `relation`) round-trip through save/load for
+ * free, including for design graphs with an empty `projectRoot` (no repo
+ * linked yet). Plan progress is intentionally NOT a separate table: it lives
+ * entirely on `node.buildStatus` inside this same JSON blob. See
+ * `scripts/test-design-persistence.ts` for round-trip proof and
+ * `GET /workspaces/:workspaceId/load` below for the read side (which only
+ * ever adds fields like `hasTraces`/`domain`/`tier`, never removes any).
+ *
+ * Post-V1 multiplayer: `graph.revision` is a monotonic counter (see
+ * `graphSync.ts`). Callers may pass `baseRevision` — the revision they last
+ * loaded/saved from — so the server can detect a concurrent save from
+ * another tab/collaborator and hand back the current server graph for a
+ * client-side merge (via `mergeGraphs`) instead of silently clobbering it.
+ *
+ * Authz: owner OR editor via requireWorkspaceAccess + requireCanEdit (viewers 403).
+ */
+router.post(
+  "/workspaces/:workspaceId/save",
+  requireUser,
+  requireWorkspaceAccess,
+  requireCanEdit,
+  async (req, res) => {
   if (!supabaseAdmin) {
     res.status(503).json({ error: "Auth service not configured." });
     return;
   }
 
-  const ownerId = req.user!.id;
   const workspaceId = req.params.workspaceId;
 
   if (!workspaceId) {
     res.status(400).json({ error: "workspaceId is required" });
-    return;
-  }
-
-  const { data: ws, error: wsErr } = await supabaseAdmin
-    .from("workspaces")
-    .select("id")
-    .eq("id", workspaceId)
-    .eq("owner_id", ownerId)
-    .single();
-
-  if (wsErr || !ws) {
-    res.status(404).json({ error: "Workspace not found or access denied." });
     return;
   }
 
@@ -1176,15 +1289,47 @@ router.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
       : null;
   const repoUrl =
     typeof req.body?.repoUrl === "string" ? (req.body.repoUrl as string) : null;
+  const baseRevision =
+    typeof req.body?.baseRevision === "number" ? (req.body.baseRevision as number) : null;
 
   if (!graph) {
     res.status(400).json({ error: "graph is required" });
     return;
   }
 
+  const { data: latestRow, error: latestErr } = await supabaseAdmin
+    .from("graphs")
+    .select("graph_json")
+    .eq("workspace_id", workspaceId)
+    .not("graph_json", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestErr) {
+    res.status(500).json({ error: latestErr.message });
+    return;
+  }
+
+  const storedGraph = (latestRow?.graph_json as Record<string, unknown> | null) ?? null;
+  const storedRevision = storedRevisionFromGraph(storedGraph);
+
+  const revCheck = checkSaveRevision(storedRevision, baseRevision);
+  if (!revCheck.ok) {
+    res.status(409).json({
+      code: "REVISION_CONFLICT",
+      currentRevision: revCheck.currentRevision,
+      serverGraph: storedGraph,
+    });
+    return;
+  }
+
+  const nextRevision = nextGraphRevision(graph.revision, storedRevision);
+  const graphToStore = { ...graph, revision: nextRevision };
+
   const { error: gErr } = await supabaseAdmin.from("graphs").insert({
     workspace_id: workspaceId,
-    graph_json: graph,
+    graph_json: graphToStore,
     repo_url: repoUrl,
   });
 
@@ -1194,13 +1339,22 @@ router.post("/workspaces/:workspaceId/save", requireUser, async (req, res) => {
   }
 
   if (repoUrl && repoUrl.trim()) {
+    const graphRoot =
+      typeof (graph as { projectRoot?: string }).projectRoot === "string"
+        ? (graph as { projectRoot: string }).projectRoot.trim()
+        : "";
+    // Fix G (BK-FLOW-017): never wipe project_root on save when the graph still
+    // points at a scanned local path (trading-agent / scan-clone).
     await supabaseAdmin
       .from("workspaces")
-      .update({ project_root: null, repo_url: repoUrl.trim() })
+      .update({
+        repo_url: repoUrl.trim(),
+        ...(graphRoot ? { project_root: graphRoot } : {}),
+      })
       .eq("id", workspaceId);
   }
 
-  res.json({ success: true });
+  res.json({ success: true, revision: nextRevision });
 });
 
 // ── Workspace scenes (iCraft-style authored scene docs) ───────────────────────

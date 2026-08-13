@@ -16,9 +16,13 @@ export function getClonesDir(): string {
 }
 
 /** Inject token into HTTPS GitHub URL for private repo access. Returns original URL if no token. */
-export function authUrl(url: string): string {
+export function authUrl(url: string, tokenOverride?: string | null): string {
   const trimmed = url.trim();
-  const token = process.env.GITHUB_TOKEN || process.env.GITHUB_ACCESS_TOKEN;
+  const token =
+    (typeof tokenOverride === "string" && tokenOverride.trim()) ||
+    process.env.GITHUB_TOKEN?.trim() ||
+    process.env.GITHUB_ACCESS_TOKEN?.trim() ||
+    "";
   if (!token) return trimmed;
   const match = trimmed.match(/^(https?:\/\/)(github\.com\/[\w.-]+\/[\w.-]+?)(\.git)?\/?$/i);
   if (!match) return trimmed;
@@ -97,7 +101,35 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
     }
   }
   fs.mkdirSync(path.dirname(stableDir), { recursive: true });
-  const cloneUrl = authUrl(repoUrl);
+  let installToken: string | null = null;
+  if (supabaseAdmin) {
+    try {
+      const { data: ws } = await supabaseAdmin
+        .from("workspaces")
+        .select("github_installation_id")
+        .eq("id", workspaceId)
+        .maybeSingle();
+      const installationId = Number(
+        (ws as { github_installation_id?: number } | null)?.github_installation_id
+      );
+      if (Number.isFinite(installationId) && installationId > 0) {
+        const { resolveCloneTokenForWorkspace } = await import("./githubApp.js");
+        installToken = await resolveCloneTokenForWorkspace({
+          githubInstallationId: installationId,
+        });
+      }
+    } catch (e) {
+      console.warn(
+        "[cloneRepo] installation token lookup failed:",
+        e instanceof Error ? e.message : e
+      );
+    }
+  }
+  if (!installToken) {
+    const { resolveCloneTokenForWorkspace } = await import("./githubApp.js");
+    installToken = await resolveCloneTokenForWorkspace({ githubInstallationId: null });
+  }
+  const cloneUrl = authUrl(repoUrl, installToken);
   try {
     await simpleGit().clone(cloneUrl, stableDir, ["--depth", "1"]);
   } catch (err) {
@@ -111,8 +143,8 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
     const msg = err instanceof Error ? err.message : String(err);
     if (/auth|401|403|permission|denied/i.test(msg)) {
       throw new Error(
-        "Clone failed (auth). Private repositories require GITHUB_TOKEN or GITHUB_ACCESS_TOKEN. " +
-          "Set one in your environment."
+        "Clone failed (auth). Install Blanko-Lab on the repo (Gate C installation token) " +
+          "or set GITHUB_TOKEN / GITHUB_ACCESS_TOKEN for legacy private clones."
       );
     }
     throw err;
