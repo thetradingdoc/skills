@@ -1,151 +1,78 @@
-# Architecture Visualizer
+# Skills
 
-Live architecture map for your codebase — static analysis, AI enrichment, drift detection, and AI-assisted code changes via rails.
+**Turn any agent architecture — a doc, or a one-line prompt — into a running,
+memory-backed agent you can edit by voice and share as a link.**
 
-**New to the codebase?** See [docs/CODEBASE.md](docs/CODEBASE.md) for structure, data flow, and conventions.
+Built for the **Harness Engineering & Model Wrangling Hackathon** with MongoDB
+(Sept 26, 2026, NYC).
 
-## Quick Start
+## What it does
 
-1. **Install dependencies**
-   ```bash
-   npm install
-   cd webview-ui && npm install
-   ```
+1. Paste or upload a doc describing a system (architecture spec, README, design
+   doc — anything), or just type a one-line prompt.
+2. An LLM parses it into a visual graph of agents, tools, memory stores, and
+   guardrails, rendered on an interactive canvas.
+3. Edit the graph by **voice** — speak an instruction and watch the canvas
+   update live.
+4. Every generated agent's memory is backed by **MongoDB Atlas + Vector
+   Search** — real semantic memory, not a mock.
+5. Swap the reasoning model between **OpenAI** and **Anthropic** with one
+   environment variable — no code changes.
+6. Share a link and someone else opens the same canvas, live.
 
-2. **Configure secrets (optional)**
-   ```bash
-   cp .env.example .env
-   # Add ANTHROPIC_API_KEY for live AI. Leave empty to use MockEnricher.
-   ```
+## A note on where this came from
 
-3. **Build**
-   ```bash
-   npm run build
-   ```
+Skills is built on top of an architecture-visualizatialready been
+developing (originally for scanning and visualizing existing codebases). For
+this hackathon, I extended it with:
 
-4. **Run**
+- A MongoDB Atlas-backed memory layer for generated agents
+- A provider switch between OpenAI and Anthropic for the graph-generation engine
+- Markdown/doc import into the graph-generation pipeline
+- Voice-driven graph editing
 
-   **Web app:**
-   ```bash
-   npm run webapp
-   ```
-   Open the URL shown (e.g. http://localhost:5174). Sign in, create a workspace, scan a repo, use chat and rails. Add `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` for AI.
+The canvas, chat interface, and repo-scanning engine predate the event; the
+agent-memory, multi-provider, doc-import, and voice-editing layers were built
+during it.
 
-   **VS Code extension:**
-   - Run `npm run compile` (or `npm run build`) so `out/extension.js` exists
-   - Press **F5** in VS Code/Cursor to launch Extension Development Host (loads this repo as the extension)
-   - In the new window: File → Open Folder → `fixtures/sample-project`
-   - Press **Cmd+Shift+A** (Mac) or **Ctrl+Shift+A** (Windows/Linux) to open Architecture Map
-   - **Verify activation:** Run **Developer: Show Running Extensions** and confirm `arch-visualizer` is listed; or install the built `.vsix` from the repo root (`npm run package` if available) and install via Extensions view
+## Partners used
 
-## Dev Loop
+| Partner | How it's used |
+|---|---|
+| **MongoDB Atlas** | Vector Search-backed semantic memory for every generated agent |
+| **OpenAI** | Graph-generation engine (doc/prompt → architecture graph); reasoning model for generated agents |
+| **Anthropic** | Alternate graph-generation engine, swappable via `GREENFIELD_PROVIDER` |
+| **OpenRouter** | Swappable model routing for generated agents |
+| **ElevenLabs** | Voice input for live graph editing |
 
-```bash
-# Terminal 1: watch extension
-npm run dev:ext
-
-# Terminal 2: watch webview (HMR)
-npm run dev:webview
-
-# In VS Code: F5 to launch Extension Development Host
-```
-
-## Configuration
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `archVisualizer.anthropicApiKey` | — | Anthropic API key for semantic roles & Q&A. Omit to use MockEnricher. |
-| `archVisualizer.projectRoot` | `.` | Project root for scanning (relative to workspace). |
-
-## Environment
-
-| Variable | Description |
-|----------|-------------|
-| `ARCH_TEST_MODE=1` | Force MockEnricher (no API calls). |
-| `ARCH_FIXTURE_PATH` | Override scan root, e.g. `fixtures/sample-project`. |
-| `ANTHROPIC_API_KEY` | Fallback for API key (prefer settings). |
-| `ARCHY_LOG_PATH` | Optional path for structured runtime logs used by telemetry tools (defaults to `logs/app.log`). |
-| `ARCHY_SPANS_PATH` | Optional path for OTLP span ingestion (defaults to `logs/spans.jsonl`). POST `/api/telemetry/otlp` accepts OTLP JSON. POST `/api/workspaces/:id/telemetry/otlp` (auth) maps spans onto the graph and persists to `workspace_runtime_snapshots`. |
-
-## `archNodeId` contract
-
-Arch Visualizer uses a **stable `archNodeId`** to tie together:
-
-- static analysis nodes (graph),
-- generated/scaffolded source files,
-- logs & telemetry,
-- Jira issues.
-
-**Canonical format**
-
-- Type: conceptual identifier for a module, _not_ a raw file path.
-- Allowed charset: letters, numbers, `_`, `-`, `/`, `.`.
-- Recommended patterns:
-  - Feature or route groups: `routes/auth`, `routes/payments`
-  - Services: `services/cache`, `services/billing`
-  - UI modules: `ui/dashboard`, `ui/settings`
-  - Libraries/utilities: `lib/formatting`, `utils/time`
-
-The same value should be reused consistently across:
-
-- `// @archNodeId: <id>` header comments at the top of source files.
-- Jira labels in the form `archNodeId:<id>`.
-- Runtime logs (see logger helper) as a structured `archNodeId` field.
-
-**Header comment convention**
-
-Every file that belongs to an architecture node **must** begin with:
-
-```ts
-// @archNodeId: routes/auth
-```
-
-The `id-decorator` script and scaffold/materialize flows keep this header
-idempotent and consistent when refactoring or generating new modules.
-
-## .context.md
-
-Per-module context with frontmatter:
-
-```yaml
----
-role: Authentication Service
-must-not-depend-on: [api, ui]
-deprecated: false
----
-
-# Auth Module
-Handles JWT and session logic.
-```
-
-## .arch-rules.json
-
-Cross-module rules at project root:
-
-```json
-{
-  "rules": [{
-    "id": "auth-no-api",
-    "description": "Auth must not depend on API",
-    "sourcePattern": "auth",
-    "mustNotImportPattern": "api",
-    "severity": "error"
-  }]
-}
-```
-
-## Testing
+## Getting started
 
 ```bash
-npm test
+npm install
+npm install --prefix webapp/server
+npm install --prefix webapp/client
+
+cp webapp/server/.env.example webapp/server/.env
+cp webapp/client/.env.example webapp/client/.env
 ```
 
-Uses MockEnricher by default. Set `ARCH_TEST_MODE=1` in CI.
+Fill in `webapp/server/.env`:
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — auth (free Supabase project)
+- `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` — at least one required
+- `GITHUB_TOKEN` — for scanning private repos
+- `GREENFIELD_PROVIDER` — `openai` or `anthropic` (default: `anthropic`)
 
-## Docs for Contributors
+Fill in `webapp/client/.env`:
+- `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — same Supabase project
 
-| Doc | Purpose |
-|-----|---------|
-| [docs/CODEBASE.md](docs/CODEBASE.md) | Structure, entry points, data flow |
-| [docs/PRODUCT_STATUS.md](docs/PRODUCT_STATUS.md) | Features, APIs |
-| [docs/ops/ENV.md](docs/ops/ENV.md) | Environment variables |
+Then:
+```bash
+npm run webapp
+```
+
+Server on `:4000`, client on `:5174`.
+
+## License
+
+No license  yet — treat this as all-rights-reserved until one is
+added.
