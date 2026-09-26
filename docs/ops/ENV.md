@@ -27,6 +27,9 @@ Share links then fall back to `req.headers.origin`, which may be wrong behind pr
 
 **Recommendation:** Set `APP_URL` in production and staging. For local dev, ensure it matches your Vite preview URL (e.g. `http://localhost:5174`).
 
+**Host on Railway (no custom domain):** see [RAILWAY.md](./RAILWAY.md).  
+**Host on GCP Cloud Run (this org):** see [GCP_CLOUD_RUN.md](./GCP_CLOUD_RUN.md).
+
 ---
 
 ### Related Verification Env

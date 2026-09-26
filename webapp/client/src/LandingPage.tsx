@@ -245,8 +245,8 @@ function UploadProp({ onClick }: { onClick: () => void }) {
         }}
       >
         <ProviderIcon providerId="n8n" size={36} />
-        <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Upload n8n workflow</div>
-        <div style={{ fontSize: 12, color: SLATE }}>Drop .json export</div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: INK }}>Upload workflow or design doc</div>
+        <div style={{ fontSize: 12, color: SLATE }}>Drop .json or .md</div>
       </div>
     </div>
   );
@@ -334,7 +334,7 @@ function ImportPanel({
         }}
       >
         <ProviderIcon providerId="n8n" size={20} />
-        Upload n8n workflow (.json)
+        Upload workflow or doc (.json, .md)
       </button>
 
       <div
@@ -390,7 +390,7 @@ function ImportPanel({
           textAlign: "center",
         }}
       >
-        GitHub repo · n8n export (.json)
+        GitHub repo · workflow (.json) · design doc (.md)
       </div>
     </div>
   );

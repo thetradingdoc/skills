@@ -18,6 +18,7 @@ import { retrieveFileSnippets } from "./retriever";
 import { formatSkillSummary } from "../agent/skillStore";
 import { askAboutArchitecture as askWithClaude } from "./claudeEnricher";
 import { askGreenfield, askGreenfieldStream, inferGreenfieldArchetype } from "./greenfieldEnricher";
+import { askGreenfieldOpenAI } from "./greenfieldEnricherOpenAI";
 import { askGreenfieldMock } from "./mockGreenfieldEnricher";
 import { reviewArchitectureAnswer, reviewGreenfieldAnswer } from "./critic";
 import { recordSuccessfulRun } from "../agent/templateLibrary";
@@ -71,6 +72,8 @@ export async function runArchitectureTask(params: {
   mode: AgentMode;
   apiKeyOpenAI?: string;
   apiKeyClaude?: string;
+  /** Optional per-request override of which model builds the design; falls back to GREENFIELD_PROVIDER env var when omitted. */
+  provider?: "anthropic" | "openai";
   findings?: ContractFinding[];
   rootPath: string | null;
   /** Per-user Jira config from integrations (webapp chat flow) */
@@ -564,6 +567,8 @@ async function runGreenfieldTask(params: {
   history?: ArchitectureChatHistory;
   apiKeyOpenAI?: string;
   apiKeyClaude?: string;
+  /** Optional per-request override of which model builds the design; falls back to GREENFIELD_PROVIDER env var when omitted. */
+  provider?: "anthropic" | "openai";
   findings?: ContractFinding[];
   traceId: string;
   pdfBase64?: string;
@@ -578,6 +583,7 @@ async function runGreenfieldTask(params: {
     history,
     apiKeyOpenAI,
     apiKeyClaude,
+    provider: requestedProvider,
     traceId,
     pdfBase64,
     pdfFileName,
@@ -664,11 +670,14 @@ async function runGreenfieldTask(params: {
 
   try {
   while (attempts < maxAttempts) {
+    const provider = (requestedProvider || process.env.GREENFIELD_PROVIDER || "anthropic").trim().toLowerCase();
     const greenfieldResult = useMock
       ? await askGreenfieldMock({ question, history: trimmedHistory })
-      : useStream
-        ? await askGreenfieldStream(askParams)
-        : await askGreenfield(askParams);
+      : provider === "openai"
+        ? await askGreenfieldOpenAI({ question, history: trimmedHistory, contextBlock, apiKeyOpenAI })
+        : useStream
+          ? await askGreenfieldStream(askParams)
+          : await askGreenfield(askParams);
     lastResult = greenfieldResult;
 
     const review = await reviewGreenfieldAnswer({

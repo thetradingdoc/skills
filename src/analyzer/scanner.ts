@@ -432,14 +432,31 @@ export async function scanProject(rootPath: string, findings?: ContractFinding[]
   });
 
   if (!hasTsConfig || project.getSourceFiles().length === 0) {
+    // Discover top-level source directories dynamically instead of a fixed
+    // allowlist -- repos with unconventional layouts (e.g. execution-engine/,
+    // unified-dashboard/) were previously invisible to the scanner.
+    const EXCLUDED_TOP_DIRS = new Set([
+      "node_modules", ".git", "dist", "build", "coverage", ".next", ".nuxt",
+      ".github", ".vscode", "out", "tmp", "docs", "data", "deploy", ".turbo",
+      ".cache", "logs", "test-results", "fixtures",
+    ]);
+    let topLevelDirs: string[] = [];
+    try {
+      topLevelDirs = fs
+        .readdirSync(rootPath, { withFileTypes: true })
+        .filter(
+          (d) =>
+            d.isDirectory() &&
+            !EXCLUDED_TOP_DIRS.has(d.name) &&
+            !d.name.startsWith(".")
+        )
+        .map((d) => d.name);
+    } catch {
+      topLevelDirs = [];
+    }
     const codeGlobs = [
-      `${rootPath}/src/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/lib/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/app/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/packages/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/services/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/server/**/*.{ts,tsx,js,jsx}`,
-      `${rootPath}/client/**/*.{ts,tsx,js,jsx}`,
+      `${rootPath}/*.{ts,tsx,js,jsx}`,
+      ...topLevelDirs.map((d) => `${rootPath}/${d}/**/*.{ts,tsx,js,jsx}`),
     ];
     project.addSourceFilesAtPaths(codeGlobs);
   }

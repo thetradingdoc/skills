@@ -98,6 +98,7 @@ import {
   updateDesignNode,
   DESIGN_PALETTE,
 } from "./greenfieldDesign";
+import { applyComponentToGraph } from "./applyComponentToGraph";
 import {
   ScenePanel,
   DockRail,
@@ -112,7 +113,6 @@ import {
   ChromeBar,
   EdgeTeachStrip,
   ViewShell,
-  getBuildItem,
   normalizeDockMode,
   defaultDockWidthForMode,
   clampDockWidth,
@@ -135,6 +135,7 @@ import { getDesignKnowledge } from "./designKnowledge";
 import { planFromGraph, nextStep } from "./buildPlan";
 import { DESIGN_BLUEPRINTS, forkBlueprint } from "./designBlueprints";
 import { applyTradingSpine, looksLikeTradingScan, spineMissing } from "./tradingSpine";
+import { applySpine } from "./spineRegistry";
 import { computeLayerLayout } from "./layout/layerLayout";
 import type { EdgeRelation } from "./types";
 
@@ -977,16 +978,37 @@ export default function App() {
     }
   }, []);
 
+  const processMdFile = useCallback(async (f: File) => {
+    if (f.size > 10 * 1024 * 1024) {
+      setError("Markdown file must be under 10MB.");
+      return;
+    }
+    setPdfAttachment(null);
+    try {
+      const text = (await f.text()).trim();
+      if (!text) {
+        setError("That markdown file looks empty.");
+        return;
+      }
+      setDocAttachment({ name: f.name, extractedText: text });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Could not read that file: ${msg}`);
+    }
+  }, []);
+
   const processAttachmentFile = useCallback(
     (f: File) => {
       const lower = f.name.toLowerCase();
       const isPdf = f.type === "application/pdf" || lower.endsWith(".pdf");
       const isDoc = f.type === "application/msword" || f.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || lower.endsWith(".doc") || lower.endsWith(".docx");
+      const isMd = f.type === "text/markdown" || f.type === "text/plain" || lower.endsWith(".md") || lower.endsWith(".markdown") || lower.endsWith(".txt");
       if (isPdf) processPdfFile(f);
       else if (isDoc) processDocFile(f);
-      else setError("Attach a PDF or Word document (.doc, .docx).");
+      else if (isMd) processMdFile(f);
+      else setError("Attach a PDF, Word (.doc/.docx), or Markdown (.md) document.");
     },
-    [processPdfFile, processDocFile]
+    [processPdfFile, processDocFile, processMdFile]
   );
   const [chatTabs, setChatTabs] = useState([{ id: "1", label: "Chat 1" }]);
   const [activeChatId, setActiveChatId] = useState("1");
@@ -1032,6 +1054,8 @@ export default function App() {
   const [showHealthBadges, setShowHealthBadges] = useState(true);
   /** View = inspect scan; Edit = canvas design affordances (independent of Apply spine). */
   const [canvasInteraction, setCanvasInteraction] = useState<CanvasInteractionMode>("view");
+  /** Components palette HTML5 drag — dock goes pointer-events:none so drops hit the canvas. */
+  const [paletteDragging, setPaletteDragging] = useState(false);
   const blankoShell = true;
   const [greenfieldSessionId, setGreenfieldSessionId] = useState<string | null>(() => {
     try {
@@ -1184,6 +1208,9 @@ export default function App() {
   const [scenePlaying, setScenePlaying] = useState(false);
   const [scenePlaybackSpeed, setScenePlaybackSpeed] = useState(1);
   const captureViewRef = useRef<(() => { viewport2D?: { x: number; y: number; zoom: number }; camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } }) | null>(null);
+  const flowCenterRef = useRef<(() => { x: number; y: number } | null) | null>(null);
+  /** Successive click-places in one board session stack by +24,+24 from viewport center. */
+  const clickPlaceStackRef = useRef(0);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
   const [shareLoading, setShareLoading] = useState(false);
@@ -1206,6 +1233,8 @@ export default function App() {
       return false;
     }
   });
+  /** Side-rail / chat-plus Import GitHub — paste URL + scan without leaving workspace. */
+  const [showImportGithubModal, setShowImportGithubModal] = useState(false);
   const [githubAppInstallationId, setGithubAppInstallationId] = useState<number | null>(() => {
     try {
       const id = Number(new URLSearchParams(window.location.search).get("installation_id"));
@@ -1513,6 +1542,9 @@ export default function App() {
     try {
       localStorage.removeItem("lastWorkspaceId");
       localStorage.removeItem("greenfieldSessionId");
+      // Same reason as handleStartDesignFromScratch: don't let a stale
+      // design draft from a prior architecture resurrect itself here.
+      localStorage.removeItem("designGraph:draft");
     } catch {
       // ignore
     }
@@ -1553,7 +1585,20 @@ export default function App() {
       return;
     }
     setCanvasInteraction(canvasBoardKey.endsWith("::design") ? "edit" : "view");
+    clickPlaceStackRef.current = 0;
   }, [canvasBoardKey]);
+
+  // Safety net: restore dock pointer-events if drag ends outside the window.
+  useEffect(() => {
+    if (!paletteDragging) return;
+    const end = () => setPaletteDragging(false);
+    window.addEventListener("dragend", end, true);
+    window.addEventListener("drop", end, true);
+    return () => {
+      window.removeEventListener("dragend", end, true);
+      window.removeEventListener("drop", end, true);
+    };
+  }, [paletteDragging]);
 
   // Post-V1 multiplayer: broadcast/receive node patches over a realtime
   // channel scoped to this workspace's design graph. Merge is pure (see
@@ -1643,6 +1688,12 @@ export default function App() {
   const acceptProposal = useCallback(() => {
     if (!pendingProposal?.length || !graph) return;
     const cmds = pendingProposal;
+    const hasTopologyMutators = cmds.some(
+      (c) => c.action === "create_node" || c.action === "connect" || c.action === "update_node"
+    );
+    if (hasTopologyMutators) {
+      setCanvasInteraction("edit");
+    }
     const snapshot = graph;
     setGraphUndoStack((stack) => [...stack.slice(-9), snapshot]);
     const next = applyDesignCommandsToGraph(graph, cmds);
@@ -1680,34 +1731,55 @@ export default function App() {
     setChatExpanded(false);
   }, []);
 
+  /** Flip chrome to Edit only when placing a structural Components piece (never on bind / panel open). */
+  const ensureEditForBuild = useCallback(() => {
+    setCanvasInteraction("edit");
+  }, []);
+
   const placeBuildItem = useCallback(
-    (paletteId: string) => {
+    (
+      paletteId: string,
+      position?: { x: number; y: number },
+      opts?: { hitNodeId?: string | null }
+    ) => {
       if (!graph) return;
-      const buildItem = getBuildItem(paletteId);
-      const node = buildItem
-        ? buildItemToNode(
-            {
-              ...buildItem,
-              providerId:
-                buildItem.providerId ??
-                (paletteId === "retell-channel" ? "retell" : undefined),
-            },
-            graph.nodes.length
-          )
-        : paletteItemToNode(paletteId, graph.nodes.length);
-      if (!node) return;
-      setGraph({
-        ...graph,
-        nodes: [...graph.nodes, node],
-        generatedAt: Date.now(),
+      if (!isDesignGraph(graph)) {
+        // CTA lives in BuildPanel when designAllowed=false — do not mutate.
+        return;
+      }
+      let resolvedPosition = position;
+      if (!resolvedPosition) {
+        // Click / keyboard path — viewport center of the visible canvas pane (+ stack offset).
+        const center = flowCenterRef.current?.() ?? { x: 240, y: 200 };
+        const stack = clickPlaceStackRef.current;
+        clickPlaceStackRef.current = stack + 1;
+        resolvedPosition = { x: center.x + stack * 24, y: center.y + stack * 24 };
+      }
+      const result = applyComponentToGraph(graph, paletteId, {
+        position: resolvedPosition,
+        selectedNodeId: selectedNode,
+        hitNodeId: opts?.hitNodeId,
       });
-      setSelectedNode(node.id);
-      // Node context lives in Insights (minimize: no separate Inspect overlay).
-      setDockMode("insights");
-      setDockOpen(true);
-      setInsightsEditOpen(true);
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      setGraph(result.graph);
+      if (result.mode === "place") {
+        ensureEditForBuild();
+        if (result.focusNodeId) {
+          setSelectedNode(result.focusNodeId);
+          setFlashNodeIds([result.focusNodeId]);
+          window.setTimeout(() => setFlashNodeIds([]), 1600);
+        }
+        setDockMode("insights");
+        setDockOpen(true);
+        setInsightsEditOpen(true);
+      } else if (result.focusNodeId) {
+        setSelectedNode(result.focusNodeId);
+      }
     },
-    [graph]
+    [graph, selectedNode, ensureEditForBuild]
   );
 
   const platformInventory = useMemo(() => {
@@ -2023,6 +2095,10 @@ export default function App() {
       __blankoE2E?: {
         setPendingProposal: (cmds: GraphCommand[]) => void;
         setChatOnlyNotice: () => void;
+        getGraphSnapshot: () => ArchGraph | null;
+        loadScanGraph: (g: ArchGraph) => void;
+        getFlowCenter: () => { x: number; y: number } | null;
+        setPaletteDragging: (v: boolean) => void;
       };
     };
     if (!w.__BLANKO_E2E__) return;
@@ -2037,11 +2113,21 @@ export default function App() {
         setChatOnlyNotice(true);
         setChatExpanded(true);
       },
+      getGraphSnapshot: () => graph,
+      loadScanGraph: (g) => {
+        setGraph(g);
+        setSelectedNode(null);
+        setPendingProposal(null);
+        setChatOnlyNotice(false);
+        setRepoUrl(g.projectRoot ?? "");
+      },
+      getFlowCenter: () => flowCenterRef.current?.() ?? null,
+      setPaletteDragging: (v: boolean) => setPaletteDragging(!!v),
     };
     return () => {
       delete w.__blankoE2E;
     };
-  }, []);
+  }, [graph]);
 
   const openComponents = useCallback(() => {
     setDockMode("build");
@@ -2050,8 +2136,18 @@ export default function App() {
   }, []);
 
   const handleStartDesignFromScratch = useCallback(() => {
+    try {
+      // A stale draft from a previous design (possibly a different
+      // architecture/blueprint) must never resurrect itself onto a
+      // freshly-requested blank design. See draft-restore effect below.
+      localStorage.removeItem("designGraph:draft");
+    } catch {
+      // ignore
+    }
     setGraph(createBlankDesignGraph("New Design"));
     setRepoUrl("");
+    setActiveWorkspaceId(null);
+    setActiveWorkspaceIsOwner(false);
     setSelectedNode(null);
     setAgentGraphCommand(null);
     setGraphViewMode("2d");
@@ -2065,8 +2161,10 @@ export default function App() {
     setImportFindings([]);
     setAiQuestion("");
     setPendingDesignIntent(true);
+    setSaveStatus("idle");
     try {
       localStorage.removeItem("greenfieldSessionId");
+      localStorage.removeItem("lastWorkspaceId");
     } catch {
       // ignore
     }
@@ -2074,6 +2172,36 @@ export default function App() {
   }, []);
 
   const n8nFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingGreenfieldSeed, setPendingGreenfieldSeed] = useState<string | null>(null);
+  const [designProvider, setDesignProvider] = useState<"anthropic" | "openai">(() => {
+    try {
+      const saved = localStorage.getItem("blanko:designProvider");
+      return saved === "openai" ? "openai" : "anthropic";
+    } catch {
+      return "anthropic";
+    }
+  });
+  const handleSetDesignProvider = useCallback((p: "anthropic" | "openai") => {
+    setDesignProvider(p);
+    try {
+      localStorage.setItem("blanko:designProvider", p);
+    } catch {
+      // ignore
+    }
+  }, []);
+  const handleImportMarkdownFile = useCallback(
+    async (file: File) => {
+      const text = await file.text();
+      if (!text.trim()) {
+        setError("That markdown file is empty.");
+        return;
+      }
+      handleStartDesignFromScratch();
+      setPendingGreenfieldSeed(text);
+    },
+    [handleStartDesignFromScratch]
+  );
+
   const handleN8nWorkflowFiles = useCallback(async (files: FileList | File[]) => {
     const list = Array.from(files).filter((f) => f.name.endsWith(".json"));
     if (list.length === 0) {
@@ -2100,6 +2228,8 @@ export default function App() {
       if (!g?.nodes) throw new Error("Invalid n8n preview response");
       setGraph(g);
       setRepoUrl("");
+      setActiveWorkspaceId(null);
+      setActiveWorkspaceIsOwner(false);
       setSelectedNode(null);
       setAgentGraphCommand(null);
       setGraphViewMode("2d");
@@ -2108,6 +2238,12 @@ export default function App() {
       setDockOpen(false);
       setSceneCollapsed(true);
       setChatExpanded(false);
+      setSaveStatus("idle");
+      try {
+        localStorage.removeItem("lastWorkspaceId");
+      } catch {
+        // ignore
+      }
       const rawFindings = Array.isArray(data.findings) ? data.findings : [];
       setImportFindings(
         rawFindings.map((f: any, i: number) => ({
@@ -2148,9 +2284,29 @@ export default function App() {
       setLoading("");
     }
   }, []);
+  const handleImportFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files);
+      const mdFile = list.find((f) => /\.(md|markdown)$/i.test(f.name));
+      if (mdFile) {
+        await handleImportMarkdownFile(mdFile);
+        return;
+      }
+      void handleN8nWorkflowFiles(list);
+    },
+    [handleImportMarkdownFile, handleN8nWorkflowFiles]
+  );
+
 
   const handleForkBlueprint = useCallback(async (blueprintId: string) => {
     // D2: apply spine immediately (E2E + UX), then background-scan .blanko-target to fill Agents.
+    try {
+      // Forking a blueprint is a new architecture — never let a stale
+      // design draft from a different architecture resurrect itself.
+      localStorage.removeItem("designGraph:draft");
+    } catch {
+      // ignore
+    }
     const current = graphRef.current;
     if (blueprintId === "trading-agent" && current && !current.architectureBoard) {
       preSpineGraphRef.current = {
@@ -2167,6 +2323,8 @@ export default function App() {
     if (!forked) return;
     setGraph(forked);
     setRepoUrl("");
+    setActiveWorkspaceId(null);
+    setActiveWorkspaceIsOwner(false);
     setSelectedNode(null);
     setSelectedEdgeId(null);
     setAgentGraphCommand(null);
@@ -2179,8 +2337,10 @@ export default function App() {
     setInsightsEditOpen(false);
     setChatExpanded(false);
     setImportFindings([]);
+    setSaveStatus("idle");
     try {
       localStorage.removeItem("greenfieldSessionId");
+      localStorage.removeItem("lastWorkspaceId");
     } catch {
       // ignore
     }
@@ -2223,9 +2383,12 @@ export default function App() {
         architectureBoard: false,
       };
     }
-    const next = applyTradingSpine({ from: current ?? undefined, inferBuilt: true });
+    // Apply the spine for whichever blueprint this workspe is actually on
+    // (falls back to trading-agent for legacy graphs predating blueprintId).
+    const activeBlueprintId = current?.blueprintId ?? "trading-agent";
+    const next = applySpine(activeBlueprintId, { from: current ?? undefined, inferBuilt: true });
     if (!next) {
-      setError("Could not apply trading spine — blueprint missing.");
+      setError("Could not apply spine — blueprint missing.");
       return;
     }
     setGraph(next);
@@ -2682,22 +2845,77 @@ export default function App() {
   const handleSaveWorkspace = useCallback(async (): Promise<void> => {
     if (!accessToken) {
       promptSignup("save this workspace");
-      return;
+      throw new Error("Sign in required to save");
     }
-    if (!graph || !activeWorkspaceId) {
-      return;
+    if (!graph) {
+      throw new Error("Nothing to save");
     }
+
+    let workspaceId = activeWorkspaceId;
+    // Design / n8n / blueprint canvases often have a graph but no server workspace yet.
+    // Create one on first Save so Chrome "Saved" means a real persist.
+    if (!workspaceId) {
+      const rawName =
+        (typeof graph.projectName === "string" && graph.projectName.trim()) ||
+        "Untitled design";
+      // Avoid persisting opaque clone/UUID folder names as the human title.
+      const name = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(rawName)
+        ? "Untitled design"
+        : rawName.slice(0, 80);
+      const createRes = await fetch(`${API_BASE}/workspaces`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ name }),
+      });
+      const createData = (await createRes.json().catch(() => ({}))) as {
+        error?: string;
+        workspace?: { id?: string; name?: string };
+      };
+      if (!createRes.ok) {
+        throw new Error(createData.error || createRes.statusText || "Failed to create workspace");
+      }
+      workspaceId = createData.workspace?.id ?? null;
+      if (!workspaceId) {
+        throw new Error("No workspace id returned from server");
+      }
+      setActiveWorkspaceId(workspaceId);
+      setActiveWorkspaceIsOwner(true);
+      if (name !== graph.projectName) {
+        setGraph((prev) => (prev ? { ...prev, projectName: name } : prev));
+      }
+      try {
+        if (autosaveEnabled) {
+          localStorage.setItem("lastWorkspaceId", workspaceId);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     try {
       const now = Date.now();
       const baseRevision = typeof graph.revision === "number" ? graph.revision : 0;
-      const graphToSave = { ...graph, lastSavedAt: now } as ArchGraph;
+      const graphToSave = {
+        ...graph,
+        projectName:
+          /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(String(graph.projectName ?? ""))
+            ? "Untitled design"
+            : graph.projectName,
+        lastSavedAt: now,
+      } as ArchGraph;
       setGraph(graphToSave);
       try {
-        localStorage.setItem(`workspaceGraph:${activeWorkspaceId}`, JSON.stringify(graphToSave));
+        localStorage.setItem(`workspaceGraph:${workspaceId}`, JSON.stringify(graphToSave));
+        if (autosaveEnabled) {
+          localStorage.setItem("lastWorkspaceId", workspaceId);
+        }
       } catch {
         // ignore storage issues
       }
-      const res = await fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/save`, {
+      const res = await fetch(`${API_BASE}/workspaces/${workspaceId}/save`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2724,7 +2942,7 @@ export default function App() {
           graphToSave as any,
           data.serverGraph as any
         );
-        const retry = await fetch(`${API_BASE}/workspaces/${activeWorkspaceId}/save`, {
+        const retry = await fetch(`${API_BASE}/workspaces/${workspaceId}/save`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -2761,6 +2979,7 @@ export default function App() {
               } as ArchGraph)
             : prev
         );
+        void fetchSavedWorkspaces();
         return;
       }
       if (!res.ok) {
@@ -2769,11 +2988,13 @@ export default function App() {
       if (typeof data.revision === "number") {
         setGraph((prev) => (prev ? { ...prev, revision: data.revision } : prev));
       }
+      // Keep left-rail Saved list in sync (node counts + newly created rows).
+      void fetchSavedWorkspaces();
     } catch (err) {
       console.error("Save workspace failed:", err);
       throw err;
     }
-  }, [graph, activeWorkspaceId, accessToken, repoUrl]);
+  }, [graph, activeWorkspaceId, accessToken, repoUrl, autosaveEnabled, fetchSavedWorkspaces, promptSignup]);
 
   const handleSaveScene = useCallback(
     async (scene: WorkspaceSceneDoc): Promise<void> => {
@@ -3639,14 +3860,15 @@ export default function App() {
         const scanned = analyseGraph(data) as ArchGraph;
         const prev = graphRef.current;
         let nextGraph: ArchGraph = scanned;
+        const activeBlueprintId = prev?.blueprintId ?? "trading-agent";
         if (layout === "spine") {
           nextGraph =
-            applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
+            applySpine(activeBlueprintId, { from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
             scanned;
         } else if (layout === "preserve" && prev?.architectureBoard) {
           // Rescan while on spine: re-bind files onto architecture board.
           nextGraph =
-            applyTradingSpine({ from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
+            applySpine(activeBlueprintId, { from: { ...scanned, architectureBoard: true }, inferBuilt: true }) ??
             scanned;
         } else {
           // layout === "scan" or no architecture board — module canvas.
@@ -3875,8 +4097,9 @@ export default function App() {
       const docToSend = docAttachment;
       if (pdfToSend) setPdfAttachment(null);
       if (docToSend) setDocAttachment(null);
+      const MAX_ATTACHMENT_CHARS = 40000;
       const docPrefix = docToSend
-        ? `[Attached document: ${docToSend.name}]\n\n${docToSend.extractedText.slice(0, 3000)}${docToSend.extractedText.length > 3000 ? "…" : ""}\n\n---\n\n`
+        ? `[Attached document: ${docToSend.name}]\n\n${docToSend.extractedText.slice(0, MAX_ATTACHMENT_CHARS)}${docToSend.extractedText.length > MAX_ATTACHMENT_CHARS ? "…" : ""}\n\n---\n\n`
         : "";
       const fullQuestion = docPrefix + q;
       const currentHistory = chatSessionsRef.current[activeChatIdRef.current] ?? [];
@@ -3975,18 +4198,16 @@ export default function App() {
           : [];
         if (graphCommands.length > 0) {
         setAgentGraphCommand(graphCommands[0]);
-        if (canvasDesignMode) {
-          // Phase 4: propose — never silent-apply. User Accepts/Rejects in ChatBar.
-          const mutators = graphCommands.filter(
-            (c) => c.action === "create_node" || c.action === "connect" || c.action === "update_node"
-          );
-          if (mutators.length > 0) {
-            setPendingProposal(mutators);
-            setChatOnlyNotice(false);
-            setChatExpanded(true);
-          } else {
-            setPendingProposal(null);
-          }
+        // Gate C: surface Accept/Reject for topology mutators in View or Edit (greenfield).
+        const mutators = graphCommands.filter(
+          (c) => c.action === "create_node" || c.action === "connect" || c.action === "update_node"
+        );
+        if (mutators.length > 0) {
+          setPendingProposal(mutators);
+          setChatOnlyNotice(false);
+          setChatExpanded(true);
+        } else {
+          setPendingProposal(null);
         }
         for (const cmd of graphCommands) {
           if (cmd.action === "filter_edge_type") {
@@ -4116,6 +4337,7 @@ export default function App() {
             history,
             workspaceId: activeWorkspaceId ?? undefined,
             mode,
+            ...(isDesignMode ? { provider: designProvider } : {}),
             ...(isDesignMode && greenfieldSessionId
               ? { greenfieldSessionId }
               : {}),
@@ -4281,8 +4503,18 @@ export default function App() {
       canvasDesignMode,
       greenfieldSessionId,
       promptSignup,
+      designProvider,
     ]
   );
+
+  // Fires the uploaded markdown's content as the first greenfield question,
+  // once the session created by handleStartDesignFromScratch is ready.
+  useEffect(() => {
+    if (!pendingGreenfieldSeed || !greenfieldSessionId) return;
+    const seed = pendingGreenfieldSeed;
+    setPendingGreenfieldSeed(null);
+    void handleAsk(seed);
+  }, [pendingGreenfieldSeed, greenfieldSessionId, handleAsk]);
 
   const addChatTab = useCallback(async () => {
     const nextId = String(
@@ -4502,8 +4734,147 @@ export default function App() {
     color: "#e6edf3",
   };
 
+  const openImportGithub = useCallback(() => {
+    setError(null);
+    setShowImportGithubModal(true);
+  }, []);
+
   const renderGlobalOverlays = () => (
     <>
+        {/* Always mounted so workspace Explore / chat+ can trigger the file picker.
+            Landing also receives a copy via n8nFileInput; one ref is enough. */}
+        <input
+          ref={n8nFileInputRef}
+          type="file"
+          accept="application/json,.json,.md,.markdown,text/markdown"
+          multiple
+          data-testid="blanko-n8n-file-input"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            if (e.target.files?.length) void handleImportFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+
+        {showImportGithubModal && (
+          <div
+            data-testid="blanko-import-github-modal"
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(18,19,26,0.45)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 120,
+              padding: 16,
+            }}
+            onClick={() => setShowImportGithubModal(false)}
+          >
+            <div
+              role="dialog"
+              aria-labelledby="blanko-import-github-title"
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                background: CANVAS,
+                border: `1px solid ${LINE}`,
+                borderRadius: 16,
+                padding: 20,
+                boxShadow: "0 16px 40px rgba(18,19,26,0.18)",
+                fontFamily: FONT_UI,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                id="blanko-import-github-title"
+                style={{ fontSize: 16, fontWeight: 650, color: INK, marginBottom: 6 }}
+              >
+                Import from GitHub
+              </div>
+              <div style={{ fontSize: 13, color: SLATE, marginBottom: 14, lineHeight: 1.45 }}>
+                Paste a public repo URL. This replaces the current canvas with a fresh scan.
+              </div>
+              <input
+                type="url"
+                autoFocus
+                data-testid="blanko-import-github-url"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/owner/repo"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && repoUrl.trim() && !authLoading) {
+                    setShowImportGithubModal(false);
+                    handleScan();
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  boxSizing: "border-box",
+                  padding: "10px 12px",
+                  borderRadius: 10,
+                  border: `1px solid ${LINE}`,
+                  fontFamily: FONT_UI,
+                  fontSize: 13,
+                  color: INK,
+                  outline: "none",
+                  marginBottom: 8,
+                }}
+              />
+              {error ? (
+                <div
+                  data-testid="blanko-import-github-error"
+                  style={{ fontSize: 12, color: BAD, marginBottom: 10 }}
+                >
+                  {error}
+                </div>
+              ) : null}
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
+                <button
+                  type="button"
+                  data-testid="blanko-import-github-cancel"
+                  onClick={() => setShowImportGithubModal(false)}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    border: `1px solid ${LINE}`,
+                    background: PAPER,
+                    color: INK,
+                    fontFamily: FONT_UI,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  data-testid="blanko-import-github-submit"
+                  disabled={!repoUrl.trim() || authLoading}
+                  onClick={() => {
+                    if (!repoUrl.trim() || authLoading) return;
+                    setShowImportGithubModal(false);
+                    handleScan();
+                  }}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 10,
+                    border: "none",
+                    background: !repoUrl.trim() || authLoading ? LINE : ACCENT,
+                    color: "#fff",
+                    fontFamily: FONT_UI,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: !repoUrl.trim() || authLoading ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {authLoading ? "Wait…" : "Scan repo"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Workspace members / activity / annotation comments panels */}
         {showMembersPanel && activeWorkspaceId && (
           <WorkspaceMembersPanel
@@ -5144,19 +5515,7 @@ export default function App() {
         onScan={handleScan}
         onDesignFromScratch={handleStartDesignFromScratch}
         onImportN8nClick={() => n8nFileInputRef.current?.click()}
-        n8nFileInput={
-          <input
-            ref={n8nFileInputRef}
-            type="file"
-            accept="application/json,.json"
-            multiple
-            style={{ display: "none" }}
-            onChange={(e) => {
-              if (e.target.files?.length) void handleN8nWorkflowFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-        }
+        n8nFileInput={null}
         onForkBlueprint={handleForkBlueprint}
         onSignIn={() => {
           setAuthMode("signin");
@@ -5240,6 +5599,48 @@ export default function App() {
           </span>
         </div>
       )}
+      {blankoShell && error && (
+        <div
+          data-testid="blanko-error-toast"
+          style={{
+            position: "fixed",
+            top: authStatus === "mismatch" ? 36 : 12,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 110,
+            maxWidth: "min(480px, calc(100vw - 24px))",
+            background: "#FEF2F2",
+            border: `1px solid ${BAD}`,
+            color: BAD,
+            fontFamily: FONT_UI,
+            fontSize: 13,
+            padding: "10px 14px",
+            borderRadius: 12,
+            boxShadow: "0 8px 24px rgba(18,19,26,0.12)",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+          }}
+        >
+          <span style={{ flex: 1, lineHeight: 1.4 }}>{error}</span>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setError(null)}
+            style={{
+              border: "none",
+              background: "transparent",
+              color: BAD,
+              cursor: "pointer",
+              fontSize: 16,
+              lineHeight: 1,
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div
         data-testid="blanko-workspace"
         style={{ display: "flex", width: "100vw", height: "100vh", minWidth: 0, background: CANVAS }}
@@ -5292,9 +5693,7 @@ export default function App() {
             setShowAuthModal(true);
           }}
           onImportN8n={() => n8nFileInputRef.current?.click()}
-          onImportGithub={() => {
-            setError("Paste a GitHub URL on the landing page, or type a repo path in chat.");
-          }}
+          onImportGithub={openImportGithub}
         />
       )}
       {!blankoShell && (
@@ -7282,7 +7681,7 @@ export default function App() {
             <input
               ref={pdfInputRef}
               type="file"
-              accept=".pdf,application/pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept=".pdf,application/pdf,.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.md,.markdown,.txt,text/markdown,text/plain"
               style={{ display: "none" }}
               onChange={(e) => {
                 const f = e.target.files?.[0];
@@ -7325,7 +7724,10 @@ export default function App() {
                     x.type === "application/msword" ||
                     x.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
                     x.name.toLowerCase().endsWith(".doc") ||
-                    x.name.toLowerCase().endsWith(".docx")
+                    x.name.toLowerCase().endsWith(".docx") ||
+                    x.name.toLowerCase().endsWith(".md") ||
+                    x.name.toLowerCase().endsWith(".markdown") ||
+                    x.name.toLowerCase().endsWith(".txt")
                 );
                 if (f) processAttachmentFile(f);
               }}
@@ -7423,6 +7825,25 @@ export default function App() {
                   outline: "none",
                 }}
               />
+              {isDesignMode && (
+                <select
+                  value={designProvider}
+                  onChange={(e) => handleSetDesignProvider(e.target.value as "anthropic" | "openai")}
+                  title="Design model"
+                  style={{
+                    height: 36,
+                    background: "#0d1117",
+                    border: "1px solid #30363d",
+                    borderRadius: 8,
+                    color: "#e6edf3",
+                    fontSize: 12,
+                    padding: "0 6px",
+                  }}
+                >
+                  <option value="anthropic">Claude</option>
+                  <option value="openai">GPT-4o</option>
+                </select>
+              )}
               <button
                 onClick={() => handleAsk()}
                 disabled={chatLoading}
@@ -7905,13 +8326,15 @@ export default function App() {
                   }
                   setSaveLoading(true);
                   setSaveStatus("idle");
+                  setError(null);
                   try {
                     await handleSaveWorkspace();
                     setSaveStatus("saved");
                     if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
                     saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 1500);
-                  } catch {
+                  } catch (err) {
                     setSaveStatus("error");
+                    setError(err instanceof Error ? err.message : "Save failed");
                     if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
                     saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 2500);
                   } finally {
@@ -9282,13 +9705,15 @@ export default function App() {
                   }
                   setSaveLoading(true);
                   setSaveStatus("idle");
+                  setError(null);
                   try {
                     await handleSaveWorkspace();
                     setSaveStatus("saved");
                     if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
                     saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 1500);
-                  } catch {
+                  } catch (err) {
                     setSaveStatus("error");
+                    setError(err instanceof Error ? err.message : "Save failed");
                     if (saveStatusTimeoutRef.current) clearTimeout(saveStatusTimeoutRef.current);
                     saveStatusTimeoutRef.current = setTimeout(() => setSaveStatus("idle"), 2500);
                   } finally {
@@ -9675,22 +10100,9 @@ export default function App() {
                   : undefined
               }
               onOpenBuild={openComponents}
-              onDesignDrop={(paletteId, flowPosition) => {
-                if (!graph) return;
-                const buildItem = getBuildItem(paletteId);
-                const node =
-                  paletteItemToNode(paletteId, graph.nodes.length, flowPosition) ??
-                  (buildItem ? buildItemToNode(buildItem, graph.nodes.length, flowPosition) : null);
-                if (!node) return;
-                setGraph({
-                  ...graph,
-                  nodes: [...graph.nodes, node],
-                  generatedAt: Date.now(),
-                });
-                setSelectedNode(node.id);
-                setDockMode("insights");
-                setDockOpen(true);
-                setInsightsEditOpen(false);
+              flowCenterRef={flowCenterRef}
+              onDesignDrop={(paletteId, flowPosition, dropOpts) => {
+                placeBuildItem(paletteId, flowPosition, { hitNodeId: dropOpts?.hitNodeId });
               }}
               onDesignNodeMove={(nodeId, position) => {
                 const now = Date.now();
@@ -9739,6 +10151,13 @@ export default function App() {
                 setSelectedNode(id);
                 setSelectedSubsystem(null);
                 setSelectedEdgeId(null);
+                // A blank-canvas click (deselect) reports id === null here.
+                // Deselecting should never force the Insights dock open on
+                // its own — only an actual node/component click should.
+                if (!id) {
+                  if (dockMode === "insights") setDockOpen(false);
+                  return;
+                }
                 if (blankoShell) {
                   // Always Insights on select (design + scan) — never jump to Files.
                   setGraphViewMode("2d");
@@ -9981,10 +10400,7 @@ export default function App() {
               openComponents();
             }}
             onPlusN8n={() => n8nFileInputRef.current?.click()}
-            onPlusGithub={() => {
-              setDockOpen(false);
-              setError("Paste a GitHub URL on the landing page, or type a repo path in chat.");
-            }}
+            onPlusGithub={openImportGithub}
           />
       )}
 
@@ -9995,6 +10411,7 @@ export default function App() {
           maximized={dockMaximized && canMaximizeDockMode(normalizeDockMode(dockMode) ?? dockMode)}
           onToggleMaximize={() => setDockMaximized((v) => !v)}
           variant="overlay"
+          passThroughPointerEvents={paletteDragging}
           onClose={() => {
             setDockOpen(false);
             setDockMaximized(false);
@@ -10022,6 +10439,9 @@ export default function App() {
               variant="dock"
               selectedNode={selectedNodeData ?? null}
               onPlace={placeBuildItem}
+              designAllowed={isDesignMode}
+              onPaletteDragStart={() => setPaletteDragging(true)}
+              onPaletteDragEnd={() => setPaletteDragging(false)}
               findings={allInsightsFindings}
               graphHasAuth={
                 !!graph?.nodes.some(
