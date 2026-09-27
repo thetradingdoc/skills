@@ -20,6 +20,8 @@ export interface ToolExecutorContext {
   allowlist?: AllowlistConfig;
   plan?: AgentPlan;
   taskId?: string;
+  /** Write directly only inside an isolated rail sandbox; never for project-root runs. */
+  sandboxWrites?: boolean;
 }
 
 export interface ToolResult {
@@ -40,6 +42,21 @@ function isInPlanScope(filePath: string, plan?: AgentPlan): { ok: true } | { ok:
     };
   }
   return { ok: true };
+}
+
+function isWithinRoot(rootPath: string, candidatePath: string): boolean {
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative !== "" && (relative.startsWith("..") || path.isAbsolute(relative))) return false;
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realCandidate = fs.realpathSync(candidate);
+    const realRelative = path.relative(realRoot, realCandidate);
+    return realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative));
+  } catch {
+    return true;
+  }
 }
 
 export async function executeTool(
@@ -130,6 +147,15 @@ export async function executeTool(
       beforeContent = fs.readFileSync(fullPath, "utf-8");
     }
 
+    if (context.sandboxWrites) {
+      if (!isWithinRoot(context.rootPath, fullPath)) {
+        return { success: false, output: {}, error: "Sandbox write escaped the isolated repository root." };
+      }
+      fs.writeFileSync(fullPath, content, "utf-8");
+      const output: Record<string, unknown> = { path: filePath, sandboxWrite: true };
+      emitTrace("write_file", { path: filePath }, output, "write_file ok (isolated sandbox)");
+      return { success: true, output };
+    }
     const stagingId = writeToStaging(filePath, content, { beforeContent, taskId: context.taskId });
     const output: Record<string, unknown> = { stagingId, path: filePath };
     emitTrace("write_file", { path: filePath }, output, "write_file ok (staged)");
@@ -196,6 +222,9 @@ export async function executeTool(
     const base = typeof input.base === "string" ? input.base : "";
     const baseRel = base.replace(/\\/g, "/").replace(/^\/+/, "");
     const startDir = path.resolve(context.rootPath, baseRel || ".");
+    if (!isWithinRoot(context.rootPath, startDir)) {
+      return { success: false, output: {}, error: "Repository path must stay inside the connected repository." };
+    }
     const results: string[] = [];
 
     function walk(dir: string) {
@@ -236,6 +265,9 @@ export async function executeTool(
     const base = typeof input.base === "string" ? input.base : "";
     const baseRel = base.replace(/\\/g, "/").replace(/^\/+/, "");
     const startDir = path.resolve(context.rootPath, baseRel || ".");
+    if (!isWithinRoot(context.rootPath, startDir)) {
+      return { success: false, output: {}, error: "Repository path must stay inside the connected repository." };
+    }
     const maxMatches =
       typeof input.maxMatches === "number" && input.maxMatches > 0
         ? input.maxMatches

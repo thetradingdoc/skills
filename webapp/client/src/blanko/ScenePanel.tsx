@@ -351,7 +351,7 @@ export function ScenePanel({
                   {title}
                 </span>
                 <span style={{ display: "block", fontSize: 11, color: SLATE, marginTop: 1 }}>
-                  {nodeCount} nodes · current
+                  {nodeCount} nodes · {activeWorkspaceId ? "current · saved" : "current · not saved yet"}
                 </span>
               </span>
               <span style={{ color: SLATE, fontSize: 11, flexShrink: 0 }}>{wsMenuOpen ? "▴" : "▾"}</span>
@@ -429,6 +429,14 @@ export function ScenePanel({
               >
                 SAVED
               </div>
+              {activeWorkspaceId ? (
+                <div
+                  data-testid="blanko-ws-current-saved-hint"
+                  style={{ padding: "2px 8px 8px", fontSize: 11, color: SLATE, lineHeight: 1.35 }}
+                >
+                  Current workspace is above (not repeated here).
+                </div>
+              ) : null}
 
               {!signedIn ? (
                 <div style={{ padding: "10px 8px", fontSize: 12, color: SLATE }}>

@@ -498,5 +498,6 @@ export function forkBlueprint(id: string): ArchGraph | null {
   if (!bp) return null;
   const cloned = JSON.parse(JSON.stringify(bp.graph)) as ArchGraph;
   cloned.generatedAt = Date.now();
+  cloned.blueprintId = bp.id;
   return cloned;
 }

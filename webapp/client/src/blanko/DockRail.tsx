@@ -18,10 +18,11 @@ type Props = {
 const RAIL_GLYPH: Partial<Record<DockMode, string>> = {
   insights: "✦",
   build: "+",
-  agents: "A",
-  workspace: "S",
+  agents: "◉",
+  workspace: "⌘",
   work: "✓",
   view: "◎",
+  harness: "↻",
 };
 
 export function DockRail({
@@ -94,7 +95,7 @@ export function DockRail({
             </span>
             <span
               style={{
-                fontSize: 9,
+                fontSize: 10,
                 fontWeight: 600,
                 color: isActive ? ACCENT : SLATE,
                 lineHeight: 1.15,

@@ -14,6 +14,11 @@ type Props = {
   variant?: "overlay" | "embedded";
   maximized?: boolean;
   onToggleMaximize?: () => void;
+  /**
+   * When true (Components palette HTML5 drag in progress), let dragover/drop
+   * pass through to the React Flow pane under the overlay dock.
+   */
+  passThroughPointerEvents?: boolean;
 };
 
 export function DockFrame({
@@ -25,6 +30,7 @@ export function DockFrame({
   variant = "overlay",
   maximized = false,
   onToggleMaximize,
+  passThroughPointerEvents = false,
 }: Props) {
   const label =
     DOCK_MODES.find((m) => m.id === mode)?.label ??
@@ -39,6 +45,7 @@ export function DockFrame({
       data-dock-mode={mode}
       data-dock-width={width}
       data-dock-maximized={maximized ? "true" : "false"}
+      data-palette-pass-through={passThroughPointerEvents ? "true" : "false"}
       style={{
         ...(maximized && overlay
           ? {
@@ -77,6 +84,8 @@ export function DockFrame({
         minHeight: 0,
         fontFamily: FONT_UI,
         overflow: "hidden",
+        // Palette drag only — not system-wide. Restored on dragend/drop.
+        pointerEvents: passThroughPointerEvents ? "none" : undefined,
       }}
     >
       {!maximized && (

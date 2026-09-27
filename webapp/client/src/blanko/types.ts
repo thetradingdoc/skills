@@ -19,6 +19,7 @@ export type DockMode =
   | "code"
   /** Display label "Canvas" (2D/3D); id stays "view" */
   | "view"
+  | "harness"
   /** @deprecated mapped to agents · terminal */
   | "terminal"
   /** @deprecated mapped to agents · files */
@@ -72,23 +73,19 @@ export type OverflowView =
   | "devops";
 
 /**
- * Primary right-wall modes (Ops/Code folded into System/Agents).
+ * Primary right-wall modes. Repository architecture and System views share Workspace.
  */
 export const DOCK_MODES: { id: DockMode; label: string; title: string }[] = [
-  { id: "insights", label: "Insights", title: "Where the agent system is broken" },
+  { id: "harness", label: "Harness", title: "Build, configure, and run an agent" },
   { id: "build", label: "Components", title: "Place agent pieces on the canvas" },
   {
-    id: "agents",
-    label: "Agents",
-    title: "Inventory, layers, reach, usage, files, terminal",
-  },
-  {
     id: "workspace",
-    label: "System",
-    title: "Platforms, Path, Rollup, and Changes",
+    label: "Workspace",
+    title: "Repository architecture, connections, workflow, and activity",
   },
   { id: "work", label: "Tasks", title: "Tasks board — Up next · In progress · Review" },
   { id: "view", label: "Canvas", title: "2D or 3D canvas (chrome View/Edit is pan vs edit)" },
+  { id: "insights", label: "Insights", title: "Findings and next actions for the selected architecture" },
 ];
 
 /** @deprecated Config sections removed from rail; kept empty for import safety. */
@@ -118,7 +115,7 @@ export const OVERFLOW_VIEWS: { id: OverflowView; label: string }[] = [
 export function normalizeDockMode(mode: DockMode | null): DockMode | null {
   if (mode === "inspect") return "insights";
   if (mode === "tasks") return "work";
-  if (mode === "terminal" || mode === "evidence" || mode === "code") return "agents";
+  if (mode === "agents" || mode === "terminal" || mode === "evidence" || mode === "code") return "workspace";
   if (mode === "ops") return "workspace";
   return mode;
 }

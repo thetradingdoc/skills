@@ -266,6 +266,12 @@ export default function OnboardingChat({
   const [userIntent, setUserIntent] = useState<UserIntent | null>(null);
   const [tos, setTos] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingEmailConfirm, setPendingEmailConfirm] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
+  const [resendFeedback, setResendFeedback] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
@@ -309,7 +315,9 @@ export default function OnboardingChat({
     if (pk) setStripePromise(loadStripe(pk));
   }, []);
 
-  const createAuthUser = async (): Promise<string> => {
+  const createAuthUser = async (): Promise<
+    { status: "ready"; token: string } | { status: "pending_confirmation" }
+  > => {
     const cfgErr = getSupabaseConfigError();
     if (cfgErr || !supabase) throw new Error(cfgErr ?? "Supabase not configured");
     const nicknameClean = nickname.trim().replace(/^@+/, "");
@@ -317,6 +325,7 @@ export default function OnboardingChat({
       email: email.trim(),
       password,
       options: {
+        emailRedirectTo: window.location.origin,
         data: {
           first_name: firstName.trim(),
           last_name: lastName.trim(),
@@ -335,24 +344,49 @@ export default function OnboardingChat({
         last_name: lastName.trim(),
         nickname: nicknameClean,
       });
-      return session.access_token;
+      return { status: "ready", token: session.access_token };
     }
+    // No session ⇒ email confirmation required. Client cannot verify the mailer
+    // delivered; return pending so the UI can show honest copy + resend.
     const { data: signed, error: inErr } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password,
     });
-    if (inErr || !signed.session) {
-      throw new Error(
-        "Check your email to confirm your account, then sign in to finish billing."
-      );
+    if (!inErr && signed.session?.access_token) {
+      await supabase.from("profiles").upsert({
+        id: signed.user.id,
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        nickname: nicknameClean,
+      });
+      return { status: "ready", token: signed.session.access_token };
     }
-    await supabase.from("profiles").upsert({
-      id: signed.user.id,
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      nickname: nicknameClean,
-    });
-    return signed.session.access_token;
+    return { status: "pending_confirmation" };
+  };
+
+  const resendConfirmation = async () => {
+    if (!supabase || !email.trim() || resendBusy) return;
+    setResendBusy(true);
+    setResendFeedback(null);
+    try {
+      const { error: resendErr } = await supabase.auth.resend({
+        type: "signup",
+        email: email.trim(),
+        options: { emailRedirectTo: window.location.origin },
+      });
+      if (resendErr) throw resendErr;
+      setResendFeedback({
+        kind: "ok",
+        text: "Confirmation email requested — check inbox and spam.",
+      });
+    } catch (e) {
+      setResendFeedback({
+        kind: "err",
+        text: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setResendBusy(false);
+    }
   };
 
   const startPaid = async (chosen: OnboardingPlan, token: string) => {
@@ -485,6 +519,8 @@ export default function OnboardingChat({
 
   const choosePlan = async (chosen: OnboardingPlan) => {
     setError(null);
+    setPendingEmailConfirm(false);
+    setResendFeedback(null);
     if (!tos) {
       setError("Accept Terms and Privacy to continue");
       return;
@@ -493,9 +529,18 @@ export default function OnboardingChat({
     push("user", `Plan: ${PLAN_COPY[chosen].label} (${PLAN_COPY[chosen].price})`);
     try {
       push("bot", "Creating your account…");
-      const token = await createAuthUser();
-      await afterAuth(token, chosen);
+      const result = await createAuthUser();
+      if (result.status === "pending_confirmation") {
+        setPendingEmailConfirm(true);
+        push(
+          "bot",
+          "Account created. Check your email to confirm — if nothing arrives in a minute, you can resend below. Then sign in to finish billing."
+        );
+        return;
+      }
+      await afterAuth(result.token, chosen);
     } catch (e) {
+      setPendingEmailConfirm(false);
       setError(e instanceof Error ? e.message : String(e));
     }
   };
@@ -965,6 +1010,56 @@ export default function OnboardingChat({
           )}
         </div>
       </div>
+
+      {pendingEmailConfirm && (
+        <div
+          data-testid="onboarding-pending-confirm"
+          style={{
+            flexShrink: 0,
+            padding: "12px 28px",
+            color: INK,
+            fontSize: 15,
+            borderTop: `1px solid ${LINE}`,
+            background: ACCENT_WASH,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          <div>
+            Account created. Check your email to confirm — if nothing arrives in a
+            minute, you can resend below. Then sign in to finish billing.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+            <button
+              type="button"
+              data-testid="onboarding-resend-confirm"
+              disabled={resendBusy || !email.trim()}
+              onClick={() => void resendConfirmation()}
+              style={{
+                ...primaryBtn,
+                padding: "10px 16px",
+                fontSize: 14,
+                opacity: resendBusy || !email.trim() ? 0.6 : 1,
+                cursor: resendBusy || !email.trim() ? "not-allowed" : "pointer",
+              }}
+            >
+              {resendBusy ? "Sending…" : "Resend confirmation email"}
+            </button>
+            {resendFeedback && (
+              <span
+                data-testid="onboarding-resend-feedback"
+                style={{
+                  color: resendFeedback.kind === "ok" ? GOOD : BAD,
+                  fontSize: 14,
+                }}
+              >
+                {resendFeedback.text}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div

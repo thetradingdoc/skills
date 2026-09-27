@@ -154,35 +154,43 @@ input, textarea, select {
  * React Flow defaults grab on BOTH the pane and every .react-flow__node.
  * That fights Blanko View (pan only — nodes locked) and makes pointer + grab
  * flicker as you move across cards, boxes, and badges.
+ *
+ * Keep one cursor across the canvas in both modes. Switching between grab on
+ * the pane and pointer on each node made the cursor flash while crossing node
+ * boundaries and made the View control feel unstable.
  */
+.react-flow.blanko-canvas-view,
 .react-flow.blanko-canvas-view .react-flow__pane {
   cursor: grab;
 }
+.react-flow.blanko-canvas-view.dragging,
 .react-flow.blanko-canvas-view .react-flow__pane.dragging {
   cursor: grabbing;
 }
 .react-flow.blanko-canvas-view .react-flow__node,
 .react-flow.blanko-canvas-view .react-flow__node.draggable {
-  cursor: pointer;
+  cursor: grab;
 }
+/* Handles aren't connectable in View — don't flip cursor at every card edge. */
 .react-flow.blanko-canvas-view .react-flow__handle {
-  cursor: pointer;
+  pointer-events: none !important;
+  cursor: inherit;
+}
+.react-flow.blanko-canvas-view .react-flow__edge,
+.react-flow.blanko-canvas-view .react-flow__edge path {
+  cursor: grab;
 }
 
-.react-flow.blanko-canvas-edit .react-flow__pane {
+.react-flow.blanko-canvas-edit,
+.react-flow.blanko-canvas-edit .react-flow__pane,
+.react-flow.blanko-canvas-edit .react-flow__node,
+.react-flow.blanko-canvas-edit .react-flow__handle {
   cursor: grab;
 }
-.react-flow.blanko-canvas-edit .react-flow__pane.dragging {
-  cursor: grabbing;
-}
-.react-flow.blanko-canvas-edit .react-flow__node {
-  cursor: grab;
-}
+.react-flow.blanko-canvas-edit.dragging,
+.react-flow.blanko-canvas-edit .react-flow__pane.dragging,
 .react-flow.blanko-canvas-edit .react-flow__node.dragging {
   cursor: grabbing;
-}
-.react-flow.blanko-canvas-edit .react-flow__handle {
-  cursor: crosshair;
 }
 
 @keyframes blankoFlash {

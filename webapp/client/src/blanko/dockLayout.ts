@@ -19,7 +19,7 @@ export const DOCK_VIEWPORT_RESERVE = 96;
 export function isWideDockMode(mode: DockMode | null | undefined): boolean {
   const m = normalizeDockMode(mode ?? null);
   // Agents, System, Tasks — wider overlays (legacy ops/code normalize into these).
-  return m === "agents" || m === "workspace" || m === "work";
+  return m === "agents" || m === "workspace" || m === "work" || m === "harness";
 }
 
 export function canMaximizeDockMode(mode: DockMode | null | undefined): boolean {

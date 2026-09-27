@@ -8,6 +8,7 @@ export { TasksDock } from "./TasksDock";
 export { AgentsDock } from "./AgentsDock";
 export { WorkspaceDock } from "./WorkspaceDock";
 export { OpsDock } from "./OpsDock";
+export { HarnessDock } from "./HarnessDock";
 export { CodeDock } from "./CodeDock";
 export { ViewDock } from "./ViewDock";
 export { EvidencePanel } from "./EvidencePanel";

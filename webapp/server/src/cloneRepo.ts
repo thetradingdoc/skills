@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { homedir } from "os";
+import { randomUUID } from "crypto";
 import { simpleGit } from "simple-git";
 import type { ArchGraph } from "../../../src/types.js";
 import { supabaseAdmin } from "./supabaseAdmin.js";
@@ -10,6 +11,14 @@ const CLONES_BASE =
   path.join(homedir(), ".arch-viz", "repos");
 
 const recloneLocks = new Map<string, Promise<string | null>>();
+
+function safeGitError(error: unknown, ...secrets: Array<string | null | undefined>): string {
+  let message = error instanceof Error ? error.message : String(error);
+  for (const secret of secrets) if (secret) message = message.split(secret).join("[REDACTED]");
+  return message
+    .replace(/(https?:\/\/)[^/\s@]+@github\.com/gi, "$1[REDACTED]@github.com")
+    .replace(/(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+/g, "[REDACTED]");
+}
 
 export function getClonesDir(): string {
   return CLONES_BASE;
@@ -75,7 +84,7 @@ export async function refreshStableClone(dir: string): Promise<{ ok: boolean; er
     }
     return { ok: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = safeGitError(err);
     console.warn("[cloneRepo] refreshStableClone failed:", msg);
     return { ok: false, error: msg };
   }
@@ -85,16 +94,14 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
   const stableDir = path.join(getClonesDir(), workspaceId);
   if (fs.existsSync(stableDir)) {
     if (!isCloneValid(stableDir)) {
-      fs.rmSync(stableDir, { recursive: true, force: true });
+      throw new Error("The workspace clone destination already exists but is not a valid Git checkout. It was left untouched.");
     } else {
       const refreshed = await refreshStableClone(stableDir);
       if (!refreshed.ok) {
-        // Stale/corrupt clone — delete and reclone from scratch.
-        try {
-          fs.rmSync(stableDir, { recursive: true, force: true });
-        } catch {
-          /* ignore */
-        }
+        // A failed refresh must not trigger a clone over this non-empty path.
+        // Keep the cached source usable; the caller can still scan it offline.
+        console.warn("[cloneRepo] Continuing with the existing workspace clone after refresh failed.");
+        return stableDir;
       } else {
         return stableDir;
       }
@@ -121,7 +128,7 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
     } catch (e) {
       console.warn(
         "[cloneRepo] installation token lookup failed:",
-        e instanceof Error ? e.message : e
+        safeGitError(e)
       );
     }
   }
@@ -130,24 +137,38 @@ export async function cloneToStablePath(repoUrl: string, workspaceId: string): P
     installToken = await resolveCloneTokenForWorkspace({ githubInstallationId: null });
   }
   const cloneUrl = authUrl(repoUrl, installToken);
+  const stagingDir = `${stableDir}.clone-${randomUUID()}`;
   try {
-    await simpleGit().clone(cloneUrl, stableDir, ["--depth", "1"]);
+    await simpleGit().clone(cloneUrl, stagingDir, ["--depth", "1"]);
+    // Git persists the clone URL in .git/config. Remove the temporary token
+    // immediately so credentials do not remain in the workspace clone.
+    const credentialFreeUrl = repoUrl.trim().replace(/^(https?:\/\/)[^/@]+@/i, "$1");
+    await simpleGit(stagingDir).remote(["set-url", "origin", credentialFreeUrl]);
+    try {
+      fs.renameSync(stagingDir, stableDir);
+    } catch (renameError) {
+      if (isCloneValid(stableDir)) {
+        fs.rmSync(stagingDir, { recursive: true, force: true });
+      } else {
+        throw renameError;
+      }
+    }
   } catch (err) {
-    if (fs.existsSync(stableDir)) {
+    if (fs.existsSync(stagingDir)) {
       try {
-        fs.rmSync(stableDir, { recursive: true, force: true });
+        fs.rmSync(stagingDir, { recursive: true, force: true });
       } catch {
         /* ignore */
       }
     }
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = safeGitError(err, installToken, cloneUrl);
     if (/auth|401|403|permission|denied/i.test(msg)) {
       throw new Error(
         "Clone failed (auth). Install Blanko-Lab on the repo (Gate C installation token) " +
           "or set GITHUB_TOKEN / GITHUB_ACCESS_TOKEN for legacy private clones."
       );
     }
-    throw err;
+    throw new Error(msg);
   }
   return stableDir;
 }
@@ -250,7 +271,7 @@ export async function ensureProjectRoot(
     } catch (err) {
       console.warn(
         "[cloneRepo] Reclone failed:",
-        err instanceof Error ? err.message : String(err)
+        safeGitError(err)
       );
       return null;
     } finally {

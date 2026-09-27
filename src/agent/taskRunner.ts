@@ -21,6 +21,11 @@ const ENTRY_CANDIDATES = ["index.ts", "index.tsx", "index.js", "index.jsx"];
 
 function resolveModuleToFilePath(modulePath: string, rootPath: string): { path: string } | { error: string; attempted: string[] } {
   const attempted: string[] = [];
+  const exactFile = path.resolve(rootPath, modulePath);
+  attempted.push(path.relative(rootPath, exactFile).replace(/\\/g, "/"));
+  if (fs.existsSync(exactFile) && fs.statSync(exactFile).isFile()) {
+    return { path: attempted[0]! };
+  }
   const fullDir = path.resolve(rootPath, modulePath);
   const dirExists = fs.existsSync(fullDir) && fs.statSync(fullDir).isDirectory();
 
@@ -61,6 +66,9 @@ export async function runTaskAtIndex(
   opts?: {
     skipLLM?: boolean;
     apiKey?: string;
+    provider?: "anthropic" | "openai";
+    model?: string;
+    sandboxWrites?: boolean;
     conversationTurns?: Array<{ role: "user" | "assistant"; content: string }>;
     errorOutput?: string;
     rail?: Rail;
@@ -192,6 +200,8 @@ export async function runTaskAtIndex(
       errorOutput: currentError,
       projectRoot: rootPath,
       apiKey: opts.apiKey,
+      provider: opts.provider,
+      model: opts.model,
       rail: opts?.rail,
       railHistory: opts?.railHistory,
     });
@@ -211,6 +221,7 @@ export async function runTaskAtIndex(
         rootPath,
         plan,
         taskId: task.id,
+        sandboxWrites: opts?.sandboxWrites,
       });
       if (!writeResult.success) {
         return {
@@ -297,6 +308,9 @@ export async function runFirstTask(
   opts?: {
     skipLLM?: boolean;
     apiKey?: string;
+    provider?: "anthropic" | "openai";
+    model?: string;
+    sandboxWrites?: boolean;
     conversationTurns?: Array<{ role: "user" | "assistant"; content: string }>;
     errorOutput?: string;
     rail?: Rail;
@@ -314,6 +328,9 @@ export async function runNextTask(
   opts?: {
     skipLLM?: boolean;
     apiKey?: string;
+    provider?: "anthropic" | "openai";
+    model?: string;
+    sandboxWrites?: boolean;
     conversationTurns?: Array<{ role: "user" | "assistant"; content: string }>;
     errorOutput?: string;
     rail?: Rail;

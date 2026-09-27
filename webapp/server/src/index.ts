@@ -60,9 +60,13 @@ import { usageRoutes } from "./usageRoutes.js";
 import { llmopsRoutes } from "./llmopsRoutes.js";
 import { managementRollupRoutes } from "./managementRollupRoutes.js";
 import { deployHealthRoutes } from "./deployHealthRoutes.js";
+import { agentHarnessRoutes } from "./agentHarness.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const distPath = path.resolve(__dirname, "../../client/dist");
+/** Override for containers (e.g. CLIENT_DIST_PATH=/app/webapp/client/dist). */
+const distPath = process.env.CLIENT_DIST_PATH?.trim()
+  ? path.resolve(process.env.CLIENT_DIST_PATH.trim())
+  : path.resolve(__dirname, "../../client/dist");
 if (!fs.existsSync(distPath)) {
   console.warn(`[static] dist not found at ${distPath} — run 'npm run build' in the client`);
 }
@@ -91,6 +95,9 @@ app.use(
 );
 
 const PORT = process.env.PORT ?? 4000;
+// Keep local development bound to loopback; hosted containers can opt into
+// their required interface through HOST or NODE_ENV=production.
+const HOST = process.env.HOST?.trim() || (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
 
 app.use("/api", scanRoutes);
 app.use("/api", resourceClassifyRoutes);
@@ -143,6 +150,7 @@ app.use("/api", usageRoutes);
 app.use("/api", llmopsRoutes);
 app.use("/api", managementRollupRoutes);
 app.use("/api", deployHealthRoutes);
+app.use("/api", agentHarnessRoutes);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
@@ -156,8 +164,8 @@ app.get("*", (_req, res) => {
 export { app };
 
 if (!process.env.VITEST) {
-  const server = app.listen(PORT, () => {
-    console.log(`Arch Visualizer API running at http://localhost:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Arch Visualizer API running at http://${HOST}:${PORT}`);
   });
   // The terminal attaches to the HTTP server rather than to Express, because a
   // websocket upgrade happens below the routing layer. It registers nothing

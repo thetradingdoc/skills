@@ -305,6 +305,15 @@ export interface ArchGraphGroup {
   source?: "n8n-sticky" | string;
 }
 
+export interface AgentHarnessConfig {
+  rules: string;
+  context: string;
+  guardrails: string;
+  toolAccess: string;
+  behaviour: string;
+  model: string;
+}
+
 export interface ArchGraph {
   nodes: ArchNode[];
   edges: ArchEdge[];
@@ -324,6 +333,14 @@ export interface ArchGraph {
    * Still may keep projectRoot so Rescan can refresh the clone + re-bind files.
    */
   architectureBoard?: boolean;
+  /**
+   * Which DESIGN_BLUEPRINTS id this graph was forked from / its spine belongs
+   * to (e.g. "trading-agent", "voice-agent", "rag-agent"). Undefined for
+   * scans, blank designs, or graphs predating this field.
+   */
+  blueprintId?: string;
+  /** User-authored agent harness policy; travels with saved/shared design graphs. */
+  harnessConfig?: AgentHarnessConfig;
   /** Git tip of the clone when this graph was last produced by scan/refresh. */
   scannedCommit?: string;
   /** Agent inventory from scan (scripts/agent-inventory.ts). */

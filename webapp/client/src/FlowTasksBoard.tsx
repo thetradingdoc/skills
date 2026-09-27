@@ -40,7 +40,10 @@ type SessionLogEntry = {
   message?: string;
   files?: Array<{ path?: string; added?: number; removed?: number }>;
   summary?: string;
+  verificationPassed?: boolean;
+  verificationSummary?: string;
   railId?: string;
+  payload?: Record<string, unknown>;
   [key: string]: unknown;
 };
 
@@ -142,9 +145,24 @@ function statusLine(t: TodoRow): string {
   const s = normalizeBoardStatus(t.status);
   if (s === "todo") return "Ready to run";
   if (s === "in_progress") return hasSessionError(t) ? "Needs retry" : "In progress";
-  if (s === "needs_review") return "Ready to approve";
+  if (s === "needs_review") {
+    const verification = latestVerification(t);
+    if (verification?.passed === true) return "Verified · Ready to approve";
+    if (verification?.passed === false) return "Verification failed · inspect diff";
+    return "Verification details unavailable";
+  }
   if (s === "done") return "Completed";
   return s;
+}
+
+function latestVerification(t: TodoRow): { passed: boolean; summary?: string } | null {
+  const log = Array.isArray(t.session_log) ? t.session_log : [];
+  const result = [...log].reverse().find((entry) => (entry.event ?? entry.type) === "ready_to_review");
+  const passed = result?.verificationPassed ?? result?.payload?.verificationPassed;
+  const summary = result?.verificationSummary ?? result?.payload?.verificationSummary;
+  return typeof passed === "boolean"
+    ? { passed, summary: typeof summary === "string" ? summary : undefined }
+    : null;
 }
 
 const COLUMNS: Array<{
@@ -203,9 +221,15 @@ const fileName = (f: string) => f.split(/[/\\]/).pop() || f;
 
 function eventLabel(e: SessionLogEntry): string {
   const ev = e.event ?? e.type ?? "event";
-  if (ev === "ready_to_review" && e.summary) return `Ready to review · ${e.summary}`;
+  if (ev === "ready_to_review") {
+    const details = [e.summary ?? e.payload?.summary, e.verificationSummary ?? e.payload?.verificationSummary]
+      .filter((value): value is string => typeof value === "string" && !!value)
+      .join(" · ");
+    return details ? `Ready to review · ${details}` : "Ready to review";
+  }
   if (ev === "error" || ev === "verification_failed") {
-    return `${ev}: ${e.message ?? "see log"}`;
+    const message = e.message ?? e.payload?.message;
+    return `${ev}: ${typeof message === "string" ? message : "see log"}`;
   }
   return String(ev);
 }
@@ -222,7 +246,8 @@ function openPathsFromTodo(t: TodoRow): string[] {
   const paths: string[] = [];
   const log = Array.isArray(t.session_log) ? t.session_log : [];
   for (const e of [...log].reverse()) {
-    for (const f of e.files ?? []) {
+    const eventFiles = e.files ?? e.payload?.files;
+    for (const f of Array.isArray(eventFiles) ? eventFiles as Array<{ path?: string }> : []) {
       if (f.path && !paths.includes(f.path)) paths.push(f.path);
     }
     if (paths.length >= 4) break;
@@ -1095,6 +1120,17 @@ export function FlowTasksBoard({
                   {col.title}
                 </div>
                 <div style={{ fontSize: 12, color: INK, marginTop: 2 }}>{cards.length}</div>
+                {col.id === "todo" ? (
+                  <button
+                    type="button"
+                    data-testid="flow-tasks-add-manual"
+                    disabled={busy}
+                    onClick={() => void addManualTask()}
+                    style={{ ...btn(INFO), marginTop: 8, fontSize: 11, padding: "5px 10px" }}
+                  >
+                    Add a task manually
+                  </button>
+                ) : null}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {cards.length === 0 ? (
@@ -1125,17 +1161,6 @@ export function FlowTasksBoard({
                         spine (Insights → Apply trading spine).
                       </div>
                     ) : null}
-                    {col.id === "todo" ? (
-                      <button
-                        type="button"
-                        data-testid="flow-tasks-add-manual"
-                        disabled={busy}
-                        onClick={() => void addManualTask()}
-                        style={{ ...btn(INFO), marginTop: 10, fontSize: 11, padding: "5px 10px" }}
-                      >
-                        Add a task manually
-                      </button>
-                    ) : null}
                   </div>
                 ) : (
                   cards.map((t) => {
@@ -1164,6 +1189,7 @@ export function FlowTasksBoard({
                       status === "needs_review" &&
                       !!t.rail_id &&
                       t.kind !== "issue";
+                    const canApprove = showReview && latestVerification(t)?.passed === true;
                     const sourceLabel = sourceChipLabel(t.source);
                     const menuOpen = menuOpenId === t.id;
 
@@ -1282,7 +1308,7 @@ export function FlowTasksBoard({
                             </button>
                           ) : null}
 
-                          {showReview ? (
+                          {canApprove ? (
                             <button
                               type="button"
                               data-testid={`flow-task-approve-${t.id}`}
@@ -1298,6 +1324,16 @@ export function FlowTasksBoard({
                             >
                               Approve
                             </button>
+                          ) : showReview ? (
+                            <span
+                              role="status"
+                              data-testid={`flow-task-verification-status-${t.id}`}
+                              style={{ fontSize: 10, color: SLATE, marginRight: "auto" }}
+                            >
+                              {latestVerification(t)?.passed === false
+                                ? "Verification failed · inspect the run"
+                                : "Verification details unavailable · rerun to enable approval"}
+                            </span>
                           ) : null}
 
                           {!canRun && !showReview ? (
@@ -1375,9 +1411,9 @@ export function FlowTasksBoard({
                                     Reset
                                   </button>
                                 ) : null}
-                                {showReview ? (
-                                  <>
-                                    <button
+                          {showReview ? (
+                            <>
+                            {canApprove ? <button
                                       type="button"
                                       data-testid={`flow-task-diff-${t.id}`}
                                       disabled={busyId === t.id}
@@ -1385,7 +1421,7 @@ export function FlowTasksBoard({
                                       style={menuItemBtn}
                                     >
                                       View diff
-                                    </button>
+                            </button> : null}
                                     <button
                                       type="button"
                                       data-testid={`flow-task-reject-${t.id}`}

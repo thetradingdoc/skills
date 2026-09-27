@@ -271,6 +271,7 @@ export function applyTradingSpine(opts: ApplyTradingSpineOpts = {}): ArchGraph |
     projectRoot: from?.projectRoot?.trim() ? from.projectRoot : "",
     projectName: from?.projectName?.trim() || base.projectName || "Trading agent",
     architectureBoard: true,
+    blueprintId: "trading-agent",
     scannedCommit: from?.scannedCommit,
     agents: from?.agents,
     providers: from?.providers,

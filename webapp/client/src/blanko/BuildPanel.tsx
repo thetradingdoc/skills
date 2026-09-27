@@ -13,6 +13,11 @@ type Props = {
   /** dock = right Components; rail = left Build tab (denser Brainwave/Build mock). */
   variant?: "dock" | "rail";
   searchQuery?: string;
+  /** False on scanned code maps — Components must not mutate topology. */
+  designAllowed?: boolean;
+  /** Fired when a Components row HTML5 drag starts/ends (for dock pass-through). */
+  onPaletteDragStart?: () => void;
+  onPaletteDragEnd?: () => void;
 };
 
 const GROUP_ORDER = [
@@ -59,23 +64,44 @@ function BuildRow({
   item,
   onPlace,
   compact,
+  disabled,
+  onPaletteDragStart,
+  onPaletteDragEnd,
 }: {
   item: BuildItem;
   onPlace: (id: string) => void;
   compact?: boolean;
+  disabled?: boolean;
+  onPaletteDragStart?: () => void;
+  onPaletteDragEnd?: () => void;
 }) {
   const provider = providerForBuildItem(item);
   return (
     <button
       type="button"
       data-testid={`blanko-build-item-${item.id}`}
-      draggable
+      draggable={!disabled}
+      disabled={disabled}
+      aria-disabled={disabled || undefined}
       onDragStart={(e) => {
+        if (disabled) {
+          e.preventDefault();
+          return;
+        }
         e.dataTransfer.setData(DESIGN_DND_MIME, item.id);
         e.dataTransfer.setData("text/plain", item.id);
         e.dataTransfer.effectAllowed = "copy";
+        // Defer so the browser finishes dragstart before the dock goes
+        // pointer-events:none (avoids cancelling the drag on some engines).
+        requestAnimationFrame(() => onPaletteDragStart?.());
       }}
-      onClick={() => onPlace(item.id)}
+      onDragEnd={() => {
+        onPaletteDragEnd?.();
+      }}
+      onClick={() => {
+        if (disabled) return;
+        onPlace(item.id);
+      }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -87,7 +113,8 @@ function BuildRow({
         borderRadius: compact ? 12 : 10,
         border: `1px solid ${LINE}`,
         background: CANVAS,
-        cursor: "grab",
+        cursor: disabled ? "not-allowed" : "grab",
+        opacity: disabled ? 0.55 : 1,
         fontFamily: FONT_UI,
       }}
     >
@@ -162,6 +189,9 @@ export function BuildPanel({
   graphNodes,
   variant = "dock",
   searchQuery = "",
+  designAllowed = true,
+  onPaletteDragStart,
+  onPaletteDragEnd,
 }: Props) {
   const compact = variant === "rail";
   const q = searchQuery.trim().toLowerCase();
@@ -176,24 +206,50 @@ export function BuildPanel({
     (i) => !recommended.some((r) => r.id === i.id) && (!q || i.label.toLowerCase().includes(q) || i.id.includes(q))
   );
   const sections = groupItems(catalog);
+  const blocked = !designAllowed;
+  const rowDrag = {
+    onPaletteDragStart,
+    onPaletteDragEnd,
+  };
 
   return (
     <div
       data-testid="blanko-build"
       data-build-variant={variant}
+      data-design-allowed={designAllowed ? "true" : "false"}
       style={{ padding: compact ? "4px 10px 16px" : 14, fontFamily: FONT_UI }}
     >
       {compact ? (
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 16, fontWeight: 700, color: INK, letterSpacing: "-0.02em" }}>Components</div>
-          <div style={{ fontSize: 12, color: SLATE, marginTop: 2 }}>Build your agent — drag onto the AI design canvas</div>
+          <div style={{ fontSize: 12, color: SLATE, marginTop: 2 }}>
+            Bind a provider, or add agent blocks to this canvas while Edit is on.
+          </div>
         </div>
       ) : (
         <div style={{ fontSize: 12, color: SLATE, lineHeight: 1.45, marginBottom: 14 }} data-testid="blanko-build-intro">
-          Build your agent — drag onto the <strong style={{ color: INK }}>AI design canvas</strong>, or click to place.
-          Bindings are for <strong style={{ color: INK }}>design &amp; tracking</strong> — blanko does not run the integration.
+          Bind a provider onto the selected module, or add an agent block to the canvas. Connected repository read blocks can run from Harness; other integrations need a runtime adapter and credentials.
         </div>
       )}
+
+      {blocked ? (
+        <div
+          data-testid="blanko-build-design-only-cta"
+          role="status"
+          style={{
+            marginBottom: compact ? 12 : 14,
+            padding: "10px 12px",
+            borderRadius: 10,
+            border: `1px solid ${LINE}`,
+            background: PAPER,
+            fontSize: 12,
+            color: INK,
+            lineHeight: 1.45,
+          }}
+        >
+          Switch the canvas to Edit to add agent blocks alongside this repository map
+        </div>
+      ) : null}
 
       {recommended.length > 0 && (
         <>
@@ -201,7 +257,14 @@ export function BuildPanel({
             {selectedNode ? `Recommended for ${selectedNode.label}` : "Recommended to start"}
           </div>
           {recommended.map((item) => (
-            <BuildRow key={`rec-${item.id}`} item={item} onPlace={onPlace} compact={compact} />
+            <BuildRow
+              key={`rec-${item.id}`}
+              item={item}
+              onPlace={onPlace}
+              compact={compact}
+              disabled={blocked}
+              {...rowDrag}
+            />
           ))}
         </>
       )}
@@ -228,7 +291,14 @@ export function BuildPanel({
             ) : null}
           </div>
           {sec.items.map((item) => (
-            <BuildRow key={item.id} item={item} onPlace={onPlace} compact={compact} />
+            <BuildRow
+              key={item.id}
+              item={item}
+              onPlace={onPlace}
+              compact={compact}
+              disabled={blocked}
+              {...rowDrag}
+            />
           ))}
         </div>
       ))}

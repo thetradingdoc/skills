@@ -33,28 +33,45 @@ function getAnthropicKey(apiKeyClaude?: string): string | null {
   return key || null;
 }
 
+async function callClaude(prompt: string, apiKeyClaude?: string): Promise<string | null> {
+  const anthropicKey = getAnthropicKey(apiKeyClaude);
+  if (!anthropicKey) return null;
+  const client = new Anthropic({ apiKey: anthropicKey });
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 800,
+    messages: [{ role: "user", content: prompt }],
+  });
+  const textBlock = response.content.find((b) => b.type === "text");
+  return textBlock && "text" in textBlock ? textBlock.text : null;
+}
+
+/**
+ * Tries OpenAI first when a key is configured, but falls back to Claude on
+ * ANY OpenAI failure (invalid/revoked key, rate limit, outage) rather than
+ * only when OPENAI_API_KEY is absent. A present-but-broken OpenAI key must
+ * not silently disable the whole Critic when a working Anthropic key is
+ * also configured.
+ */
 async function callCriticLLM(prompt: string, apiKey?: string, apiKeyClaude?: string): Promise<string | null> {
   const openai = getOpenAIClient(apiKey);
   if (openai) {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 800,
-      messages: [{ role: "user", content: prompt }],
-    });
-    return completion.choices[0]?.message?.content ?? null;
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        max_tokens: 800,
+        messages: [{ role: "user", content: prompt }],
+      });
+      return completion.choices[0]?.message?.content ?? null;
+    } catch (err) {
+      const fallback = await callClaude(prompt, apiKeyClaude);
+      if (fallback !== null) return fallback;
+      // No usable Anthropic fallback either — surface the original OpenAI
+      // failure so callers' error handling/logging reflects the real cause.
+      throw err;
+    }
   }
-  const anthropicKey = getAnthropicKey(apiKeyClaude);
-  if (anthropicKey) {
-    const client = new Anthropic({ apiKey: anthropicKey });
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 800,
-      messages: [{ role: "user", content: prompt }],
-    });
-    const textBlock = response.content.find((b) => b.type === "text");
-    return textBlock && "text" in textBlock ? textBlock.text : null;
-  }
-  return null;
+  return callClaude(prompt, apiKeyClaude);
 }
 
 export async function reviewArchitectureAnswer(params: {

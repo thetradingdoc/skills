@@ -29,3 +29,10 @@ test-results/
 logs/
 
 webapp/server/dist/
+supabase/.temp/
+docs/ops/_audit_86a9ac1/
+*.bak
+.blanko-target
+.firebase/
+docs/frontend-audit/
+docs/ops/blanko-dual-audit/

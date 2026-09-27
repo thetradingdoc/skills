@@ -1682,8 +1682,8 @@ function ArchEdgeComponent({
     ? selected || showBranchLabel
       ? 1
       : isArchitectural
-        ? 0.75
-        : 0.45
+        ? 0.42
+        : 0.28
     : isArchitectural || inTrace || runtimeStroke
       ? 1
       : 0.55;
@@ -1693,12 +1693,16 @@ function ArchEdgeComponent({
 
   return (
     <g className={isDrift ? "arch-edge-drift" : inTrace ? "arch-edge-trace" : undefined}>
+      {/* Glow is decorative only — capturing pointer events here made a fat invisible
+          hit corridor that fought the pane grab cursor (cursor flicker on hover). */}
       <path
+        className="blanko-edge-glow"
         d={path}
         fill="none"
         stroke={glow}
         strokeWidth={isDrift ? 10 : isLayerViolation ? 8 : inTrace ? 7 : isArchitectural ? 6 : 4}
         strokeLinecap="round"
+        style={{ pointerEvents: "none" }}
       />
       <path
         id={id}
@@ -1831,6 +1835,66 @@ function DomainRegionComponent({
   );
 }
 
+type MongoAtlasStatus = {
+  configured: boolean;
+  connected: boolean;
+  host?: string;
+  database?: string;
+  vectorSearchReady: boolean;
+  probeFailed?: boolean;
+};
+
+function MongoAtlasRegionComponent({
+  data,
+}: NodeProps<{ status: MongoAtlasStatus | null }>) {
+  const connected = data.status?.connected === true;
+  const accent = connected ? "#10b981" : "#f59e0b";
+  const statusText = data.status?.probeFailed
+    ? "Could not check status"
+    : !data.status?.configured
+      ? "Not configured"
+      : connected
+        ? "Cluster connected"
+        : "Configured · connection unavailable";
+  return (
+    <div
+      data-testid="blanko-mongodb-atlas-region"
+      style={{
+        width: "100%",
+        height: "100%",
+        boxSizing: "border-box",
+        padding: "18px 20px",
+        borderRadius: 14,
+        border: `1px solid ${accent}88`,
+        background: connected ? "rgba(16, 185, 129, 0.10)" : "rgba(245, 158, 11, 0.08)",
+        color: "#e2e8f0",
+        fontFamily: FONT_UI,
+        pointerEvents: "none",
+        boxShadow: `inset 0 0 0 1px ${accent}22`,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 9, color: connected ? "#6ee7b7" : accent, fontSize: 14, fontWeight: 700 }}>
+        <span aria-hidden="true" style={{ fontSize: 18 }}>▦</span>
+        MongoDB Atlas
+      </div>
+      <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 650, color: accent }}>
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: accent }} />
+        {statusText}
+      </div>
+      <div style={{ marginTop: 8, fontFamily: FONT_MONO, fontSize: 10, color: "#94a3b8", overflowWrap: "anywhere" }}>
+        {data.status?.host ?? (data.status?.configured ? "MongoDB host not returned" : "Set MONGODB_URI on the server")}
+      </div>
+      <div style={{ marginTop: 12, fontSize: 11, lineHeight: 1.5, color: "#cbd5e1" }}>
+        Database: {data.status?.database ?? (data.status?.configured ? "not reported" : "configure MONGODB_DATABASE")}
+      </div>
+      <div style={{ marginTop: 7, fontSize: 10, lineHeight: 1.45, color: "#94a3b8" }}>
+        Vector Search: {data.status?.probeFailed ? "status unavailable" : !data.status?.configured ? "needs MongoDB setup" : data.status?.vectorSearchReady ? "provider configured; index not verified" : "embedding provider not configured"}
+        <br />News ingestion: not connected yet
+      </div>
+    </div>
+  );
+}
+
 const SUBSYSTEM_REGION_COLORS: Record<NodeSubsystem, { fill: string; border: string; title: string }> = {
   ingress: { fill: "rgba(56, 189, 248, 0.10)", border: "rgba(14, 165, 233, 0.45)", title: "#0369a1" },
   strategy: { fill: "rgba(52, 211, 153, 0.10)", border: "rgba(16, 185, 129, 0.45)", title: "#047857" },
@@ -1847,6 +1911,7 @@ function SubsystemRegionComponent({
   readiness: string;
   nodeCount: number;
   highlighted?: boolean;
+  onSelect?: () => void;
 }>) {
   const colors = SUBSYSTEM_REGION_COLORS[data.subsystem] ?? SUBSYSTEM_REGION_COLORS.unclassified;
   return (
@@ -1859,21 +1924,37 @@ function SubsystemRegionComponent({
         background: colors.fill,
         border: data.highlighted ? `2px solid ${colors.border}` : `1px solid ${colors.border}`,
         borderRadius: 14,
-        pointerEvents: "all",
-        cursor: "pointer",
+        // Fill must not steal hits from the pane — otherwise View mode grab↔pointer
+        // flickers across every gap between modules. Label strip stays clickable.
+        pointerEvents: "none",
         boxShadow: data.highlighted
           ? `0 0 0 3px ${colors.border}33`
           : "inset 0 0 0 1px rgba(255,255,255,0.03)",
       }}
-      title={`${data.label} — click for Insights`}
+      title={`${data.label} — click label for Insights`}
     >
       <div
+        role="button"
+        tabIndex={0}
+        data-testid={`blanko-subsystem-region-label-${data.subsystem}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          data.onSelect?.();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            data.onSelect?.();
+          }
+        }}
         style={{
           position: "absolute",
           top: 10,
           left: 14,
           right: 14,
           fontFamily: FONT_UI,
+          pointerEvents: "auto",
+          cursor: "pointer",
         }}
       >
         <div
@@ -2128,6 +2209,7 @@ const NODE_TYPES = {
   arch: ArchNodeComponent,
   band: LayerBandComponent,
   domainRegion: DomainRegionComponent,
+  mongoAtlasRegion: MongoAtlasRegionComponent,
   subsystemRegion: SubsystemRegionComponent,
   n8nGroup: N8nGroupComponent,
   annotation: AnnotationStickyComponent,
@@ -2202,6 +2284,8 @@ interface Props {
   /** Layout mode (controlled by App top bar). */
   layoutMode?: LayoutMode;
   onLayoutModeChange?: (mode: LayoutMode) => void;
+  /** Explicit fit request from a workflow arrange action, including when ELK is already selected. */
+  layoutFitRequest?: number;
   /** When the agent returns a graphCommand, apply it to highlight/filter the canvas. */
   agentGraphCommand?: GraphCommand | null;
   /** For NodePopup Traces/Eval tabs. */
@@ -2244,12 +2328,21 @@ interface Props {
   vulnerableNodeIds?: Set<string>;
   /** Ref to register capture-view function (viewport2D / camera3D). */
   captureViewRef?: React.MutableRefObject<(() => { viewport2D?: { x: number; y: number; zoom: number }; camera3D?: { position: { x: number; y: number; z: number }; target: { x: number; y: number; z: number } } }) | null>;
+  /**
+   * Register a getter for the visible canvas pane center in flow coordinates
+   * (for Components click-place). Uses the flow container rect + live screenToFlowPosition.
+   */
+  flowCenterRef?: React.MutableRefObject<(() => { x: number; y: number } | null) | null>;
   /** When set, apply this viewport to 2D canvas (from active scene state). */
   viewportToApply?: { x: number; y: number; zoom: number } | null;
   /** Phase 1 greenfield: design DAG authoring (no materialize). */
   designMode?: boolean;
-  /** Drop palette item onto canvas at flow coords. */
-  onDesignDrop?: (paletteId: string, flowPosition: { x: number; y: number }) => void;
+  /** Drop palette item onto canvas at flow coords. hitNodeId = module under pointer. */
+  onDesignDrop?: (
+    paletteId: string,
+    flowPosition: { x: number; y: number },
+    opts?: { hitNodeId?: string | null }
+  ) => void;
   /** Connect two design nodes via handles (optional relation from picker). */
   onDesignConnect?: (fromId: string, toId: string, relation?: EdgeRelation) => void;
   /** Select a design edge for inspect. */
@@ -2304,6 +2397,7 @@ export function ArchCanvas({
   onCanvasViewModeChange,
   layoutMode: layoutModeProp,
   onLayoutModeChange,
+  layoutFitRequest = 0,
   agentGraphCommand,
   workspaceId,
   accessToken,
@@ -2326,6 +2420,7 @@ export function ArchCanvas({
   runtimeLive = false,
   vulnerableNodeIds,
   captureViewRef,
+  flowCenterRef,
   viewportToApply,
   designMode = false,
   onDesignDrop,
@@ -2346,6 +2441,26 @@ export function ArchCanvas({
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [building, setBuilding] = useState(true);
+  const [mongoAtlasStatus, setMongoAtlasStatus] = useState<MongoAtlasStatus | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    setMongoAtlasStatus(null);
+    if (!workspaceId || !accessToken) return () => { active = false; };
+    const apiBase = (import.meta.env.VITE_MONGODB_STATUS_API_BASE ?? "").replace(/\/$/, "");
+    fetch(`${apiBase}/api/workspaces/${encodeURIComponent(workspaceId)}/harness/mongodb/status`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("MongoDB status unavailable");
+        return response.json() as Promise<MongoAtlasStatus>;
+      })
+      .then((status) => { if (active) setMongoAtlasStatus(status); })
+      .catch(() => {
+        if (active) setMongoAtlasStatus({ configured: false, connected: false, vectorSearchReady: false, probeFailed: true });
+      });
+    return () => { active = false; };
+  }, [workspaceId, accessToken]);
   const [pendingRelation, setPendingRelation] = useState<{
     fromId: string;
     toId: string;
@@ -2375,7 +2490,17 @@ export function ArchCanvas({
     setViewport?: (v: { x: number; y: number; zoom: number }) => void;
     screenToFlowPosition?: (p: { x: number; y: number }) => { x: number; y: number };
     project?: (p: { x: number; y: number }) => { x: number; y: number };
+    getNodes?: () => Array<{
+      id: string;
+      position: { x: number; y: number };
+      width?: number;
+      height?: number;
+      type?: string;
+      hidden?: boolean;
+    }>;
   } | null>(null);
+  /** Board id last used for auto-fitView — do not re-fit on every place/bind. */
+  const fitViewBoardRef = useRef<string>("");
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
   const flowParentRef = useRef<HTMLDivElement | null>(null);
   // Start at 0: ReactFlow must not mount until ResizeObserver measures real size.
@@ -2409,6 +2534,10 @@ export function ArchCanvas({
   const effectiveLayoutMode: LayoutMode =
     canvasViewMode === "domains" ? "domain" : layoutMode;
   const [elkPositions, setElkPositions] = useState<Map<string, { x: number; y: number }> | null>(null);
+  const [flowReady, setFlowReady] = useState(false);
+  const previousLayoutModeRef = useRef<LayoutMode>(effectiveLayoutMode);
+  const fitAfterElkLayoutRef = useRef(effectiveLayoutMode === "elk");
+  const previousLayoutFitRequestRef = useRef(layoutFitRequest);
 
   useEffect(() => {
     if (!captureViewRef) return;
@@ -2424,6 +2553,24 @@ export function ArchCanvas({
     };
     return () => { captureViewRef.current = null; };
   }, [captureViewRef, viewMode]);
+
+  useEffect(() => {
+    if (!flowCenterRef) return;
+    flowCenterRef.current = () => {
+      const el = flowContainerRef.current;
+      const rf = reactFlowInstanceRef.current;
+      if (!el || !rf?.screenToFlowPosition) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return null;
+      return rf.screenToFlowPosition({
+        x: r.left + r.width / 2,
+        y: r.top + r.height / 2,
+      });
+    };
+    return () => {
+      flowCenterRef.current = null;
+    };
+  }, [flowCenterRef]);
 
   useEffect(() => {
     if (!viewportToApply || viewMode !== "2d") return;
@@ -2442,6 +2589,75 @@ export function ArchCanvas({
     });
     return () => { cancelled = true; };
   }, [effectiveLayoutMode, graph]);
+
+  // When the user switches to the left-to-right ELK layout, its new positions
+  // can extend beyond the old viewport. Fit once after ELK finishes so the new
+  // flow is visible; ordinary graph edits still preserve the user's viewport.
+  useEffect(() => {
+    if (previousLayoutFitRequestRef.current !== layoutFitRequest) {
+      previousLayoutFitRequestRef.current = layoutFitRequest;
+      fitAfterElkLayoutRef.current = effectiveLayoutMode === "elk";
+    }
+    if (previousLayoutModeRef.current !== effectiveLayoutMode) {
+      previousLayoutModeRef.current = effectiveLayoutMode;
+      if (effectiveLayoutMode === "elk") fitAfterElkLayoutRef.current = true;
+    }
+    if (
+      !fitAfterElkLayoutRef.current ||
+      effectiveLayoutMode !== "elk" ||
+      !elkPositions?.size ||
+      !flowReady ||
+      flowDimensions.width <= 0 ||
+      flowDimensions.height <= 0
+    ) return;
+    const rf = reactFlowInstanceRef.current;
+    if (!rf) return;
+    let attempts = 0;
+    let frame = 0;
+    let cancelled = false;
+    const fitWhenMeasured = () => {
+      if (cancelled) return;
+      const visibleNodes = rf.getNodes?.().filter((node) =>
+        !node.hidden && !node.id.startsWith("band:") && !node.id.startsWith("subsystem:") && !node.id.startsWith("domain:")
+      ) ?? [];
+      const measuredNodes = visibleNodes.filter((node) => (node.width ?? 0) > 0 && (node.height ?? 0) > 0);
+      attempts += 1;
+      // React Flow may not have measured nodes on the first frame. Retry briefly
+      // before computing a viewport from the measured graph bounds ourselves.
+      if (!measuredNodes.length && attempts < 10) {
+        frame = requestAnimationFrame(fitWhenMeasured);
+      } else {
+        if (measuredNodes.length && rf.setViewport) {
+          const minX = Math.min(...measuredNodes.map((node) => node.position.x));
+          const minY = Math.min(...measuredNodes.map((node) => node.position.y));
+          const maxX = Math.max(...measuredNodes.map((node) => node.position.x + (node.width ?? NODE_W)));
+          const maxY = Math.max(...measuredNodes.map((node) => node.position.y + (node.height ?? 120)));
+          const graphWidth = Math.max(1, maxX - minX);
+          const graphHeight = Math.max(1, maxY - minY);
+          const insetX = Math.min(64, flowDimensions.width * 0.08);
+          const insetY = Math.min(64, flowDimensions.height * 0.08);
+          const zoom = Math.max(0.1, Math.min(
+            2.5,
+            (flowDimensions.width - insetX * 2) / graphWidth,
+            (flowDimensions.height - insetY * 2) / graphHeight
+          ));
+          rf.setViewport({
+            x: (flowDimensions.width - graphWidth * zoom) / 2 - minX * zoom,
+            y: (flowDimensions.height - graphHeight * zoom) / 2 - minY * zoom,
+            zoom,
+          });
+        } else {
+          rf.fitView({ padding: 0.12 });
+        }
+        fitAfterElkLayoutRef.current = false;
+      }
+    };
+    frame = requestAnimationFrame(() => requestAnimationFrame(fitWhenMeasured));
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [effectiveLayoutMode, elkPositions, flowReady, flowDimensions.width, flowDimensions.height, layoutFitRequest]);
 
   useEffect(() => {
     if (!scene) return;
@@ -2535,13 +2751,32 @@ export function ArchCanvas({
     [workspaceId, accessToken, onAnnotationsChange]
   );
 
+  // Auto-fitView only when the board identity changes (or first measurable paint of a
+  // non-empty board). Never on place/bind — those bump nodes.length + generatedAt and
+  // used to zoom ~2.5x around the new node, desyncing the next drop's screen→flow mapping
+  // from the pointer (Components DnD). screenToFlowPosition at drop time is already live;
+  // preserving the viewport is what makes successive drops land under the cursor.
   useEffect(() => {
-    const total = graph.nodes.length;
+    const boardKey = `${graph.projectRoot ?? ""}|${graph.architectureBoard ? 1 : 0}|${graph.projectName ?? ""}`;
+    if (graph.nodes.length === 0) {
+      // Empty design board: mark as settled so the first place does not trigger fitView.
+      fitViewBoardRef.current = boardKey;
+      return;
+    }
     const rf = reactFlowInstanceRef.current;
-    if (!rf || total === 0) return;
+    if (!rf || flowDimensions.width <= 0 || flowDimensions.height <= 0) return;
+    if (fitViewBoardRef.current === boardKey) return;
+    fitViewBoardRef.current = boardKey;
     const padding = flowDimensions.width > flowDimensions.height ? 0.05 : 0.12;
     rf.fitView({ padding });
-  }, [graph.nodes.length, graph.generatedAt, flowDimensions.width, flowDimensions.height]);
+  }, [
+    graph.nodes.length,
+    graph.projectRoot,
+    graph.architectureBoard,
+    graph.projectName,
+    flowDimensions.width,
+    flowDimensions.height,
+  ]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -2900,15 +3135,21 @@ export function ArchCanvas({
         readiness: sr.readiness,
         nodeCount: sr.nodeCount,
         highlighted: selectedSubsystem === sr.subsystem,
+        onSelect: onSubsystemSelect
+          ? () => {
+              onSubsystemSelect(sr.subsystem);
+            }
+          : undefined,
       },
       style: {
         width: sr.width,
         height: sr.height,
         zIndex: -2,
-        pointerEvents: "all",
+        // Region wash must not capture the cursor — only the label strip is interactive.
+        pointerEvents: "none",
       },
       draggable: false,
-      selectable: true,
+      selectable: false,
       connectable: false,
     }));
 
@@ -3017,6 +3258,37 @@ export function ArchCanvas({
       ...domainRegionNodes,
       ...subsystemRegionNodes,
       ...bandNodes,
+      ...(mongoAtlasStatus && effectiveGraphForRender.nodes.length > 0
+        ? (() => {
+            const cardWidth = theme === "light" ? NODE_W_LIGHT : NODE_W;
+            const points = effectiveGraphForRender.nodes
+              .map((node) => effectiveLayoutMode === "subsystem"
+                ? nodePositions.get(node.id)
+                : (sceneNodeOverrides2D[node.id] ?? nodePositions.get(node.id)))
+              .filter((point): point is { x: number; y: number } => Boolean(point));
+            const regionRight = effectiveLayoutMode === "subsystem"
+              ? Math.max(...subsystemRegions.map((region) => region.x + region.width), 0)
+              : 0;
+            const nodesRight = Math.max(...points.map((point) => point.x + cardWidth), 0);
+            const regionTop = effectiveLayoutMode === "subsystem"
+              ? Math.min(...subsystemRegions.map((region) => region.y), 40)
+              : (points.length ? Math.min(...points.map((point) => point.y)) : 40);
+            return [{
+              id: "infra:mongodb-atlas",
+              type: "mongoAtlasRegion",
+              position: {
+                x: (subsystemRegions.length ? regionRight : nodesRight) + 40,
+                y: regionTop,
+              },
+              data: { status: mongoAtlasStatus },
+              style: { width: 310, height: 210, background: "transparent", border: "none", padding: 0, pointerEvents: "none" },
+              draggable: false,
+              selectable: false,
+              connectable: false,
+              zIndex: 2,
+            }];
+          })()
+        : []),
       ...effectiveGraphForRender.nodes.map((node) => {
         const matches = nodeMatches(node);
         const override = sceneNodeOverrides2D[node.id];
@@ -3181,6 +3453,7 @@ export function ArchCanvas({
     graph,
     selectedNode,
     selectedSubsystem,
+    onSubsystemSelect,
     violationBeingFixedKey,
     edgeFilter,
     tracePathNodeIds,
@@ -3191,6 +3464,7 @@ export function ArchCanvas({
     handleDeleteAnnotation,
     workspaceId,
     accessToken,
+    mongoAtlasStatus,
     runtimeSnapshot,
     runtimeLive,
     vulnerableNodeIds,
@@ -3576,6 +3850,7 @@ export function ArchCanvas({
         @keyframes edgeTracePulse { 0%,100%{opacity:0.95} 50%{opacity:0.7} }
         @keyframes edgeTraceStroke { 0%,100%{stroke-opacity:1;filter:drop-shadow(0 0 4px rgba(192,132,252,0.5))} 50%{stroke-opacity:0.75;filter:drop-shadow(0 0 8px rgba(192,132,252,0.7))} }
         .react-flow__edge path { pointer-events: visibleStroke !important; }
+        .react-flow__edge path.blanko-edge-glow { pointer-events: none !important; }
         .arch-edge-drift-dot { animation: edgeDriftDot 2s ease-in-out infinite; filter: drop-shadow(0 0 3px rgba(239,68,68,0.8)); }
         .arch-edge-violation-dot { animation: edgeViolationDot 2.5s ease-in-out infinite; }
         .arch-edge-trace-dot { animation: edgeTracePulse 1.5s ease-in-out infinite; }
@@ -3729,6 +4004,10 @@ export function ArchCanvas({
         edgesUpdatable={designMode}
         connectionMode={ConnectionMode.Loose}
         elementsSelectable
+        // Double-click is reserved for opening the node inspector (onNodeDoubleClick
+        // below). ReactFlow's default double-click-to-zoom on the pane can swallow
+        // that event before it reaches the node, so it's explicitly disabled here.
+        zoomOnDoubleClick={false}
         panOnDrag
         deleteKeyCode={designMode ? ["Backspace", "Delete"] : null}
           onConnect={(connection) => {
@@ -3772,12 +4051,13 @@ export function ArchCanvas({
           onDesignDeleteEdges(deleted.map((e) => e.id));
         }}
         onDragOver={(e) => {
-          if (!designMode || !onDesignDrop) return;
+          // Drop is allowed in View; App flips to Edit on place. Connect/delete stay Edit-gated.
+          if (!onDesignDrop) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "copy";
         }}
         onDrop={(e) => {
-          if (!designMode || !onDesignDrop) return;
+          if (!onDesignDrop) return;
           e.preventDefault();
           const paletteId =
             e.dataTransfer.getData(DESIGN_DND_MIME) || e.dataTransfer.getData("text/plain");
@@ -3787,7 +4067,47 @@ export function ArchCanvas({
             rf?.screenToFlowPosition?.({ x: e.clientX, y: e.clientY }) ??
             rf?.project?.({ x: e.clientX, y: e.clientY }) ??
             { x: e.clientX, y: e.clientY };
-          onDesignDrop(paletteId, position);
+
+          const isModuleId = (id: string) =>
+            !id.startsWith("band:") &&
+            !id.startsWith("subsystem:") &&
+            !id.startsWith("domain:") &&
+            !id.startsWith("n8n-group:");
+
+          let hitNodeId: string | null = null;
+          // Live DOM hit (works when dock is pointer-events:none during palette drag).
+          const top = document.elementFromPoint(e.clientX, e.clientY);
+          const nodeEl = top?.closest?.(".react-flow__node") as HTMLElement | null;
+          if (nodeEl) {
+            const id = nodeEl.getAttribute("data-id") || nodeEl.dataset.id || null;
+            if (id && isModuleId(id)) hitNodeId = id;
+          }
+          // Fallback: flow-space AABB with the same live screen→flow projection (no stale boxes).
+          if (!hitNodeId && rf?.screenToFlowPosition) {
+            const flow = position;
+            const rfNodes =
+              typeof (rf as { getNodes?: () => Array<{ id: string; position: { x: number; y: number }; width?: number; height?: number; type?: string }> }).getNodes ===
+              "function"
+                ? (rf as { getNodes: () => Array<{ id: string; position: { x: number; y: number }; width?: number; height?: number; type?: string }> }).getNodes()
+                : [];
+            const nodeW = theme === "light" ? NODE_W_LIGHT : NODE_W;
+            for (const n of rfNodes) {
+              if (!isModuleId(n.id)) continue;
+              if (n.type && n.type !== "arch" && n.type !== "default") continue;
+              const w = n.width ?? nodeW;
+              const h = n.height ?? 120;
+              if (
+                flow.x >= n.position.x &&
+                flow.x <= n.position.x + w &&
+                flow.y >= n.position.y &&
+                flow.y <= n.position.y + h
+              ) {
+                hitNodeId = n.id;
+                break;
+              }
+            }
+          }
+          onDesignDrop(paletteId, position, { hitNodeId });
         }}
         snapToGrid={sceneEditMode}
         snapGrid={[24, 24]}
@@ -3888,11 +4208,16 @@ export function ArchCanvas({
             setHoveredEdgePos(null);
           }
         }}
-        onInit={(instance) => { reactFlowInstanceRef.current = instance; }}
+        onInit={(instance) => {
+          reactFlowInstanceRef.current = instance;
+          setFlowReady(true);
+        }}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        fitView
-        fitViewOptions={{ padding: 0.12 }}
+        // Do NOT set fitView here — RF's fitViewOnInit waits for the first node then
+        // zooms to max (~2.5), which breaks successive Components drops. Board-load
+        // fit is handled by the fitViewBoardRef effect above.
+        fitView={false}
         minZoom={0.1}
         maxZoom={2.5}
         proOptions={{ hideAttribution: true }}

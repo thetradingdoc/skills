@@ -3,16 +3,19 @@
  */
 import { DESIGN_PALETTE, type DesignPaletteItem } from "../greenfieldDesign";
 import type { ArchNode } from "../types";
-import { PROVIDER_CATALOG, type ProviderDef } from "../providerCatalog";
+import { getProvider, PROVIDER_CATALOG, type ProviderDef } from "../providerCatalog";
 
 /** Extra integration palette entries (provider-backed) not in core DESIGN_PALETTE. */
-export const INTEGRATION_PALETTE: (DesignPaletteItem & { providerId?: string })[] = [
+export const INTEGRATION_PALETTE: (DesignPaletteItem & {
+  providerId?: string;
+  applyMode?: "bind" | "place";
+})[] = [
   { id: "openai", label: "OpenAI", layer: "Reasoning", description: "Hosted LLM API.", group: "Brain", providerId: "openai" },
   { id: "anthropic", label: "Anthropic", layer: "Reasoning", description: "Claude models.", group: "Brain", providerId: "anthropic" },
   { id: "langchain", label: "LangChain", layer: "Reasoning", description: "LLM orchestration framework.", group: "Brain", providerId: "langchain" },
-  { id: "langgraph", label: "LangGraph", layer: "Reasoning", description: "Graph-based agent orchestration.", group: "Brain", providerId: "langchain" },
-  { id: "llamaindex", label: "LlamaIndex", layer: "Memory", description: "RAG / data framework for LLMs.", group: "Memory & RAG", providerId: "llamaindex" },
-  { id: "pinecone", label: "Pinecone", layer: "Memory", techKind: "database", description: "Managed vector database.", group: "Memory & RAG", providerId: "pinecone" },
+  { id: "langgraph", label: "LangGraph", layer: "Reasoning", description: "Graph-based agent orchestration.", group: "Brain", providerId: "langchain", applyMode: "place" },
+  { id: "llamaindex", label: "LlamaIndex", layer: "Memory", description: "RAG / data framework for LLMs.", group: "Memory & RAG", providerId: "llamaindex", applyMode: "place" },
+  { id: "pinecone", label: "Pinecone", layer: "Memory", techKind: "database", description: "Managed vector database.", group: "Memory & RAG", providerId: "pinecone", applyMode: "place" },
   {
     id: "retell",
     label: "Retell",
@@ -21,16 +24,33 @@ export const INTEGRATION_PALETTE: (DesignPaletteItem & { providerId?: string })[
     description: "Voice channel provider — bind for design & tracking.",
     group: "Channels",
     providerId: "retell",
+    applyMode: "place",
   },
   { id: "azure", label: "Azure", layer: "Infrastructure", description: "Microsoft Azure cloud services.", group: "Ops", providerId: "azure" },
   { id: "gcp", label: "GCP", layer: "Infrastructure", description: "Google Cloud Platform.", group: "Ops", providerId: "gcp" },
   { id: "aws", label: "AWS", layer: "Infrastructure", description: "Amazon Web Services.", group: "Ops", providerId: "aws" },
-  { id: "n8n", label: "n8n", layer: "External Services", techKind: "external-saas", description: "Workflow automation estate (import to debug).", group: "Ops", providerId: "n8n" },
-  { id: "slack", label: "Slack", layer: "External Services", techKind: "external-saas", description: "Team messaging.", group: "Tools", providerId: "slack" },
-  { id: "supabase", label: "Supabase", layer: "Data Access", techKind: "database", description: "Postgres + auth + storage BaaS.", group: "Data", providerId: "supabase" },
+  { id: "n8n", label: "n8n", layer: "External Services", techKind: "external-saas", description: "Workflow automation estate (import to debug).", group: "Ops", providerId: "n8n", applyMode: "place" },
+  { id: "slack", label: "Slack", layer: "External Services", techKind: "external-saas", description: "Team messaging.", group: "Tools", providerId: "slack", applyMode: "place" },
+  { id: "supabase", label: "Supabase", layer: "Data Access", techKind: "database", description: "Postgres + auth + storage BaaS.", group: "Data", providerId: "supabase", applyMode: "place" },
 ];
 
-export type BuildItem = DesignPaletteItem & { providerId?: string; why?: string };
+export type BuildItem = DesignPaletteItem & {
+  providerId?: string;
+  why?: string;
+  /** Override category-based bind vs place. */
+  applyMode?: "bind" | "place";
+};
+
+const BIND_CATEGORIES = new Set(["llm", "framework", "cloud"]);
+
+/** Resolve whether a catalog item binds onto selection or places a new node. */
+export function resolveApplyMode(item: BuildItem): "bind" | "place" {
+  if (item.applyMode === "bind" || item.applyMode === "place") return item.applyMode;
+  if (!item.providerId) return "place";
+  const cat = getProvider(item.providerId)?.category;
+  if (cat && BIND_CATEGORIES.has(cat)) return "bind";
+  return "place";
+}
 
 const BY_ID = new Map<string, BuildItem>([
   ...DESIGN_PALETTE.map((p) => [p.id, p as BuildItem] as const),

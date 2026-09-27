@@ -257,7 +257,7 @@ function maybeCreateAnalysisRail(params: {
 }
 
 router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations } =
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations, provider } =
     req.body as {
       question?: string;
       graph?: ArchGraph;
@@ -269,6 +269,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       pdfBase64?: string | null;
       pdfFileName?: string | null;
       pendingViolations?: CriticViolation[];
+      provider?: "anthropic" | "openai";
     };
 
   if (!question || typeof question !== "string") {
@@ -662,6 +663,7 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
       mode,
       apiKeyOpenAI: process.env.OPENAI_API_KEY,
       apiKeyClaude: process.env.ANTHROPIC_API_KEY,
+      provider,
       findings,
       rootPath,
       jiraConfig,
@@ -1073,9 +1075,10 @@ router.post("/chat", requireUser, validateGraphCommandMiddleware, async (req, re
 
 /** Async chat — returns 202 with taskId, client polls GET /api/tasks/:taskId */
 router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (req, res) => {
-  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations } =
+  const { question, graph, nodeId, history, workspaceId, greenfieldSessionId, threadId, pdfBase64, pdfFileName, pendingViolations, provider } =
     req.body as {
       question?: string;
+      provider?: "anthropic" | "openai";
       graph?: ArchGraph;
       nodeId?: string;
       history?: Array<{ role: "user" | "assistant"; content: string }>;
@@ -1335,6 +1338,7 @@ router.post("/chat-async", requireUser, validateGraphCommandMiddleware, async (r
     mode,
     apiKeyOpenAI: process.env.OPENAI_API_KEY,
     apiKeyClaude: process.env.ANTHROPIC_API_KEY,
+    provider,
     findings,
     rootPath,
     jiraConfig,

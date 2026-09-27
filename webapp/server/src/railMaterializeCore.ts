@@ -59,15 +59,27 @@ export function materializeAnalysisRail(
     return { ok: false, error: "Sandbox not found for this rail.", status: 400 };
   }
   const relFiles = walkDir(sandboxPath, sandboxPath, 6).filter((p) => !p.endsWith("/"));
-  const copied: string[] = [];
+  const changedFiles = relFiles.filter((rel) => {
+    const sandboxFile = path.join(sandboxPath, rel);
+    const projectFile = path.join(root, rel);
+    try {
+      return !fs.existsSync(projectFile) ||
+        fs.readFileSync(sandboxFile, "utf-8") !== fs.readFileSync(projectFile, "utf-8");
+    } catch {
+      return true;
+    }
+  });
+  if (changedFiles.length === 0) {
+    return { ok: false, error: "This sandbox has no file changes to approve.", status: 409 };
+  }
   for (const rel of relFiles) {
+    if (!changedFiles.includes(rel)) continue;
     const srcFile = path.join(sandboxPath, rel);
     const rootFile = path.join(root, rel);
     try {
       const dir = path.dirname(rootFile);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(rootFile, fs.readFileSync(srcFile, "utf-8"), "utf-8");
-      copied.push(rel);
     } catch {
       // best-effort per file
     }

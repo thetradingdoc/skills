@@ -95,4 +95,22 @@ test.describe("blanko left rail Explore + My workspace", () => {
     await expandLeft(page);
     await expect(page.getByTestId("blanko-explore-import")).toBeVisible();
   });
+
+  test("side-rail Upload n8n opens file picker; Import GitHub opens modal", async ({ page }) => {
+    await enterScratch(page);
+    await expandLeft(page);
+
+    const [chooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.getByTestId("blanko-import-n8n").click(),
+    ]);
+    expect(chooser).toBeTruthy();
+    await chooser.cancel().catch(() => undefined);
+
+    await page.getByTestId("blanko-import-github").click();
+    await expect(page.getByTestId("blanko-import-github-modal")).toBeVisible();
+    await expect(page.getByTestId("blanko-import-github-url")).toBeVisible();
+    await page.getByTestId("blanko-import-github-cancel").click();
+    await expect(page.getByTestId("blanko-import-github-modal")).toHaveCount(0);
+  });
 });

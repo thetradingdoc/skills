@@ -50,6 +50,9 @@ export const DESIGN_PALETTE: DesignPaletteItem[] = [
 
   // Tools
   { id: "tool", label: "Tool", layer: "External Services", techKind: "external-saas", description: "A capability the agent can call (calendar, sheets, email, custom API).", group: "Tools" },
+  { id: "repo-list-files", label: "List repository files", layer: "Tools", description: "Read-only tool: list source and documentation files from the connected repository.", group: "Tools" },
+  { id: "repo-search-files", label: "Search repository files", layer: "Tools", description: "Read-only tool: search text in approved source and documentation files in the connected repository.", group: "Tools" },
+  { id: "repo-read-file", label: "Read repository file", layer: "Tools", description: "Read-only tool: open an approved source or documentation file from the connected repository.", group: "Tools" },
 
   // Strategies
   { id: "strategy", label: "Strategy", layer: "Reasoning", description: "A named decision policy or trading/playbook module the agent uses.", group: "Strategies" },
@@ -177,6 +180,40 @@ export function createDesignEdge(opts: {
   };
 }
 
+/**
+ * Match a chat-originated create_node command against the DESIGN_PALETTE catalog,
+ * so chat-created nodes get the same techKind/icon enrichment as drag-placed ones.
+ * Tries, in order: exact id on archNodeId/group/id, then normalized label match.
+ */
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().replace(/[-_/\\.]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export function matchCreateNodeToCatalog(cmd: {
+  id: string;
+  label: string;
+  archNodeId?: string;
+  group?: string;
+}): DesignPaletteItem | null {
+  const byId = (candidate: string | undefined) =>
+    candidate ? DESIGN_PALETTE.find((p) => p.id === candidate) : undefined;
+
+  const exact = byId(cmd.archNodeId) ?? byId(cmd.group) ?? byId(cmd.id);
+  if (exact) return exact;
+
+  const normalizedLabel = normalizeForMatch(cmd.label);
+  const byLabel = DESIGN_PALETTE.find(
+    (p) => normalizeForMatch(p.label) === normalizedLabel
+  );
+  if (byLabel) return byLabel;
+
+  const byPartialLabel = DESIGN_PALETTE.find((p) => {
+    const pLabel = normalizeForMatch(p.label);
+    return pLabel.length > 3 && (normalizedLabel.includes(pLabel) || pLabel.includes(normalizedLabel));
+  });
+  return byPartialLabel ?? null;
+}
+
 /** Apply design graphCommands into ArchGraph (source of truth). */
 export function applyDesignCommandsToGraph(
   graph: ArchGraph,
@@ -189,15 +226,30 @@ export function applyDesignCommandsToGraph(
   for (const cmd of commands) {
     if (cmd.action === "create_node") {
       if (nodes.some((n) => n.id === cmd.id)) continue;
-      nodes.push(
-        createDesignArchNode({
-          id: cmd.id,
-          label: cmd.label,
-          layer: cmd.layer,
-          description: cmd.description,
-          path: cmd.archNodeId ?? cmd.id,
-        })
-      );
+      const catalogMatch = matchCreateNodeToCatalog(cmd);
+      let node = createDesignArchNode({
+        id: cmd.id,
+        label: cmd.label,
+        layer: catalogMatch?.layer ?? cmd.layer,
+        description: cmd.description ?? catalogMatch?.description,
+        path: cmd.archNodeId ?? cmd.id,
+        techKind: catalogMatch?.techKind,
+      });
+      if (catalogMatch && "providerId" in catalogMatch && catalogMatch.providerId) {
+        node = {
+          ...node,
+          platformBindings: [
+            {
+              providerId: catalogMatch.providerId as string,
+              status: "unbound",
+              source: "declared",
+              evidence: `chat:${catalogMatch.id}`,
+            },
+          ],
+          llmProvider: catalogMatch.providerId as string,
+        };
+      }
+      nodes.push(node);
       changed = true;
     } else if (cmd.action === "connect") {
       const exists = edges.some(

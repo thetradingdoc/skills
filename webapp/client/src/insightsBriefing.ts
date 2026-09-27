@@ -155,8 +155,21 @@ const MONEY_PATH_IDS = [
   "bp-ta-alpaca",
 ] as const;
 
+/** True only for the trading-agent blueprint — every other blueprint gets a generic board brief. */
+function isTradingBlueprint(graph: ArchGraph): boolean {
+  if (graph.blueprintId) return graph.blueprintId === "trading-agent";
+  // Legacy graphs predating blueprintId: fall back to the old heuristics.
+  return graph.architectureBoard === true || looksLikeTradingScan(graph);
+}
+
 export function architectureBrief(graph: ArchGraph | null | undefined): string {
   if (!graph?.nodes?.length) return "Empty canvas — place or fork an architecture to start.";
+  if (!isTradingBlueprint(graph)) {
+    if (graph.architectureBoard) {
+      return `Architecture board: ${graph.nodes.length} pieces, ${graph.edges.length} connections. This is a locked spine layout — click a piece for role, tools, and cost.`;
+    }
+    return `Design board: ${graph.nodes.length} pieces, ${graph.edges.length} connections. Insights flags broken design; click a piece for role, tools, and cost.`;
+  }
   if (graph.architectureBoard || (!spineMissing(graph) && looksLikeTradingScan(graph))) {
     return "Money path: Telegram/Trading Chat → Identity → Agent (propose) → Strategy → Policy → Risk → Execution → Alpaca | Kraken. The LLM never submits orders — that saves blow-ups and wasted broker calls.";
   }

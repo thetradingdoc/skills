@@ -1,0 +1,27 @@
+.git
+.cursor
+.blanko-target
+.env
+**/.env
+**/.env.*
+!**/.env.example
+node_modules
+**/node_modules
+webapp/client/dist
+webapp/server/dist
+webapp/server/.agent
+docs
+docs/ops/_audit_86a9ac1
+docs/frontend-audit
+docs/ops/blanko-dual-audit
+test-results
+playwright-report
+**/coverage
+run
+*.md
+supabase/.temp
+out
+webview-ui
+tests
+fixtures
+# Keep src/ and scripts/ — server esbuild resolves ../../../src and ../../../scripts

@@ -26,13 +26,17 @@ export function DockTabShell({ tabs, active, onChange, children, emptyHint }: Pr
       }}
     >
       <div
+        role="group"
+        aria-label="Panel sections"
         style={{
           display: "flex",
-          flexWrap: "wrap",
+          flexWrap: "nowrap",
+          overflowX: "auto",
           gap: 4,
           padding: "8px 10px",
           borderBottom: `1px solid ${LINE}`,
           flexShrink: 0,
+          scrollbarWidth: "thin",
         }}
       >
         {tabs.map((t) => {
@@ -42,6 +46,7 @@ export function DockTabShell({ tabs, active, onChange, children, emptyHint }: Pr
               key={t.id}
               type="button"
               data-testid={`blanko-dock-tab-${t.id}`}
+              aria-pressed={on}
               onClick={() => onChange(t.id)}
               style={{
                 ...tabBtn,

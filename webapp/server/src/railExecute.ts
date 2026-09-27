@@ -18,6 +18,7 @@ import { runTaskAtIndex } from "../../../src/agent/taskRunner.js";
 import { classifyTaskAutoCapable } from "../../../src/agent/taskClassifier.js";
 import {
   runVerificationPipeline,
+  summarizeVerification,
   type VerificationResult,
 } from "../../../src/agent/verificationPipeline.js";
 import {
@@ -124,7 +125,17 @@ export async function triggerRailExecution(
   ).filter(Boolean) as string[];
   const syncPaths = paths.length > 0 ? paths : ["src"];
   syncSandboxFromRoot(root, rail.id, syncPaths);
-  const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
+  // Keep provider and key paired. The previous nullish chain could pass an
+  // Anthropic key to the OpenAI-configured workflow (or vice versa).
+  const provider: "openai" | "anthropic" =
+    process.env.HARNESS_PROVIDER?.trim().toLowerCase() === "openai" ||
+    (!process.env.HARNESS_PROVIDER && Boolean(process.env.OPENAI_API_KEY?.trim()))
+      ? "openai"
+      : "anthropic";
+  const apiKey = (provider === "openai" ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY)?.trim() ?? "";
+  const model = provider === "openai"
+    ? process.env.HARNESS_OPENAI_MODEL?.trim() || "gpt-4o-mini"
+    : process.env.HARNESS_ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
   const goal =
     rail.outcome ??
     (rail.trigger as { userMessage?: string })?.userMessage ??
@@ -174,6 +185,9 @@ export async function triggerRailExecution(
           if (railTask) updateRailTaskStatus(railTask.id, "executing");
           const result = await runTaskAtIndex(plan as any, idx, sandboxPath, {
             apiKey,
+            provider,
+            model,
+            sandboxWrites: true,
             errorOutput: lastVerificationFeedback,
             rail,
             railHistory: attemptHistory,
@@ -189,7 +203,18 @@ export async function triggerRailExecution(
               return;
             }
           }
-          if (railTask) updateRailTaskStatus(railTask.id, "completed");
+          if (railTask) updateRailTaskStatus(railTask.id, result.error ? "rejected" : "completed");
+        }
+
+        // A clean lint/test run is not a successful build if the agent never
+        // staged a change. Feed the no-op back into the bounded correction loop.
+        const stagedDiff = computeSandboxDiffSummary(root!, rail.id);
+        if (stagedDiff.changedFiles === 0) {
+          lastVerificationFeedback = attemptHistory.length
+            ? `The code writer produced no staged file changes. ${attemptHistory.at(-1)?.content ?? ""}`
+            : "The code writer produced no staged file changes. Use write_file to implement the requested change within the approved file scope.";
+          attempt++;
+          continue;
         }
 
         const nodeIds = (rail.logicPath ?? [])
@@ -225,7 +250,7 @@ export async function triggerRailExecution(
         id: verificationTaskId,
         railId: rail.id,
         kind: "verification",
-        description: "Lint + Vitest in sandbox",
+        description: "Lint + Vitest + applicable Playwright checks in sandbox",
         files: [],
         autoCapable: true,
         status: passed ? "completed" : "rejected",
@@ -238,11 +263,12 @@ export async function triggerRailExecution(
       const attemptNumber =
         (((rail.telemetry as any)?.retryCount as number | undefined) ?? 0) + 1;
       const attemptSummary = passed ? "Verification passed." : errorOutput || "Verification failed.";
+      const verificationSummary = verification ? summarizeVerification(verification) : "Verification did not run";
       updateRailPartial(root!, railId, {
         lastCritique: {
           source: passed ? "test" : "lint",
           message: passed
-            ? "Lint, Vitest, and Playwright passed."
+            ? verificationSummary
             : errorOutput || "Verification failed.",
           createdAt: Date.now(),
           attempt: attemptNumber,
@@ -262,7 +288,7 @@ export async function triggerRailExecution(
       transitionRail(root!, railId, toState as any);
       setTaskCompleted(bgTask.taskId, {
         message: passed
-          ? "Verification passed. You can approve materialization."
+          ? `${verificationSummary}. You can review and approve materialization.`
           : "Verification failed. Review failures in rail detail.",
         railId: rail.id,
         verificationPassed: passed,
@@ -275,6 +301,7 @@ export async function triggerRailExecution(
       const diff = computeSandboxDiffSummary(root!, rail.id);
       await appendTodoSessionLogByRailId(rail.id, "ready_to_review", {
         verificationPassed: passed,
+        verificationSummary,
         files_changed: diff.files.map((f) => f.path),
         summary: diff.summary,
         changed_files: diff.changedFiles,

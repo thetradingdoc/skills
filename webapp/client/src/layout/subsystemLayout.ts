@@ -49,8 +49,8 @@ function ensureSubsystem(n: ArchNode): NodeSubsystem {
 }
 
 /**
- * Pack nodes into stacked subsystem regions. Positions are relative to region
- * geometry so members start inside their box.
+ * Pack nodes into subsystem regions arranged left to right. Positions are
+ * relative to region geometry so members start inside their box.
  */
 export function computeSubsystemLayout(
   graph: ArchGraph,
@@ -72,7 +72,7 @@ export function computeSubsystemLayout(
   const active = SUBSYSTEM_ORDER.filter((s) => (bySub.get(s)?.length ?? 0) > 0);
 
   const regions: SubsystemRegion[] = [];
-  let cursorY = 40;
+  let cursorX = 40;
 
   for (const subsystem of active) {
     const nodes = bySub.get(subsystem) ?? [];
@@ -82,8 +82,8 @@ export function computeSubsystemLayout(
     const innerH = rows * nodeH + Math.max(0, rows - 1) * ROW_GAP;
     const width = Math.max(innerW + PAD * 2, MIN_REGION_W);
     const height = HEADER_H + innerH + PAD;
-    const x0 = 40;
-    const y0 = cursorY;
+    const x0 = cursorX;
+    const y0 = 40;
 
     nodes.forEach((n, i) => {
       const col = i % cols;
@@ -106,7 +106,7 @@ export function computeSubsystemLayout(
       nodeCount: nodes.length,
     });
 
-    cursorY += height + REGION_GAP;
+    cursorX += width + REGION_GAP;
   }
 
   return { nodePositions: positions, subsystemRegions: regions };

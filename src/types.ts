@@ -369,6 +369,15 @@ export interface ArchGraphGroup {
   source?: "n8n-sticky" | string;
 }
 
+export interface AgentHarnessConfig {
+  rules: string;
+  context: string;
+  guardrails: string;
+  toolAccess: string;
+  behaviour: string;
+  model: string;
+}
+
 export interface ArchGraph {
   nodes: ArchNode[];
   edges: ArchEdge[];
@@ -383,6 +392,8 @@ export interface ArchGraph {
    * optimistic-concurrency check (baseRevision).
    */
   revision?: number;
+  /** User-authored configuration consumed by the visual agent harness. */
+  harnessConfig?: AgentHarnessConfig;
   /** Agent inventory from scripts/agent-inventory.ts (scan-time). */
   agents?: AgentInventoryResult;
   /**

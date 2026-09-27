@@ -1,0 +1,16 @@
+{
+  "hosting": {
+    "site": "blanko",
+    "public": "firebase-hosting-public",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": {
+          "serviceId": "blanko",
+          "region": "us-central1"
+        }
+      }
+    ]
+  }
+}

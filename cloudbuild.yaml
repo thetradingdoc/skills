@@ -1,0 +1,45 @@
+# Blanko → Artifact Registry + Cloud Run
+# Usage: scripts/deploy-blanko-cloud-run.sh (loads webapp/*.env)
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: blanko
+  _REPO: blanko
+  # Override on submit: --substitutions=_VITE_SUPABASE_URL=...,_VITE_SUPABASE_ANON_KEY=...
+  _VITE_SUPABASE_URL: ""
+  _VITE_SUPABASE_ANON_KEY: ""
+  _VITE_STRIPE_PUBLISHABLE_KEY: ""
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    id: build
+    args:
+      - build
+      - --build-arg
+      - VITE_SUPABASE_URL=${_VITE_SUPABASE_URL}
+      - --build-arg
+      - VITE_SUPABASE_ANON_KEY=${_VITE_SUPABASE_ANON_KEY}
+      - --build-arg
+      - VITE_STRIPE_PUBLISHABLE_KEY=${_VITE_STRIPE_PUBLISHABLE_KEY}
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    id: push
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1800s

@@ -25,6 +25,7 @@ import { runTaskAtIndex } from "../../../src/agent/taskRunner.js";
 import { classifyTaskAutoCapable, partitionTasksByCapability } from "../../../src/agent/taskClassifier.js";
 import {
   runVerificationPipeline,
+  summarizeVerification,
   type VerificationResult,
 } from "../../../src/agent/verificationPipeline.js";
 import { createTask, setTaskRunning, setTaskCompleted, setTaskFailed, isTaskCancelled } from "./tasks.js";
@@ -781,7 +782,7 @@ router.post("/rails/:railId/execute", requireUser, async (req, res) => {
           id: verificationTaskId,
           railId: rail.id,
           kind: "verification",
-          description: "Lint + Vitest in sandbox",
+          description: "Lint + Vitest + applicable Playwright checks in sandbox",
           files: [],
           autoCapable: true,
           status: passed ? "completed" : "rejected",
@@ -796,11 +797,12 @@ router.post("/rails/:railId/execute", requireUser, async (req, res) => {
         const attemptSummary = passed
           ? "Verification passed."
           : errorOutput || "Verification failed.";
+        const verificationSummary = verification ? summarizeVerification(verification) : "Verification did not run";
         updateRailPartial(root, railId, {
           lastCritique: {
             source: passed ? "test" : "lint",
             message: passed
-              ? "Lint, Vitest, and Playwright passed."
+              ? verificationSummary
               : errorOutput || "Verification failed.",
             createdAt: Date.now(),
             attempt: attemptNumber,
@@ -823,7 +825,9 @@ router.post("/rails/:railId/execute", requireUser, async (req, res) => {
         const toState = passed ? "VERIFYING" : "SELF_CORRECTING";
         transitionRail(root, railId, toState as any);
         setTaskCompleted(bgTask.taskId, {
-          message: passed ? "Verification passed. You can approve materialization." : "Verification failed. Review failures in rail detail.",
+          message: passed
+            ? `${verificationSummary}. You can review and approve materialization.`
+            : "Verification failed. Review failures in rail detail.",
           railId: rail.id,
           verificationPassed: passed,
           lint: { passed: lint.passed, errors: lint.errors.length },

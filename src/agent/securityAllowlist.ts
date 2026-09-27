@@ -3,6 +3,7 @@
  * Path validation for read_file, get_ast, write_file.
  */
 
+import * as fs from "fs";
 import * as path from "path";
 
 const READ_ALLOWED_EXTENSIONS = new Set([
@@ -57,6 +58,19 @@ export function checkPathAllowed(
 
   if (!resolved.startsWith(root)) {
     return { allowed: false, reason: "Path outside project root" };
+  }
+
+  // Lexical path checks do not stop a repository symlink from pointing outside
+  // the workspace. When the target exists, enforce the boundary on real paths.
+  try {
+    const realRoot = fs.realpathSync(root);
+    const realTarget = fs.realpathSync(resolved);
+    const relativeReal = path.relative(realRoot, realTarget);
+    if (relativeReal.startsWith("..") || path.isAbsolute(relativeReal)) {
+      return { allowed: false, reason: "Symlink target is outside project root" };
+    }
+  } catch {
+    // The caller reports the ordinary missing-file error after path validation.
   }
 
   const relative = path.relative(root, resolved).replace(/\\/g, "/");

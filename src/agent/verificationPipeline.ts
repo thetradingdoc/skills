@@ -20,6 +20,19 @@ export interface VerificationResult {
   errorFeedback: string;
 }
 
+/** A truthful, user-readable account of checks that actually ran. */
+export function summarizeVerification(result: VerificationResult): string {
+  const checks = [`Lint ${result.lint.passed ? "passed" : "failed"}`];
+  const { total, passed, failed } = result.vitest.summary;
+  checks.push(total > 0
+    ? `Vitest ${passed}/${total} passed${failed ? `, ${failed} failed` : ""}`
+    : "Vitest collected 0 tests");
+  checks.push(result.playwright
+    ? `Playwright ${result.playwright.passed ? "passed" : "failed"}`
+    : "Playwright not run (no matching specs)");
+  return checks.join(" · ");
+}
+
 export interface VerificationPipelineOptions {
   projectRoot: string;
   sandboxPath: string;

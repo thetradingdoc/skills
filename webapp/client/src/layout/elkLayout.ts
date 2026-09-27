@@ -14,7 +14,7 @@ const elk = new ELK({
   workerFactory: () => new Worker(new URL("elkjs/lib/elk-worker.min.js", import.meta.url)),
   defaultLayoutOptions: {
     "elk.algorithm": "layered",
-    "elk.direction": "DOWN",
+    "elk.direction": "RIGHT",
     "elk.layered.spacing.nodeNodeBetween": "40",
     "elk.spacing.nodeNode": "60",
   },
@@ -47,7 +47,7 @@ export async function computeElkLayout(graph: ArchGraph): Promise<ElkLayoutResul
     id: "root",
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": "DOWN",
+      "elk.direction": "RIGHT",
       "elk.layered.spacing.nodeNodeBetween": "40",
       "elk.spacing.nodeNode": "60",
     },

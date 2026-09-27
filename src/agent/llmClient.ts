@@ -4,6 +4,7 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { emitTrace } from "./traceLogger";
 import { bumpSessionUsage } from "./sessionPersistence";
 import type { AgentPlan, AgentPlanTask, ProposedFileSpec, Rail } from "./types";
@@ -36,6 +37,8 @@ export interface LLMCallContext {
   errorOutput?: string;
   projectRoot?: string;
   apiKey?: string;
+  provider?: "anthropic" | "openai";
+  model?: string;
   rail?: Rail;
   railHistory?: ArchitectureChatHistory;
 }
@@ -204,10 +207,11 @@ function validateToolInput(
 }
 
 export async function callLLM(context: LLMCallContext): Promise<LLMCallResult> {
-  const apiKey = context.apiKey ?? process.env.ANTHROPIC_API_KEY?.trim();
+  const provider = context.provider ?? "anthropic";
+  const apiKey = context.apiKey ?? (provider === "openai" ? process.env.OPENAI_API_KEY?.trim() : process.env.ANTHROPIC_API_KEY?.trim());
   if (!apiKey) {
     const err =
-      "Anthropic API key not configured. Set archVisualizer.anthropicApiKey or ANTHROPIC_API_KEY.";
+      `${provider === "openai" ? "OpenAI" : "Anthropic"} API key not configured.`;
     emitTrace("error", { role: context.role, goal: context.goal }, { error: err }, err);
     return { type: "no_api_key", error: err };
   }
@@ -221,25 +225,74 @@ export async function callLLM(context: LLMCallContext): Promise<LLMCallResult> {
   };
 
   try {
+    if (provider === "openai") {
+      const client = new OpenAI({ apiKey });
+      let system = CODE_WRITER_SYSTEM;
+      let prior: Array<{ role: "user" | "assistant"; content: string }> = [];
+      if (context.rail) {
+        const railHistory = buildRailContext(context.rail, context.railHistory ?? [], 500) as ArchitectureChatHistory;
+        system = [
+          `You are executing rail ${context.rail.id}. Frozen outcome: ${context.rail.frozenOutcome ?? context.rail.outcome}. Do not expand its scope.`,
+          ...railHistory.filter((m: ArchitectureChatHistory[number]) => m.role === "system").map((m: ArchitectureChatHistory[number]) => m.content),
+          CODE_WRITER_SYSTEM,
+        ].filter(Boolean).join("\n\n");
+        prior = railHistory.filter((m): m is { role: "user" | "assistant"; content: string } => m.role === "user" || m.role === "assistant");
+      }
+      const tools: OpenAI.ChatCompletionTool[] = CODE_WRITER_TOOLS.map((tool) => ({
+        type: "function",
+        function: { name: tool.name, description: tool.description, parameters: tool.input_schema as Record<string, unknown> },
+      }));
+      const response = await client.chat.completions.create({
+        model: context.model ?? "gpt-4o-mini",
+        max_tokens: 8192,
+        temperature: 0,
+        messages: [
+          { role: "system", content: system },
+          ...prior,
+          { role: "user", content: userMsg },
+        ],
+        tools,
+        tool_choice: "auto",
+      });
+      const choice = response.choices[0];
+      const usage = response.usage;
+      const totalTokens = (usage?.prompt_tokens ?? 0) + (usage?.completion_tokens ?? 0);
+      if (context.projectRoot) bumpSessionUsage(context.projectRoot, { tokenUsage: totalTokens, llmCallCount: 1 });
+      emitTrace("llm_call", inputForTrace, { tokens: totalTokens }, "OpenAI code writer reasoning step");
+      const toolCall = choice?.message.tool_calls?.[0];
+      if (toolCall?.type === "function") {
+        const name = toolCall.function.name;
+        if (!VALID_TOOLS.has(name)) return { type: "unknown_output", raw: `Model requested unknown tool: ${name}` };
+        let input: Record<string, unknown>;
+        try { input = JSON.parse(toolCall.function.arguments) as Record<string, unknown>; }
+        catch { return { type: "unknown_output", raw: `Invalid JSON arguments for ${name}` }; }
+        const valid = validateToolInput(name, input);
+        return valid.ok ? { type: "tool_call", tool: name, input } : { type: "unknown_output", raw: `Invalid tool call: ${valid.reason}` };
+      }
+      const content = choice?.message.content?.trim() ?? "";
+      if (choice?.finish_reason === "stop") return { type: "end_turn", content };
+      return { type: "unknown_output", raw: content || `finish_reason=${choice?.finish_reason ?? "unknown"}` };
+    }
+
     const client = new Anthropic({ apiKey });
 
     let system = CODE_WRITER_SYSTEM;
     let messages: Anthropic.MessageParam[] = [{ role: "user", content: userMsg }];
 
     if (context.rail) {
-      const railHistory = buildRailContext(
-        context.rail,
-        context.railHistory ?? [],
-        500
-      );
+        const railHistory = buildRailContext(
+          context.rail,
+          context.railHistory ?? [],
+          500
+      ) as ArchitectureChatHistory;
       const systemRail = `You are executing rail ${context.rail.id}.\n` +
         `Frozen outcome: ${context.rail.frozenOutcome ?? context.rail.outcome}.\n` +
         "Do not change the outcome; every step must move toward this outcome only.\n" +
         "Do not introduce new goals, alter the specification, or expand scope beyond this rail.\n";
 
       const systemMessages = railHistory
-        .filter((m) => m.role === "system")
-        .map((m) => m.content);
+        .filter((m: ArchitectureChatHistory[number]) => m.role === "system")
+        .map((m: ArchitectureChatHistory[number]) => m.content);
 
       system = [systemRail, ...systemMessages, CODE_WRITER_SYSTEM]
         .filter(Boolean)
@@ -257,7 +310,7 @@ export async function callLLM(context: LLMCallContext): Promise<LLMCallResult> {
     }
 
     const response = await client.messages.create({
-      model: "claude-sonnet-4-6",
+      model: context.model ?? "claude-sonnet-4-6",
       max_tokens: 8192,
       temperature: 0,
       system,

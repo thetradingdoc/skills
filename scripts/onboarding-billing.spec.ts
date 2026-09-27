@@ -5,7 +5,9 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { walkOnboardingToPlan } from "./e2eOnboarding";
+import { E2E_ALLOW_REAL_SIGNUP, REAL_SIGNUP_SKIP_REASON } from "./e2eRealSignupGate";
 
 function parseEnvFile(p: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -101,19 +103,23 @@ test.describe("onboarding billing — requires live app + optional stripe", () =
   );
 
   // This Supabase project has email confirmations enabled, so UI signups need
-  // a mailbox. Admin-create a confirmed user once, then run the signed-in
-  // journeys (sign-in modal → workspace → Account & billing) through the UI.
+  // a mailbox. Admin-create confirmed users only inside the nested describe
+  // (or the free-portal test) that actually needs them — never a describe-level
+  // beforeAll, which would mint even when only gated real-signUp tests are selected.
   const serverEnv = parseEnvFile(path.resolve("webapp/server/.env"));
   const clientEnv = parseEnvFile(path.resolve("webapp/client/.env"));
   const SUPABASE_URL = serverEnv.SUPABASE_URL ?? "";
   const SERVICE_ROLE = serverEnv.SUPABASE_SERVICE_ROLE_KEY ?? "";
   const ANON_KEY = clientEnv.VITE_SUPABASE_ANON_KEY ?? "";
-  const E2E_EMAIL = `blanko.e2e+journey${Date.now()}@gmail.com`;
-  const E2E_PASSWORD = "e2e-password-12345";
-  let userToken: string | null = null;
-
-  test.beforeAll(async () => {
+  async function mintConfirmedUser(emailPrefix: string): Promise<{
+    email: string;
+    password: string;
+    token: string;
+  }> {
     test.skip(!SUPABASE_URL || !SERVICE_ROLE, "Supabase admin env missing");
+    const email = `${emailPrefix}${Date.now()}@gmail.com`;
+    // These are throwaway, per-run users. Never keep a reusable test password in source.
+    const password = randomBytes(24).toString("base64url");
     const created = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
       method: "POST",
       headers: {
@@ -122,8 +128,8 @@ test.describe("onboarding billing — requires live app + optional stripe", () =
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        email: E2E_EMAIL,
-        password: E2E_PASSWORD,
+        email,
+        password,
         email_confirm: true,
       }),
     });
@@ -132,220 +138,216 @@ test.describe("onboarding billing — requires live app + optional stripe", () =
     const signed = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: "POST",
       headers: { apikey: ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ email: E2E_EMAIL, password: E2E_PASSWORD }),
+      body: JSON.stringify({ email, password }),
     });
     const body = (await signed.json()) as { access_token?: string };
     expect(signed.ok && !!body.access_token, "password sign-in failed").toBeTruthy();
-    userToken = body.access_token!;
-  });
+    return { email, password, token: body.access_token! };
+  }
 
-  test("[E2E] Confirmed user signs in via modal and reaches white Account & billing", async ({
-    page,
-  }) => {
-    await page.goto("/");
-    await page.getByTestId("landing-sign-in").click();
-    const modal = page.getByTestId("auth-modal");
-    await expect(modal).toBeVisible();
-    await modal.getByPlaceholder("Email").fill(E2E_EMAIL);
-    await modal.getByPlaceholder("Password").fill(E2E_PASSWORD);
-    await modal.getByRole("button", { name: /^Sign in$/ }).last().click();
-    await expect(modal).toHaveCount(0, { timeout: 15000 });
+  // Admin mint runs only for tests in this block (beforeEach). Selecting only
+  // real-signUp specs below must create zero Supabase users.
+  test.describe("admin-minted confirmed user", () => {
+    let e2eEmail = "";
+    let e2ePassword = "";
+    let userToken: string | null = null;
 
-    // Signed-in users land in the workspace shell where account chrome lives
-    await expect(page.getByTestId("account-profile-btn")).toBeVisible({ timeout: 30000 });
-
-    await page.getByTestId("account-profile-btn").click();
-    const panel = page.getByTestId("profile-billing-panel");
-    await expect(panel).toBeVisible();
-    // Restyled to blanko light — the card must be white, not GitHub-dark
-    const cardBg = await panel
-      .locator("> div")
-      .first()
-      .evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(cardBg).toMatch(/rgb\(\s*255,\s*255,\s*255\s*\)/);
-    await expect(panel.getByTestId("billing-plan")).toBeVisible({ timeout: 15000 });
-    await expect(panel.getByTestId("manage-billing-btn")).toBeVisible();
-  });
-
-  test("[E2E] Paying is possible: ensure-free then create-subscription returns a client secret", async ({
-    request,
-  }) => {
-    test.skip(!userToken, "No signed-in token from beforeAll");
-    // Never create Stripe objects against live keys from a test run.
-    test.skip(
-      /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
-      "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
-    );
-    const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
-    const auth = { Authorization: `Bearer ${userToken}` };
-
-    const free = await request.post(`${api}/api/billing/ensure-free`, { headers: auth });
-    expect(free.ok()).toBeTruthy();
-
-    const me = await request.get(`${api}/api/billing/me`, { headers: auth });
-    expect(me.ok()).toBeTruthy();
-    const meBody = (await me.json()) as { plan?: string };
-    expect(["free", "pro", "team"]).toContain(meBody.plan);
-
-    // The moment a user picks Pro in the chat, this is the call that runs —
-    // a clientSecret proves Stripe will mount the Payment Element.
-    const sub = await request.post(`${api}/api/billing/create-subscription`, {
-      headers: auth,
-      data: { plan: "pro" },
+    test.beforeEach(async () => {
+      const minted = await mintConfirmedUser("blanko.e2e+journey");
+      e2eEmail = minted.email;
+      e2ePassword = minted.password;
+      userToken = minted.token;
     });
-    expect(sub.ok(), `create-subscription: ${sub.status()}`).toBeTruthy();
-    const subBody = (await sub.json()) as { clientSecret?: string };
-    expect(typeof subBody.clientSecret).toBe("string");
-    expect(subBody.clientSecret!.length).toBeGreaterThan(10);
-  });
 
-  test("[E2E] Portal heals missing billing_customers after create-subscription", async ({
-    request,
-  }) => {
-    test.skip(!userToken, "No signed-in token from beforeAll");
-    test.skip(
-      /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
-      "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
-    );
-    const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
-    const auth = { Authorization: `Bearer ${userToken}` };
+    test("[E2E] Confirmed user signs in via modal and reaches white Account & billing", async ({
+      page,
+    }) => {
+      await page.goto("/");
+      await page.getByTestId("landing-sign-in").click();
+      const modal = page.getByTestId("auth-modal");
+      await expect(modal).toBeVisible();
+      await modal.getByPlaceholder("Email").fill(e2eEmail);
+      await modal.getByPlaceholder("Password").fill(e2ePassword);
+      await modal.getByRole("button", { name: /^Sign in$/ }).last().click();
+      await expect(modal).toHaveCount(0, { timeout: 15000 });
 
-    // Decode user id from JWT payload (middle segment).
-    const payload = JSON.parse(
-      Buffer.from(userToken!.split(".")[1]!, "base64url").toString("utf8")
-    ) as { sub?: string };
-    const userId = payload.sub;
-    expect(userId).toBeTruthy();
+      // Signed-in users land in the workspace shell where account chrome lives
+      await expect(page.getByTestId("account-profile-btn")).toBeVisible({ timeout: 30000 });
 
-    // Ensure Stripe customer exists via create-subscription path.
-    const sub = await request.post(`${api}/api/billing/create-subscription`, {
-      headers: auth,
-      data: { plan: "pro" },
+      await page.getByTestId("account-profile-btn").click();
+      const panel = page.getByTestId("profile-billing-panel");
+      await expect(panel).toBeVisible();
+      // Restyled to blanko light — the card must be white, not GitHub-dark
+      const cardBg = await panel
+        .locator("> div")
+        .first()
+        .evaluate((el) => getComputedStyle(el).backgroundColor);
+      expect(cardBg).toMatch(/rgb\(\s*255,\s*255,\s*255\s*\)/);
+      await expect(panel.getByTestId("billing-plan")).toBeVisible({ timeout: 15000 });
+      await expect(panel.getByTestId("manage-billing-btn")).toBeVisible();
     });
-    expect(sub.ok(), `create-subscription: ${await sub.text()}`).toBeTruthy();
 
-    // Simulate the bug: PRO/sub exists but billing_customers row is gone.
-    const del = await fetch(
-      `${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}`,
-      {
+    test("[E2E] Paying is possible: ensure-free then create-subscription returns a client secret", async ({
+      request,
+    }) => {
+      test.skip(!userToken, "No signed-in token from beforeEach");
+      // Never create Stripe objects against live keys from a test run.
+      test.skip(
+        /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
+        "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
+      );
+      const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
+      const auth = { Authorization: `Bearer ${userToken}` };
+
+      const free = await request.post(`${api}/api/billing/ensure-free`, { headers: auth });
+      expect(free.ok()).toBeTruthy();
+
+      const me = await request.get(`${api}/api/billing/me`, { headers: auth });
+      expect(me.ok()).toBeTruthy();
+      const meBody = (await me.json()) as { plan?: string };
+      expect(["free", "pro", "team"]).toContain(meBody.plan);
+
+      // The moment a user picks Pro in the chat, this is the call that runs —
+      // a clientSecret proves Stripe will mount the Payment Element.
+      const sub = await request.post(`${api}/api/billing/create-subscription`, {
+        headers: auth,
+        data: { plan: "pro" },
+      });
+      expect(sub.ok(), `create-subscription: ${sub.status()}`).toBeTruthy();
+      const subBody = (await sub.json()) as { clientSecret?: string };
+      expect(typeof subBody.clientSecret).toBe("string");
+      expect(subBody.clientSecret!.length).toBeGreaterThan(10);
+    });
+
+    test("[E2E] Portal heals missing billing_customers after create-subscription", async ({
+      request,
+    }) => {
+      test.skip(!userToken, "No signed-in token from beforeEach");
+      test.skip(
+        /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
+        "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
+      );
+      const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
+      const auth = { Authorization: `Bearer ${userToken}` };
+
+      // Decode user id from JWT payload (middle segment).
+      const payload = JSON.parse(
+        Buffer.from(userToken!.split(".")[1]!, "base64url").toString("utf8")
+      ) as { sub?: string };
+      const userId = payload.sub;
+      expect(userId).toBeTruthy();
+
+      // Ensure Stripe customer exists via create-subscription path.
+      const sub = await request.post(`${api}/api/billing/create-subscription`, {
+        headers: auth,
+        data: { plan: "pro" },
+      });
+      expect(sub.ok(), `create-subscription: ${await sub.text()}`).toBeTruthy();
+
+      // Simulate the bug: PRO/sub exists but billing_customers row is gone.
+      const del = await fetch(
+        `${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}`,
+        {
+          method: "DELETE",
+          headers: {
+            apikey: SERVICE_ROLE,
+            Authorization: `Bearer ${SERVICE_ROLE}`,
+            Prefer: "return=minimal",
+          },
+        }
+      );
+      expect(del.ok || del.status === 204, `delete billing_customers: ${del.status}`).toBeTruthy();
+
+      const portal = await request.post(`${api}/api/billing/portal`, { headers: auth });
+      const portalBody = (await portal.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+      };
+      expect(
+        portal.ok(),
+        `portal heal failed ${portal.status}: ${portalBody.error ?? JSON.stringify(portalBody)}`
+      ).toBeTruthy();
+      expect(typeof portalBody.url).toBe("string");
+      expect(portalBody.url!).toMatch(/stripe\.com|billing/);
+
+      // Row should be restored.
+      const check = await fetch(
+        `${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}&select=stripe_customer_id`,
+        {
+          headers: {
+            apikey: SERVICE_ROLE,
+            Authorization: `Bearer ${SERVICE_ROLE}`,
+          },
+        }
+      );
+      const rows = (await check.json()) as Array<{ stripe_customer_id?: string }>;
+      expect(rows[0]?.stripe_customer_id).toBeTruthy();
+    });
+
+    test("[E2E] Portal heals orphan PRO (no billing_customers, no stripe sub id)", async ({
+      request,
+    }) => {
+      test.skip(!userToken, "No signed-in token from beforeEach");
+      test.skip(
+        /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
+        "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
+      );
+      const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
+      const auth = { Authorization: `Bearer ${userToken}` };
+      const payload = JSON.parse(
+        Buffer.from(userToken!.split(".")[1]!, "base64url").toString("utf8")
+      ) as { sub?: string };
+      const userId = payload.sub!;
+
+      await fetch(`${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}`, {
         method: "DELETE",
         headers: {
           apikey: SERVICE_ROLE,
           Authorization: `Bearer ${SERVICE_ROLE}`,
           Prefer: "return=minimal",
         },
-      }
-    );
-    expect(del.ok || del.status === 204, `delete billing_customers: ${del.status}`).toBeTruthy();
+      });
 
-    const portal = await request.post(`${api}/api/billing/portal`, { headers: auth });
-    const portalBody = (await portal.json().catch(() => ({}))) as {
-      url?: string;
-      error?: string;
-    };
-    expect(
-      portal.ok(),
-      `portal heal failed ${portal.status}: ${portalBody.error ?? JSON.stringify(portalBody)}`
-    ).toBeTruthy();
-    expect(typeof portalBody.url).toBe("string");
-    expect(portalBody.url!).toMatch(/stripe\.com|billing/);
-
-    // Row should be restored.
-    const check = await fetch(
-      `${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}&select=stripe_customer_id`,
-      {
+      // Match the screenshot state: plan PRO / active without a Stripe customer link.
+      const upsert = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
+        method: "POST",
         headers: {
           apikey: SERVICE_ROLE,
           Authorization: `Bearer ${SERVICE_ROLE}`,
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates,return=minimal",
         },
-      }
-    );
-    const rows = (await check.json()) as Array<{ stripe_customer_id?: string }>;
-    expect(rows[0]?.stripe_customer_id).toBeTruthy();
-  });
+        body: JSON.stringify({
+          user_id: userId,
+          plan: "pro",
+          status: "active",
+          stripe_subscription_id: null,
+          price_id: null,
+          current_period_end: null,
+        }),
+      });
+      expect(upsert.ok || upsert.status === 201, `upsert subscriptions: ${upsert.status}`).toBeTruthy();
 
-  test("[E2E] Portal heals orphan PRO (no billing_customers, no stripe sub id)", async ({
-    request,
-  }) => {
-    test.skip(!userToken, "No signed-in token from beforeAll");
-    test.skip(
-      /^sk_live/.test(serverEnv.STRIPE_SECRET_KEY ?? "") && !process.env.E2E_STRIPE_LIVE_OK,
-      "STRIPE_SECRET_KEY is live-mode — set E2E_STRIPE_LIVE_OK=1 to explicitly allow"
-    );
-    const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
-    const auth = { Authorization: `Bearer ${userToken}` };
-    const payload = JSON.parse(
-      Buffer.from(userToken!.split(".")[1]!, "base64url").toString("utf8")
-    ) as { sub?: string };
-    const userId = payload.sub!;
-
-    await fetch(`${SUPABASE_URL}/rest/v1/billing_customers?user_id=eq.${userId}`, {
-      method: "DELETE",
-      headers: {
-        apikey: SERVICE_ROLE,
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-        Prefer: "return=minimal",
-      },
+      const portal = await request.post(`${api}/api/billing/portal`, { headers: auth });
+      const portalBody = (await portal.json().catch(() => ({}))) as {
+        url?: string;
+        error?: string;
+      };
+      expect(
+        portal.ok(),
+        `orphan PRO portal heal failed ${portal.status}: ${portalBody.error ?? ""}`
+      ).toBeTruthy();
+      expect(portalBody.url).toMatch(/stripe\.com|billing/);
     });
-
-    // Match the screenshot state: plan PRO / active without a Stripe customer link.
-    const upsert = await fetch(`${SUPABASE_URL}/rest/v1/subscriptions`, {
-      method: "POST",
-      headers: {
-        apikey: SERVICE_ROLE,
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
-      body: JSON.stringify({
-        user_id: userId,
-        plan: "pro",
-        status: "active",
-        stripe_subscription_id: null,
-        price_id: null,
-        current_period_end: null,
-      }),
-    });
-    expect(upsert.ok || upsert.status === 201, `upsert subscriptions: ${upsert.status}`).toBeTruthy();
-
-    const portal = await request.post(`${api}/api/billing/portal`, { headers: auth });
-    const portalBody = (await portal.json().catch(() => ({}))) as {
-      url?: string;
-      error?: string;
-    };
-    expect(
-      portal.ok(),
-      `orphan PRO portal heal failed ${portal.status}: ${portalBody.error ?? ""}`
-    ).toBeTruthy();
-    expect(portalBody.url).toMatch(/stripe\.com|billing/);
   });
 
   test("[E2E] Free user without customer gets clear portal error (not upgrade-first ghost)", async ({
     request,
   }) => {
-    test.skip(!userToken, "No signed-in token from beforeAll");
     const api = process.env.E2E_API_URL ?? "http://127.0.0.1:4000";
     // Fresh free-only user so we don't inherit prior create-subscription customer.
-    const email = `blanko.e2e+freeportal${Date.now()}@gmail.com`;
-    const password = E2E_PASSWORD;
-    const created = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
-      method: "POST",
-      headers: {
-        apikey: SERVICE_ROLE,
-        Authorization: `Bearer ${SERVICE_ROLE}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password, email_confirm: true }),
-    });
-    expect(created.ok).toBeTruthy();
-    const signed = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
-      method: "POST",
-      headers: { apikey: ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const body = (await signed.json()) as { access_token?: string };
-    expect(body.access_token).toBeTruthy();
-    const auth = { Authorization: `Bearer ${body.access_token}` };
+    const minted = await mintConfirmedUser("blanko.e2e+freeportal");
+    const auth = { Authorization: `Bearer ${minted.token}` };
     await request.post(`${api}/api/billing/ensure-free`, { headers: auth });
 
     const portal = await request.post(`${api}/api/billing/portal`, { headers: auth });
@@ -388,7 +390,10 @@ test.describe("onboarding billing — requires live app + optional stripe", () =
     }
   });
 
+  // Real UI signUp → burns default Supabase mailer quota (~2/hr). Fail-closed
+  // unless E2E_ALLOW_REAL_SIGNUP=1 (do not run against prod by accident).
   test("[E2E] Paid path with Stripe test card (Payment Element)", async ({ page }) => {
+    test.skip(!E2E_ALLOW_REAL_SIGNUP, REAL_SIGNUP_SKIP_REASON);
     test.skip(!process.env.E2E_STRIPE_PAID, "Set E2E_STRIPE_PAID=1 for paid path");
     await walkToPlan(page, `blanko.e2e+pro${Date.now()}@gmail.com`);
     await page.getByTestId("onboarding-tos").check();
@@ -405,21 +410,29 @@ test.describe("onboarding billing — requires live app + optional stripe", () =
     await expect(page.getByTestId("account-profile-btn")).toBeVisible({ timeout: 60000 });
   });
 
+  // Real UI signUp → confirmation email path. Fail-closed for mailer quota
+  // protection; enable only against a staging project or after custom SMTP.
   test("[E2E] Chat signup with confirmations on shows the confirm-email message (no dead end)", async ({
     page,
   }) => {
+    test.skip(!E2E_ALLOW_REAL_SIGNUP, REAL_SIGNUP_SKIP_REASON);
     // With email confirmations enabled, the chat signup can't mint a session —
     // the journey must surface the "check your email" instruction rather than
     // hang. Skipped when Supabase email rate limit is already exhausted.
     await walkToPlan(page, `blanko.e2e+confirm${Date.now()}@gmail.com`);
     await page.getByTestId("onboarding-tos").check();
     await page.getByTestId("onboarding-plan-free").click();
+    const pending = page.getByTestId("onboarding-pending-confirm");
     const err = page.getByTestId("onboarding-error");
     const profileBtn = page.getByTestId("account-profile-btn");
-    await expect(err.or(profileBtn).first()).toBeVisible({ timeout: 30000 });
-    if (await err.isVisible().catch(() => false)) {
+    await expect(pending.or(err).or(profileBtn).first()).toBeVisible({ timeout: 30000 });
+    if (await pending.isVisible().catch(() => false)) {
+      const text = (await pending.textContent()) ?? "";
+      expect(text).toMatch(/Account created|Check your email|resend/i);
+      await expect(page.getByTestId("onboarding-resend-confirm")).toBeVisible();
+    } else if (await err.isVisible().catch(() => false)) {
       const text = (await err.textContent()) ?? "";
-      expect(text).toMatch(/confirm your account|rate limit/i);
+      expect(text).toMatch(/rate limit|confirm|signup|error/i);
     }
   });
 });

@@ -1,0 +1,12 @@
+# Blanko on Railway — one service, Docker build
+# https://docs.railway.com/guides/dockerfiles
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

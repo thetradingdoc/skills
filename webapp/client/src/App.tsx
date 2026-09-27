@@ -105,10 +105,10 @@ import {
   DockFrame,
   BuildPanel,
   InsightsPanel,
-  AgentsDock,
   WorkspaceDock,
   TasksDock,
   ViewDock,
+  HarnessDock,
   ChatBar,
   ChromeBar,
   EdgeTeachStrip,
@@ -1030,6 +1030,7 @@ export default function App() {
   const [dockMode, setDockMode] = useState<DockMode | null>(null);
   const [agentsDockTab, setAgentsDockTab] = useState<AgentsDockTab>("inventory");
   const [workspaceDockTab, setWorkspaceDockTab] = useState<WorkspaceDockTab>("platforms");
+  const [workspaceArea, setWorkspaceArea] = useState<"workspace" | "architecture">("workspace");
   const [rollupRefreshKey, setRollupRefreshKey] = useState(0);
   const [dockOpen, setDockOpen] = useState(false);
   /** Insights Edit details expanded (double-click / place). */
@@ -1743,8 +1744,9 @@ export default function App() {
       opts?: { hitNodeId?: string | null }
     ) => {
       if (!graph) return;
-      if (!isDesignGraph(graph)) {
-        // CTA lives in BuildPanel when designAllowed=false — do not mutate.
+      if (!isDesignGraph(graph) && !canvasDesignMode) {
+        // Keep a repository scan read-only until the user explicitly switches
+        // the canvas to Edit. Edit mode can add harness pieces alongside it.
         return;
       }
       let resolvedPosition = position;
@@ -1779,7 +1781,7 @@ export default function App() {
         setSelectedNode(result.focusNodeId);
       }
     },
-    [graph, selectedNode, ensureEditForBuild]
+    [graph, selectedNode, ensureEditForBuild, canvasDesignMode]
   );
 
   const platformInventory = useMemo(() => {
@@ -2024,8 +2026,9 @@ export default function App() {
   const openCodeDock = useCallback((path?: string, line?: number) => {
     if (path) setOpenFile({ path, line });
     setAgentsDockTab("files");
-    setDockMode("agents");
-    setDockWidth(defaultDockWidthForMode("agents"));
+    setWorkspaceArea("architecture");
+    setDockMode("workspace");
+    setDockWidth(defaultDockWidthForMode("workspace"));
     setDockOpen(true);
     setInsightsEditOpen(false);
     setGraphViewMode("2d");
@@ -2033,14 +2036,16 @@ export default function App() {
 
   const openAgentsDock = useCallback((tab: AgentsDockTab = "inventory") => {
     setAgentsDockTab(tab);
-    setDockMode("agents");
-    setDockWidth(defaultDockWidthForMode("agents"));
+    setWorkspaceArea("architecture");
+    setDockMode("workspace");
+    setDockWidth(defaultDockWidthForMode("workspace"));
     setDockOpen(true);
     setInsightsEditOpen(false);
     setGraphViewMode("2d");
   }, []);
 
   const openWorkspaceDock = useCallback((tab: WorkspaceDockTab = "platforms") => {
+    setWorkspaceArea("workspace");
     // Legacy: work → Tasks; flow → Path; ops → Rollup.
     if (tab === "work") {
       setDockMode("work");
@@ -2215,6 +2220,48 @@ export default function App() {
       for (const f of list) {
         const text = await f.text();
         const raw = JSON.parse(text);
+        // Skills architecture exports can be imported directly. Keep n8n's
+        // richer preview path for workflow JSON, whose shape is different.
+        const candidate = raw?.graph && typeof raw.graph === "object" ? raw.graph : raw;
+        if (Array.isArray(candidate?.nodes) && Array.isArray(candidate?.edges)) {
+          const nodes = candidate.nodes;
+          const edges = candidate.edges;
+          const nodeIds = new Set(nodes.map((node: any) => node?.id).filter((id: unknown) => typeof id === "string"));
+          const valid = nodes.length > 0 && nodes.every((node: any) =>
+            node && typeof node.id === "string" && typeof node.label === "string"
+          ) && edges.every((edge: any) =>
+            edge && typeof edge.id === "string" && nodeIds.has(edge.source) && nodeIds.has(edge.target)
+          );
+          if (!valid) throw new Error(`${f.name} has an invalid Skills architecture graph.`);
+          const importedGraph: ArchGraph = {
+            ...candidate,
+            nodes: nodes.map((node: any) => ({ ...node, path: typeof node.path === "string" ? node.path : "" })),
+            edges: edges.map((edge: any) => ({
+              ...edge,
+              type: ["import", "reexport", "dynamic", "runtime"].includes(edge.type) ? edge.type : "runtime",
+              isDrift: Boolean(edge.isDrift),
+            })),
+            generatedAt: typeof candidate.generatedAt === "number" ? candidate.generatedAt : Date.now(),
+            projectRoot: typeof candidate.projectRoot === "string" ? candidate.projectRoot : "",
+          };
+          setGraph(importedGraph);
+          setRepoUrl("");
+          setActiveWorkspaceId(null);
+          setActiveWorkspaceIsOwner(false);
+          setSelectedNode(null);
+          setAgentGraphCommand(null);
+          setGraphViewMode("2d");
+          setSidebarTab("chat");
+          setDockMode(null);
+          setDockOpen(false);
+          setSceneCollapsed(true);
+          setChatExpanded(false);
+          setSaveStatus("idle");
+          setImportFindings([]);
+          setAiQuestion("");
+          try { localStorage.removeItem("lastWorkspaceId"); } catch { /* ignore */ }
+          return;
+        }
         workflows.push({ raw });
       }
       const res = await fetch(`${API_BASE}/n8n/preview`, {
@@ -2332,7 +2379,11 @@ export default function App() {
     setSidebarTab("dashboard");
     setDesignDashboardTab("review");
     setSceneCollapsed(true);
-    setDockMode(blueprintId === "trading-agent" ? "agents" : "insights");
+    if (blueprintId === "trading-agent") {
+      setWorkspaceArea("architecture");
+      setAgentsDockTab("inventory");
+    }
+    setDockMode(blueprintId === "trading-agent" ? "workspace" : "insights");
     setDockOpen(true);
     setInsightsEditOpen(false);
     setChatExpanded(false);
@@ -2396,7 +2447,9 @@ export default function App() {
     setSelectedEdgeId(null);
     setAgentGraphCommand(null);
     setGraphViewMode("2d");
-    setDockMode("agents");
+    setWorkspaceArea("architecture");
+    setAgentsDockTab("inventory");
+    setDockMode("workspace");
     setDockOpen(true);
     setInsightsEditOpen(false);
     setSceneCollapsed(true);
@@ -3036,6 +3089,11 @@ export default function App() {
     },
     [ensureSceneBase, setWorkspaceScene]
   );
+  const [harnessLayoutFitRequest, setHarnessLayoutFitRequest] = useState(0);
+  const arrangeHarnessLeftToRight = useCallback((mode: "elk") => {
+    setGraphLayoutMode(mode);
+    setHarnessLayoutFitRequest((request) => request + 1);
+  }, [setGraphLayoutMode]);
 
   const upsertSceneState = useCallback(
     (partial: {
@@ -10136,16 +10194,25 @@ export default function App() {
               onDesignDeleteNodes={(ids) => {
                 if (!graph) return;
                 let next = graph;
-                for (const id of ids) next = deleteDesignNode(next, id);
+                // On a mixed repo/harness board, repository modules remain
+                // protected; only authored design blocks can be deleted.
+                const deletableIds = isDesignMode ? ids : ids.filter((id) => id.startsWith("design-"));
+                for (const id of deletableIds) next = deleteDesignNode(next, id);
                 setGraph(next);
-                if (selectedNode && ids.includes(selectedNode)) setSelectedNode(null);
+                if (selectedNode && deletableIds.includes(selectedNode)) setSelectedNode(null);
               }}
               onDesignDeleteEdges={(ids) => {
                 if (!graph) return;
                 let next = graph;
-                for (const id of ids) next = deleteDesignEdge(next, id);
+                const deletableIds = isDesignMode
+                  ? ids
+                  : ids.filter((id) => {
+                      const edge = graph.edges.find((item) => item.id === id);
+                      return !!edge && (edge.source.startsWith("design-") || edge.target.startsWith("design-"));
+                    });
+                for (const id of deletableIds) next = deleteDesignEdge(next, id);
                 setGraph(next);
-                if (selectedEdgeId && ids.includes(selectedEdgeId)) setSelectedEdgeId(null);
+                if (selectedEdgeId && deletableIds.includes(selectedEdgeId)) setSelectedEdgeId(null);
               }}
               onNodeSelect={(id) => {
                 setSelectedNode(id);
@@ -10211,6 +10278,7 @@ export default function App() {
               onCanvasViewModeChange={setGraphCanvasViewMode}
               layoutMode={graphLayoutMode}
               onLayoutModeChange={setGraphLayoutMode as any}
+              layoutFitRequest={harnessLayoutFitRequest}
               agentGraphCommand={agentGraphCommand}
               theme={canvasTheme}
               density={canvasDensity}
@@ -10439,7 +10507,7 @@ export default function App() {
               variant="dock"
               selectedNode={selectedNodeData ?? null}
               onPlace={placeBuildItem}
-              designAllowed={isDesignMode}
+              designAllowed={isDesignMode || canvasDesignMode}
               onPaletteDragStart={() => setPaletteDragging(true)}
               onPaletteDragEnd={() => setPaletteDragging(false)}
               findings={allInsightsFindings}
@@ -10590,38 +10658,13 @@ export default function App() {
               todoStatusBySourcePath={todoStatusBySourcePath}
             />
           )}
-          {(dockMode === "agents" ||
-            dockMode === "code" ||
-            dockMode === "terminal" ||
-            dockMode === "evidence") && (
-            <AgentsDock
-              graph={graph}
-              agents={graph.agents}
-              initialTab={
-                dockMode === "terminal"
-                  ? "terminal"
-                  : dockMode === "code" || dockMode === "evidence"
-                    ? "files"
-                    : agentsDockTab
-              }
-              workspaceId={activeWorkspaceId}
-              accessToken={accessToken}
-              apiBase={API_BASE}
-              openPath={openFile?.path}
-              onOpenFile={(path, line) => {
-                setOpenFile({ path, line });
-                setAgentsDockTab("files");
-              }}
-              onSelectNode={(id) => {
-                setSelectedNode(id);
-                setDockMode("insights");
-                setDockOpen(true);
-              }}
-            />
-          )}
           {(dockMode === "workspace" || dockMode === "ops") && (
             <WorkspaceDock
               graph={graph}
+              initialArea={workspaceArea}
+              onAreaChange={setWorkspaceArea}
+              initialAgentTab={agentsDockTab}
+              openPath={openFile?.path}
               initialTab={
                 dockMode === "ops"
                   ? "rollup"
@@ -10701,6 +10744,19 @@ export default function App() {
                 setGraphViewMode("3d");
                 setDockOpen(false);
               }}
+            />
+          )}
+          {dockMode === "harness" && (
+            <HarnessDock
+              graph={graph}
+              workspaceId={activeWorkspaceId}
+              accessToken={accessToken}
+              apiBase={API_BASE}
+              onPlace={placeBuildItem}
+              onOpenTasks={() => openFlowTasks()}
+              onOpenComponents={openComponents}
+              onLayoutModeChange={arrangeHarnessLeftToRight}
+              onConfigChange={(harnessConfig) => setGraph((prev) => prev ? { ...prev, harnessConfig } : prev)}
             />
           )}
         </DockFrame>
